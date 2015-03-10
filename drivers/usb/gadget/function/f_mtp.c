@@ -593,6 +593,7 @@ static ssize_t mtp_read(struct file *fp, char __user *buf,
 	struct mtp_dev *dev = fp->private_data;
 	struct usb_composite_dev *cdev = dev->cdev;
 	struct usb_request *req;
+	const struct usb_endpoint_descriptor *desc;
 	ssize_t r = count;
 	unsigned xfer;
 	int ret = 0;
@@ -607,12 +608,21 @@ static ssize_t mtp_read(struct file *fp, char __user *buf,
 		r = ret;
 		goto done;
 	}
-
-	count = usb_ep_align_maybe(cdev->gadget, dev->ep_out, count);
-	if (count > dev->rx_buf_size)
-		return -EINVAL;
-
 	spin_lock_irq(&dev->lock);
+	/*
+	 * mtp_function_disable() clears ep_out->desc without dev->lock, so
+	 * take one snapshot and do not call usb_ep_align_maybe(), which
+	 * reads ep->desc again. The descriptors live in the static tables
+	 * assigned in function_alloc_mtp_ptp(), so the snapshot stays valid.
+	 */
+	desc = READ_ONCE(dev->ep_out->desc);
+	if (desc && cdev->gadget->quirk_ep_out_aligned_size)
+		count = round_up(count, (size_t)usb_endpoint_maxp(desc));
+	if (count > dev->rx_buf_size) {
+		spin_unlock_irq(&dev->lock);
+		return -EINVAL;
+	}
+
 	if (dev->state == STATE_CANCELED) {
 		/* report cancelation to userspace */
 		dev->state = STATE_READY;
