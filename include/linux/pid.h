@@ -69,6 +69,8 @@ struct pid
 
 extern struct pid init_struct_pid;
 
+extern const struct file_operations pidfd_fops;
+
 struct pid_link
 {
 	struct hlist_node node;
