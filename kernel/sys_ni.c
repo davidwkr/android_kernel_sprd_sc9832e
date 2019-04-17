@@ -259,6 +259,3 @@ cond_syscall(sys_membarrier);
 cond_syscall(sys_pkey_mprotect);
 cond_syscall(sys_pkey_alloc);
 cond_syscall(sys_pkey_free);
-
-/* pidfd */
-cond_syscall(sys_pidfd_send_signal);
