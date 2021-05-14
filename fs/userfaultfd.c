@@ -1905,6 +1905,9 @@ static int userfaultfd_api(struct userfaultfd_ctx *ctx,
 	 * is not enabled on this kernel), so never report it.
 	 */
 	uffdio_api.features &= ~UFFD_FEATURE_MINOR_HUGETLBFS;
+#ifndef CONFIG_HAVE_ARCH_USERFAULTFD_MINOR
+	uffdio_api.features &= ~UFFD_FEATURE_MINOR_SHMEM;
+#endif
 	uffdio_api.ioctls = UFFD_API_IOCTLS;
 	ret = -EFAULT;
 	if (copy_to_user(buf, &uffdio_api, sizeof(uffdio_api)))
