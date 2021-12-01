@@ -707,6 +707,10 @@ loop:
 			file = NULL;
 		else if (!get_file_rcu(file))
 			goto loop;
+		else if (__fcheck_files(files, fd) != file) {
+			fput(file);
+			goto loop;
+		}
 	}
 	rcu_read_unlock();
 
