@@ -1012,7 +1012,7 @@ static int resolve_userfault_fork(struct userfaultfd_ctx *new,
 		return fd;
 
 	file = anon_inode_getfile_secure("[userfaultfd]", &userfaultfd_fops, new,
-					 O_RDWR | flags, inode);
+					 O_RDONLY | flags, inode);
 	if (IS_ERR(file)) {
 		put_unused_fd(fd);
 		return PTR_ERR(file);
@@ -1984,7 +1984,7 @@ static struct file *userfaultfd_file_create(int flags)
 	mmgrab(ctx->mm);
 
 	file = anon_inode_getfile_secure("[userfaultfd]", &userfaultfd_fops, ctx,
-					 O_RDWR | (flags & UFFD_SHARED_FCNTL_FLAGS),
+					 O_RDONLY | (flags & UFFD_SHARED_FCNTL_FLAGS),
 					 NULL);
 	if (IS_ERR(file)) {
 		mmdrop(ctx->mm);
