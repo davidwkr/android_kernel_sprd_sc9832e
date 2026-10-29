@@ -36,7 +36,34 @@ Applied from the 4.4 stable versions (github.com/gregkh/linux, tags v4.4.182–v
 
 The core-kernel commits and `mali.ko` compile with GCC 16.2 (`sprd_sharkle_defconfig`, Mali built as an external module). Nothing has run on a watch yet. The two Mali fixes need review and a GPU test with the vendor r21p0 user space.
 
-Next: Mali CVE-2021-28663/28664 and CVE-2022-36449 (need Arm's exact fixes), then the full stable merge.
+### Stable merge 4.4.148 → 4.4.302 (done)
+
+All 155 stable releases are applied, one commit per release (`stable: Linux 4.4.N`), each listing the upstream commits it brings and every manual conflict resolution. The tree builds after 4.4.302 (`sprd_sharkle_defconfig`, GCC 16.2). Not run on a watch yet.
+
+How it was done: there is no shared git history with upstream, so each release is the diff `v4.4.(N-1)..v4.4.N` applied with a 3-way merge. Rules:
+- Conflicts in architectures this tree is not built for (x86, mips, powerpc, ...) take the stable file; listed in the commit.
+- Files the vendor removed are skipped; listed in the commit.
+- **f2fs is not taken from stable** from 4.4.172 on. This tree's f2fs is a much newer vendor backport (about +18,000 lines against 4.4.170) that already contains the 4.4 stable f2fs fixes (checked for 4.4.172: block address verification, superblock/SIT/NAT/inline/node-footer sanity checks, roll-forward recovery, encrypted reads). Update f2fs from the f2fs-stable `linux-4.4` branch instead.
+- Fixes already in the tree (vendor or Android backports, or the targeted backports above) keep the tree's form; nothing duplicated.
+
+Follow-up commits on top of the merge:
+- `binder: prevent transactions into own process` (second half of 4.4.233, missing from the vendor binder).
+- `binder: use euid from cred instead of using task` (part of 4.4.293 the merge missed).
+- `binder: use cred instead of task for getsecid` (mainline fix for this tree's binder secctx feature; adds the `security_cred_getsecid()` LSM hook).
+- Build fixes after 4.4.168, 4.4.177/178, 4.4.251, 4.4.223 (vendor call sites adjusted to new signatures, restored `struct global_attr` for the vendor cpufreq governors, `USB_SPEED_SUPER_PLUS`).
+
+Not applied (none are security fixes for hardware these watches have):
+- USB device-ID / quirk table additions (modems, serial adapters, keyboards) where the vendor table layout conflicts.
+- 4.4.249 `option.c` interface sanity checks (older table structure), 4.4.269 `dummy_hcd` fix (driver much older, not built), 4.4.294 USB `hub.c` address0 mutex fixes (needs `hcd->address0_mutex`, which this tree declares but never allocates; enumeration race, not a security issue).
+- 4.4.229/231 `xhci-plat` PM change and its revert.
+
+Known inaccuracies in commit messages (history not rewritten): the 4.4.257 and 4.4.269 notes say a USB ID entry was not applied although it was auto-merged; the 4.4.185 note says a duplicate Makefile flag was removed (it was, in a later commit).
+
+Older drivers: some USB drivers in this tree (usbip, xhci-ring, io_edgeport, keyspan_pda, dummy_hcd) were behind upstream before the merge; a few were replaced with the upstream 4.4 file. None of these are enabled in the watch configs.
+
+New Kconfig option: `LDISC_AUTOLOAD` (default y). Consider `n` in the hardening pass.
+
+Next: Mali CVE-2021-28663/28664 and CVE-2022-36449 (need Arm's exact fixes); post-4.4.302 fixes from CIP; UNISOC bulletins; hardening config; first boot on a watch.
 
 ## 1. Mali GPU driver: highest priority
 
