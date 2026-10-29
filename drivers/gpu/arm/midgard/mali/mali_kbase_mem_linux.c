@@ -807,6 +807,14 @@ int kbase_mem_flags_change(struct kbase_context *kctx, u64 gpu_addr, unsigned in
 	if (!reg || (reg->flags & KBASE_REG_FREE))
 		goto out_unlock;
 
+	/* JIT allocations are owned by the kernel's JIT allocator: user space
+	 * must not change their flags, in particular not mark them evictable
+	 * (DONT_NEED), or the shrinker frees pages the JIT pool still uses
+	 * (CVE-2022-38181).
+	 */
+	if (reg->flags & KBASE_REG_JIT)
+		goto out_unlock;
+
 	/* Is the region being transitioning between not needed and needed? */
 	prev_needed = (KBASE_REG_DONT_NEED & reg->flags) == KBASE_REG_DONT_NEED;
 	new_needed = (BASE_MEM_DONT_NEED & flags) == BASE_MEM_DONT_NEED;
