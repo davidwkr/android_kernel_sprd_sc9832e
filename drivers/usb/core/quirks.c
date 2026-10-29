@@ -37,6 +37,14 @@ static const struct usb_device_id usb_quirk_list[] = {
 	/* CBM - Flash disk */
 	{ USB_DEVICE(0x0204, 0x6025), .driver_info = USB_QUIRK_RESET_RESUME },
 
+	/* WORLDE Controller KS49 or Prodipe MIDI 49C USB controller */
+	{ USB_DEVICE(0x0218, 0x0201), .driver_info =
+			USB_QUIRK_CONFIG_INTF_STRINGS },
+
+	/* WORLDE easy key (easykey.25) MIDI controller  */
+	{ USB_DEVICE(0x0218, 0x0401), .driver_info =
+			USB_QUIRK_CONFIG_INTF_STRINGS },
+
 	/* HP 5300/5370C scanner */
 	{ USB_DEVICE(0x03f0, 0x0701), .driver_info =
 			USB_QUIRK_STRING_FETCH_255 },
@@ -207,6 +215,13 @@ static const struct usb_device_id usb_quirk_list[] = {
 
 	/* Blackmagic Design UltraStudio SDI */
 	{ USB_DEVICE(0x1edb, 0xbd4f), .driver_info = USB_QUIRK_NO_LPM },
+
+	/* Hauppauge HVR-950q */
+	{ USB_DEVICE(0x2040, 0x7200), .driver_info =
+			USB_QUIRK_CONFIG_INTF_STRINGS },
+
+	/* DJI CineSSD */
+	{ USB_DEVICE(0x2ca3, 0x0031), .driver_info = USB_QUIRK_NO_LPM },
 
 	{ }  /* terminating entry must be last */
 };
