@@ -62,7 +62,6 @@ kbase_create_context(struct kbase_device *kbdev, bool is_compat)
 
 	atomic_set(&kctx->setup_complete, 0);
 	atomic_set(&kctx->setup_in_progress, 0);
-	spin_lock_init(&kctx->mm_update_lock);
 	kctx->process_mm = NULL;
 	atomic_set(&kctx->nonmapped_pages, 0);
 	kctx->slots_pullable = 0;
@@ -295,6 +294,9 @@ void kbase_destroy_context(struct kbase_context *kctx)
 	kbase_mem_pool_term(&kctx->mem_pool);
 	kbase_mem_pool_term(&kctx->lp_mem_pool);
 	WARN_ON(atomic_read(&kctx->nonmapped_pages) != 0);
+
+	if (kctx->process_mm)
+		mmdrop(kctx->process_mm);
 
 	vfree(kctx);
 

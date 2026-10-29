@@ -1862,11 +1862,13 @@ struct kbase_sub_alloc {
  *                        Generally the reference count is incremented when the context
  *                        is scheduled in and an atom is pulled from the context's per
  *                        slot runnable tree.
- * @mm_update_lock:       lock used for handling of special tracking page.
  * @process_mm:           Pointer to the memory descriptor of the process which
  *                        created the context. Used for accounting the physical
  *                        pages used for GPU allocations, done for the context,
- *                        to the memory consumed by the process.
+ *                        to the memory consumed by the process. A reference is
+ *                        taken on the mm_struct (not on the address space) for
+ *                        contexts created from user space, and dropped when
+ *                        the context is destroyed.
  * @same_va_end:          End address of the SAME_VA zone (in 4KB page units)
  * @exec_va_start:        Start address of the EXEC_VA zone (in 4KB page units)
  *                        or U64_MAX if the EXEC_VA zone is uninitialized.
@@ -2036,8 +2038,7 @@ struct kbase_context {
 	 * Mutable flags *must* be accessed under jctx.sched_info.ctx.jsctx_mutex
 	 *
 	 * All other flags must be added there */
-	spinlock_t         mm_update_lock;
-	struct mm_struct __rcu *process_mm;
+	struct mm_struct *process_mm;
 	u64 same_va_end;
 	u64 exec_va_start;
 	u64 gpu_va_end;

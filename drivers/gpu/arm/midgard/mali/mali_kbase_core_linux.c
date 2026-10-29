@@ -471,6 +471,13 @@ static int kbase_open(struct inode *inode, struct file *filp)
 	filp->f_mode |= FMODE_UNSIGNED_OFFSET;
 	kctx->filp = filp;
 
+	/* Keep the creating process's mm_struct (not its address space) for
+	 * the context's lifetime, so GPU memory accounting never uses a freed
+	 * mm (CVE-2023-4211). Dropped in kbase_destroy_context().
+	 */
+	atomic_inc(&current->mm->mm_count);
+	kctx->process_mm = current->mm;
+
 	if (kbdev->infinite_cache_active_default)
 		kbase_ctx_flag_set(kctx, KCTX_INFINITE_CACHE);
 
@@ -636,16 +643,11 @@ static int kbase_api_mem_alloc(struct kbase_context *kctx,
 	u64 flags = alloc->in.flags;
 	u64 gpu_va;
 
-	rcu_read_lock();
-	/* Don't allow memory allocation until user space has set up the
-	 * tracking page (which sets kctx->process_mm). Also catches when we've
-	 * forked.
+	/* Don't allow memory allocation from another process (catches when
+	 * we've forked).
 	 */
-	if (rcu_dereference(kctx->process_mm) != current->mm) {
-		rcu_read_unlock();
+	if (kctx->process_mm != current->mm)
 		return -EINVAL;
-	}
-	rcu_read_unlock();
 
 	if (flags & BASE_MEM_FLAGS_KERNEL_ONLY)
 		return -ENOMEM;

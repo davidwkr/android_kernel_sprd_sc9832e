@@ -2103,16 +2103,11 @@ int kbase_mmap(struct file *file, struct vm_area_struct *vma)
 		goto out_unlock;
 	}
 
-	/* if not the MTP, verify that the MTP has been mapped */
-	rcu_read_lock();
-	/* catches both when the special page isn't present or
-	 * when we've forked */
-	if (rcu_dereference(kctx->process_mm) != current->mm) {
+	/* catches when we've forked */
+	if (kctx->process_mm != current->mm) {
 		err = -EINVAL;
-		rcu_read_unlock();
 		goto out_unlock;
 	}
-	rcu_read_unlock();
 
 	switch (vma->vm_pgoff) {
 	case PFN_DOWN(BASEP_MEM_INVALID_HANDLE):
@@ -2412,73 +2407,29 @@ KBASE_EXPORT_TEST_API(kbase_vunmap);
 
 void kbasep_os_process_page_usage_update(struct kbase_context *kctx, int pages)
 {
-	struct mm_struct *mm;
+	struct mm_struct *mm = kctx->process_mm;
 
-	rcu_read_lock();
-	mm = rcu_dereference(kctx->process_mm);
-	if (mm) {
-		atomic_add(pages, &kctx->nonmapped_pages);
-#ifdef SPLIT_RSS_COUNTING
-		add_mm_counter(mm, MM_FILEPAGES, pages);
-#else
-		spin_lock(&mm->page_table_lock);
-		add_mm_counter(mm, MM_FILEPAGES, pages);
-		spin_unlock(&mm->page_table_lock);
-#endif
-	}
-	rcu_read_unlock();
-}
-
-static void kbasep_os_process_page_usage_drain(struct kbase_context *kctx)
-{
-	int pages;
-	struct mm_struct *mm;
-
-	spin_lock(&kctx->mm_update_lock);
-	mm = rcu_dereference_protected(kctx->process_mm, lockdep_is_held(&kctx->mm_update_lock));
-	if (!mm) {
-		spin_unlock(&kctx->mm_update_lock);
+	if (unlikely(!mm))
 		return;
-	}
 
-	rcu_assign_pointer(kctx->process_mm, NULL);
-	spin_unlock(&kctx->mm_update_lock);
-	synchronize_rcu();
-
-	pages = atomic_xchg(&kctx->nonmapped_pages, 0);
+	atomic_add(pages, &kctx->nonmapped_pages);
 #ifdef SPLIT_RSS_COUNTING
-	add_mm_counter(mm, MM_FILEPAGES, -pages);
+	add_mm_counter(mm, MM_FILEPAGES, pages);
 #else
 	spin_lock(&mm->page_table_lock);
-	add_mm_counter(mm, MM_FILEPAGES, -pages);
+	add_mm_counter(mm, MM_FILEPAGES, pages);
 	spin_unlock(&mm->page_table_lock);
 #endif
 }
 
-static void kbase_special_vm_close(struct vm_area_struct *vma)
-{
-	struct kbase_context *kctx;
-
-	kctx = vma->vm_private_data;
-	kbasep_os_process_page_usage_drain(kctx);
-}
-
-static const struct vm_operations_struct kbase_vm_special_ops = {
-	.close = kbase_special_vm_close,
-};
-
 static int kbase_tracking_page_setup(struct kbase_context *kctx, struct vm_area_struct *vma)
 {
-	/* check that this is the only tracking page */
-	spin_lock(&kctx->mm_update_lock);
-	if (rcu_dereference_protected(kctx->process_mm, lockdep_is_held(&kctx->mm_update_lock))) {
-		spin_unlock(&kctx->mm_update_lock);
-		return -EFAULT;
-	}
-
-	rcu_assign_pointer(kctx->process_mm, current->mm);
-
-	spin_unlock(&kctx->mm_update_lock);
+	/* The tracking page no longer sets kctx->process_mm (taken at context
+	 * creation instead, CVE-2023-4211); it is kept as a dummy mapping for
+	 * user space compatibility.
+	 */
+	if (vma_pages(vma) != 1)
+		return -EINVAL;
 
 	/* no real access */
 	vma->vm_flags &= ~(VM_READ | VM_MAYREAD | VM_WRITE | VM_MAYWRITE | VM_EXEC | VM_MAYEXEC);
@@ -2487,8 +2438,6 @@ static int kbase_tracking_page_setup(struct kbase_context *kctx, struct vm_area_
 #else
 	vma->vm_flags |= VM_DONTCOPY | VM_DONTEXPAND | VM_RESERVED | VM_IO;
 #endif
-	vma->vm_ops = &kbase_vm_special_ops;
-	vma->vm_private_data = kctx;
 
 	return 0;
 }
