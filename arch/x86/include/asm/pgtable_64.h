@@ -44,15 +44,15 @@ struct mm_struct;
 void set_pte_vaddr_pud(pud_t *pud_page, unsigned long vaddr, pte_t new_pte);
 
 
+static inline void native_set_pte(pte_t *ptep, pte_t pte)
+{
+	WRITE_ONCE(*ptep, pte);
+}
+
 static inline void native_pte_clear(struct mm_struct *mm, unsigned long addr,
 				    pte_t *ptep)
 {
-	*ptep = native_make_pte(0);
-}
-
-static inline void native_set_pte(pte_t *ptep, pte_t pte)
-{
-	*ptep = pte;
+	native_set_pte(ptep, native_make_pte(0));
 }
 
 static inline void native_set_pte_atomic(pte_t *ptep, pte_t pte)
@@ -62,7 +62,7 @@ static inline void native_set_pte_atomic(pte_t *ptep, pte_t pte)
 
 static inline void native_set_pmd(pmd_t *pmdp, pmd_t pmd)
 {
-	*pmdp = pmd;
+	WRITE_ONCE(*pmdp, pmd);
 }
 
 static inline void native_pmd_clear(pmd_t *pmd)
@@ -98,7 +98,7 @@ static inline pmd_t native_pmdp_get_and_clear(pmd_t *xp)
 
 static inline void native_set_pud(pud_t *pudp, pud_t pud)
 {
-	*pudp = pud;
+	WRITE_ONCE(*pudp, pud);
 }
 
 static inline void native_pud_clear(pud_t *pud)
@@ -106,9 +106,32 @@ static inline void native_pud_clear(pud_t *pud)
 	native_set_pud(pud, native_make_pud(0));
 }
 
+#ifdef CONFIG_PAGE_TABLE_ISOLATION
+extern pgd_t kaiser_set_shadow_pgd(pgd_t *pgdp, pgd_t pgd);
+
+static inline pgd_t *native_get_shadow_pgd(pgd_t *pgdp)
+{
+#ifdef CONFIG_DEBUG_VM
+	/* linux/mmdebug.h may not have been included at this point */
+	BUG_ON(!kaiser_enabled);
+#endif
+	return (pgd_t *)((unsigned long)pgdp | (unsigned long)PAGE_SIZE);
+}
+#else
+static inline pgd_t kaiser_set_shadow_pgd(pgd_t *pgdp, pgd_t pgd)
+{
+	return pgd;
+}
+static inline pgd_t *native_get_shadow_pgd(pgd_t *pgdp)
+{
+	BUILD_BUG_ON(1);
+	return NULL;
+}
+#endif /* CONFIG_PAGE_TABLE_ISOLATION */
+
 static inline void native_set_pgd(pgd_t *pgdp, pgd_t pgd)
 {
-	*pgdp = pgd;
+	WRITE_ONCE(*pgdp, kaiser_set_shadow_pgd(pgdp, pgd));
 }
 
 static inline void native_pgd_clear(pgd_t *pgd)
