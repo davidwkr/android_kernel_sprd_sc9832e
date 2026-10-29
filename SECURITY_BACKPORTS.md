@@ -11,13 +11,27 @@ Grep-level checks for well-known fixes. They indicate, they don't prove: a fix c
 | Issue | Impact | In this tree? |
 |---|---|---|
 | CVE-2019-2215, binder UAF ("Bad Binder", exploited in the wild) | local root from any app | **looks fixed** (`POLLFREE` handling in `binder.c`) |
-| CVE-2019-11477/11478/11479, TCP SACK panic / slowness | **remote** DoS over any network | **missing** (no `TCP_MIN_SND_MSS`) |
-| CVE-2021-0920, `af_unix` garbage collector UAF (exploited in the wild on Android) | local root from any app | **missing** (no `unix_gc_lock` sync in `unix_peek_fds`) |
-| CVE-2021-33909, `seq_file` size overflow ("Sequoia") | local root | **missing** (no `MAX_RW_COUNT` check) |
+| CVE-2019-11477/11478/11479, TCP SACK panic / slowness | **remote** DoS over any network | missing in the base; **backported** (see Progress) |
+| CVE-2021-0920, `af_unix` garbage collector UAF (exploited in the wild on Android) | local root from any app | missing in the base; **backported** |
+| CVE-2021-33909, `seq_file` size overflow ("Sequoia") | local root | missing in the base; **backported** |
 | CVE-2021-22555, netfilter `x_tables` heap write | local root (needs user namespaces) | looks fixed |
-| CVE-2020-0466 / CVE-2021-1048, epoll UAF (1048 exploited in the wild) | local root | unclear, check by hand |
+| CVE-2020-0466 / CVE-2021-1048, epoll UAF (1048 exploited in the wild) | local root | missing in the base; **backported** |
 | Meltdown (KPTI) | – | present (`UNMAP_KERNEL_AT_EL0`) |
 | Spectre v2 / SSBD | – | absent, **not needed**: Cortex-A53 is not affected by variants 2, 3 and 4 |
+
+## Progress (branch `security-backports`)
+
+Applied from the 4.4 stable versions (github.com/gregkh/linux, tags v4.4.182–v4.4.294). Each commit keeps the original author and its `commit <sha> upstream.` line. Hand-adapted ones say `[ backport: ... ]` in the message. **None is compile-tested yet** (no cross-compiler installed).
+
+| Fix | CVE | Commits | Adapted? |
+|---|---|---|---|
+| TCP SACK payload limit, `tcp_fragment` limits, `tcp_min_snd_mss` (+ 2 follow-ups) | CVE-2019-11477/11478/11479 | 6 | `tcp: be more careful in tcp_fragment()`: `tcp.h` context |
+| epoll reference + regression fix, insert after sanity checks | CVE-2020-0466, CVE-2021-1048 | 3 | no |
+| `seq_file` large allocation limit | CVE-2021-33909 | 1 | no |
+| `af_unix` GC vs `MSG_PEEK` (+ prerequisite: split inflight fd functions to `net/unix/scm.c`) | CVE-2021-0920 | 2 | prerequisite: `af_unix.c` part by hand (vendor `unix_sock_count` leftover) |
+| `fget` fd recheck | CVE-2021-4083 | 1 | yes: no `fget_many` in this tree, `fput()` instead of `fput_many()` |
+
+Next: Mali GPU fixes; then the full stable merge.
 
 ## 1. Mali GPU driver: highest priority
 
