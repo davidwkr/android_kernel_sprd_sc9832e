@@ -946,6 +946,13 @@ void security_task_getsecid(struct task_struct *p, u32 *secid)
 }
 EXPORT_SYMBOL(security_task_getsecid);
 
+void security_cred_getsecid(const struct cred *c, u32 *secid)
+{
+	*secid = 0;
+	call_void_hook(cred_getsecid, c, secid);
+}
+EXPORT_SYMBOL(security_cred_getsecid);
+
 int security_task_setnice(struct task_struct *p, int nice)
 {
 	return call_int_hook(task_setnice, 0, p, nice);
@@ -1706,6 +1713,8 @@ struct security_hook_heads security_hook_heads = {
 	.task_getsid =	LIST_HEAD_INIT(security_hook_heads.task_getsid),
 	.task_getsecid =
 		LIST_HEAD_INIT(security_hook_heads.task_getsecid),
+	.cred_getsecid =
+		LIST_HEAD_INIT(security_hook_heads.cred_getsecid),
 	.task_setnice =	LIST_HEAD_INIT(security_hook_heads.task_setnice),
 	.task_setioprio =
 		LIST_HEAD_INIT(security_hook_heads.task_setioprio),

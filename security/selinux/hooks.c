@@ -3713,6 +3713,11 @@ static void selinux_task_getsecid(struct task_struct *p, u32 *secid)
 	*secid = task_sid(p);
 }
 
+static void selinux_cred_getsecid(const struct cred *c, u32 *secid)
+{
+	*secid = cred_sid(c);
+}
+
 static int selinux_task_setnice(struct task_struct *p, int nice)
 {
 	return current_has_perm(p, PROCESS__SETSCHED);
@@ -6019,6 +6024,7 @@ static struct security_hook_list selinux_hooks[] = {
 	LSM_HOOK_INIT(task_getpgid, selinux_task_getpgid),
 	LSM_HOOK_INIT(task_getsid, selinux_task_getsid),
 	LSM_HOOK_INIT(task_getsecid, selinux_task_getsecid),
+	LSM_HOOK_INIT(cred_getsecid, selinux_cred_getsecid),
 	LSM_HOOK_INIT(task_setnice, selinux_task_setnice),
 	LSM_HOOK_INIT(task_setioprio, selinux_task_setioprio),
 	LSM_HOOK_INIT(task_getioprio, selinux_task_getioprio),

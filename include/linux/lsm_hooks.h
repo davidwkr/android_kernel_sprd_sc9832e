@@ -1459,6 +1459,7 @@ union security_list_options {
 	int (*task_getpgid)(struct task_struct *p);
 	int (*task_getsid)(struct task_struct *p);
 	void (*task_getsecid)(struct task_struct *p, u32 *secid);
+	void (*cred_getsecid)(const struct cred *c, u32 *secid);
 	int (*task_setnice)(struct task_struct *p, int nice);
 	int (*task_setioprio)(struct task_struct *p, int ioprio);
 	int (*task_getioprio)(struct task_struct *p);
@@ -1718,6 +1719,7 @@ struct security_hook_heads {
 	struct list_head task_getpgid;
 	struct list_head task_getsid;
 	struct list_head task_getsecid;
+	struct list_head cred_getsecid;
 	struct list_head task_setnice;
 	struct list_head task_setioprio;
 	struct list_head task_getioprio;

@@ -307,6 +307,7 @@ int security_task_setpgid(struct task_struct *p, pid_t pgid);
 int security_task_getpgid(struct task_struct *p);
 int security_task_getsid(struct task_struct *p);
 void security_task_getsecid(struct task_struct *p, u32 *secid);
+void security_cred_getsecid(const struct cred *c, u32 *secid);
 int security_task_setnice(struct task_struct *p, int nice);
 int security_task_setioprio(struct task_struct *p, int ioprio);
 int security_task_getioprio(struct task_struct *p);
@@ -888,6 +889,11 @@ static inline int security_task_getsid(struct task_struct *p)
 }
 
 static inline void security_task_getsecid(struct task_struct *p, u32 *secid)
+{
+	*secid = 0;
+}
+
+static inline void security_cred_getsecid(const struct cred *c, u32 *secid)
 {
 	*secid = 0;
 }
