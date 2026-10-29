@@ -979,6 +979,7 @@ int xhci_resume(struct xhci_hcd *xhci, bool hibernated)
 	struct usb_hcd		*secondary_hcd;
 	int			retval = 0;
 	bool			comp_timer_running = false;
+	bool			pending_portevent = false;
 
 	if (!hcd->state)
 		return 0;
@@ -1112,9 +1113,20 @@ int xhci_resume(struct xhci_hcd *xhci, bool hibernated)
 
  done:
 	if (retval == 0) {
-		/* Resume root hubs only when have pending events. */
+		/*
+		 * Resume roothubs only if there are pending events.
+		 * USB 3 devices resend U3 LFPS wake after a 100ms delay if
+		 * the first wake signalling failed, give it that chance.
+		 */
 		status = readl(&xhci->op_regs->status);
-		if (status & STS_EINT) {
+		pending_portevent = !!(status & STS_EINT);
+		if (!pending_portevent) {
+			msleep(120);
+			status = readl(&xhci->op_regs->status);
+			pending_portevent = !!(status & STS_EINT);
+		}
+
+		if (pending_portevent) {
 			usb_hcd_resume_root_hub(hcd);
 			usb_hcd_resume_root_hub(xhci->shared_hcd);
 		}
