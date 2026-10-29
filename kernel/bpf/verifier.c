@@ -978,7 +978,7 @@ static int check_stack_output(struct verifier_env *env,
 		return -EACCES;
 	}
 
-	return check_stack_write(state, off, access_size, -1);
+	return check_stack_write(env, state, off, access_size, -1, 0);
 }
 
 static int check_func_arg(struct verifier_env *env, u32 regno,
