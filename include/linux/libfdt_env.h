@@ -3,6 +3,7 @@
 
 #include <linux/kernel.h>
 
+#include <linux/kernel.h>	/* For INT_MAX */
 #include <linux/string.h>
 
 #include <asm/byteorder.h>
