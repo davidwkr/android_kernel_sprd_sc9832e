@@ -31,7 +31,12 @@ Applied from the 4.4 stable versions (github.com/gregkh/linux, tags v4.4.182–v
 | `af_unix` GC vs `MSG_PEEK` (+ prerequisite: split inflight fd functions to `net/unix/scm.c`) | CVE-2021-0920 | 2 | prerequisite: `af_unix.c` part by hand (vendor `unix_sock_count` leftover) |
 | `fget` fd recheck | CVE-2021-4083 | 1 | yes: no `fget_many` in this tree, `fput()` instead of `fput_many()` |
 
-Next: Mali GPU fixes; then the full stable merge.
+| Mali: reject `MEM_FLAGS_CHANGE` on JIT regions | CVE-2022-38181 | 1 | local fix modelled on Arm r40p0 (`KBASE_REG_JIT` check) |
+| Mali: `process_mm` reference held for the context lifetime, tracking page no longer sets it | CVE-2023-4211 | 1 | port of the ChromiumOS Bifrost fix to r28p0 (4.4: `mm_count` instead of `mmgrab`) |
+
+The core-kernel commits and `mali.ko` compile with GCC 16.2 (`sprd_sharkle_defconfig`, Mali built as an external module). Nothing has run on a watch yet. The two Mali fixes need review and a GPU test with the vendor r21p0 user space.
+
+Next: Mali CVE-2021-28663/28664 and CVE-2022-36449 (need Arm's exact fixes), then the full stable merge.
 
 ## 1. Mali GPU driver: highest priority
 
