@@ -53,7 +53,8 @@ static void etm4_os_unlock(void *info)
 
 static bool etm4_arch_supported(u8 arch)
 {
-	switch (arch) {
+	/* Mask out the minor version number */
+	switch (arch & 0xf0) {
 	case ETM_ARCH_V4:
 		break;
 	case ETM_ARCH_V4_2:

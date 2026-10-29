@@ -579,8 +579,10 @@ static void ipi_cpu_stop(unsigned int cpu)
 	local_irq_disable();
 
 	flush_cache_all();
-	while (1)
+	while (1) {
 		cpu_relax();
+		wfe();
+	}
 }
 
 static DEFINE_PER_CPU(struct completion *, cpu_completion);
