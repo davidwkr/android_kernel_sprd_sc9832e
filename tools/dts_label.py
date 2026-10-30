@@ -194,9 +194,13 @@ def convert(cells, name, byph):
 
 
 def main(src, dst):
-    if os.path.getsize(src) > MAX_INPUT:
+    with open(src, 'rb') as fh:
+        raw = fh.read(MAX_INPUT + 1)
+    if len(raw) > MAX_INPUT:
         raise InputError('input larger than %d bytes' % MAX_INPUT)
-    lines = open(src).read().split('\n')
+    lines = raw.decode('utf-8').split('\n')
+    budget = min(256 << 20, 4 * len(raw) + (1 << 20))
+    emitted = 0
     nodes = build(lines)
     byph = {}
     for n in nodes:
@@ -253,6 +257,7 @@ def main(src, dst):
             stack.append(n)
             if id(n) in labels:
                 ln = '%s%s: %s {' % (m.group(1), labels[id(n)], m.group(2))
+            emitted += len(ln) + 1
             out.append(ln)
             continue
         if ln.strip() == '};':
@@ -263,15 +268,18 @@ def main(src, dst):
         if m and stack and (id(stack[-1]), m.group(2)) in repl:
             toks = ['&' + labels[id(t)] if isinstance(t, dict) else t
                     for t in repl[(id(stack[-1]), m.group(2))]]
+            if emitted + sum(len(x) + 1 for x in toks) > budget:
+                raise InputError('generated output too large')
             ln = '%s%s = <%s>;' % (m.group(1), m.group(2), ' '.join(toks))
+        emitted += len(ln) + 1
+        if emitted > budget:
+            raise InputError('generated output too large')
         out.append(ln)
     hdr = ('// Reconstructed from the stock DT table of the device boot image.\n'
            '// Labels were added where a phandle could be resolved; the explicit\n'
            '// phandle / linux,phandle properties are kept on purpose so that the\n'
            '// compiled DTB uses the same phandle numbers as the stock DTB.\n')
     text = '\n'.join(out)
-    if len(text) > min(256 << 20, 4 * os.path.getsize(src) + (1 << 20)):
-        raise InputError('generated output too large')
     text = text.replace('/dts-v1/;\n', '/dts-v1/;\n\n' + hdr, 1)
     open(dst, 'w').write(text)
     print('%s: %d labels, %d converted properties' % (dst, len(labels), len(repl)))
