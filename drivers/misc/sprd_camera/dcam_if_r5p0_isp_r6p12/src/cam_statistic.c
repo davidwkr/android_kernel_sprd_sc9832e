@@ -93,6 +93,12 @@ static int sprd_camstatistic_buf_split(
 	return ret;
 }
 
+static void sprd_cam_statistic_isp_buf_put(struct cam_statis_module *module)
+{
+	sprd_ion_put(module->isp_statis_dmabuf);
+	module->isp_statis_dmabuf = NULL;
+}
+
 int sprd_cam_statistic_queue_init(struct cam_statis_module *module,
 	uint32_t idx, int module_flag)
 {
@@ -106,6 +112,7 @@ int sprd_cam_statistic_queue_init(struct cam_statis_module *module,
 	module->idx = idx;
 	module->module_flag = module_flag;
 	module->statis_valid = 0;
+	module->isp_statis_dmabuf = NULL;
 
 	if (module_flag == DCAM_DEV_STATIS && idx == DCAM_ID_2)
 		return ret;
@@ -183,6 +190,7 @@ void sprd_cam_statistic_queue_deinit(struct cam_statis_module *module)
 	} else if (module->module_flag == ISP_DEV_STATIS) {
 		sprd_cam_queue_buf_deinit(&module->hist_statis_queue);
 		sprd_cam_queue_frm_deinit(&module->hist_statis_frm_queue);
+		sprd_cam_statistic_isp_buf_put(module);
 	} else {
 		pr_err("fail to get valid module:dcam or isp\n");
 	}
@@ -287,6 +295,8 @@ int sprd_cam_statistic_buf_cfg(
 		struct cam_buf_info *buf_info = NULL;
 
 		dcam_statis_size = parm->dcam_stat_buf_size;
+		/* drop the reference of a previous configuration */
+		sprd_cam_statistic_isp_buf_put(module);
 		memset((void *)&module->img_statis_buf, 0,
 			sizeof(module->img_statis_buf));
 		memset((void *)&frm_statis_head, 0x00, sizeof(frm_statis_head));
@@ -300,10 +310,11 @@ int sprd_cam_statistic_buf_cfg(
 		buf_info->dev = &s_isp_pdev->dev;
 		buf_info->num = 1;
 		buf_info->mfd[0] = parm->mfd;
-		ret = sprd_ion_get_buffer(buf_info->mfd[0],
+		ret = sprd_ion_get_buffer_ref(buf_info->mfd[0],
 					  NULL,
 					  &buf_info->buf[0],
-					  &buf_info->size[0]);
+					  &buf_info->size[0],
+					  &module->isp_statis_dmabuf);
 		if (ret) {
 			pr_err("fail to get sg table mfd 0x%x\n",
 			       buf_info->mfd[0]);

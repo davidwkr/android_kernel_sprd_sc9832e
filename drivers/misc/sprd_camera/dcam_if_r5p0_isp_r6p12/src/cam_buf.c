@@ -209,7 +209,8 @@ static int sprd_cambuf_kbuffer_list_add(struct ion_client *client,
 	return 0;
 }
 
-static int sprd_cambuf_buffer_list_add(int fd, void *buf, uint32_t idx)
+static int sprd_cambuf_buffer_list_add(int fd, struct dma_buf *buf,
+				       uint32_t idx)
 {
 	struct fd_map_dma *fd_dma = NULL;
 	struct list_head *g_dma_buffer_list = NULL;
@@ -233,7 +234,8 @@ static int sprd_cambuf_buffer_list_add(int fd, void *buf, uint32_t idx)
 	mutex_lock(&dma_buffer_lock);
 	list_add_tail(&fd_dma->list, g_dma_buffer_list);
 	mutex_unlock(&dma_buffer_lock);
-	dma_buf_get(fd_dma->user_type.fd);
+	/* the list entry owns its own reference, dropped in sg_table_put */
+	get_dma_buf(buf);
 	pr_debug("add 0x%x 0x%p\n", fd_dma->user_type.fd,
 		((struct dma_buf *)fd_dma->user_type.dma_buf));
 
@@ -546,25 +548,31 @@ int sprd_cam_buf_sg_table_get(struct cam_buf_info *buf_info)
 		count = 1;
 	for (i = 0; i < count; i++) {
 		if (buf_info->mfd[i] > 0) {
-			ret = sprd_ion_get_buffer(buf_info->mfd[i],
+			ret = sprd_ion_get_buffer_ref(buf_info->mfd[i],
 					NULL,
 					&buf_info->buf[i],
-					&buf_info->size[i]);
+					&buf_info->size[i],
+					&buf_info->dmabuf_p[i]);
 			if (ret) {
 				pr_err("fail to get sg table %d mfd 0x%x\n",
 					i, buf_info->mfd[i]);
+				buf_info->dmabuf_p[i] = NULL;
 				return -EFAULT;
 			}
 
-			buf_info->dmabuf_p[i] = dma_buf_get(buf_info->mfd[i]);
-			if (IS_ERR_OR_NULL(buf_info->dmabuf_p[i])) {
-				pr_err("fail to get dma buf %p\n",
-					buf_info->dmabuf_p[i]);
-				return -EFAULT;
-			}
-			dma_buf_put(buf_info->dmabuf_p[i]);
-			sprd_cambuf_buffer_list_add(buf_info->mfd[i],
+			/*
+			 * The per-camera list takes its own reference which
+			 * is held until sprd_cam_buf_sg_table_put(), so the
+			 * buffer outlives its mapping; drop ours.
+			 */
+			ret = sprd_cambuf_buffer_list_add(buf_info->mfd[i],
 					buf_info->dmabuf_p[i], buf_info->idx);
+			if (ret) {
+				sprd_ion_put(buf_info->dmabuf_p[i]);
+				buf_info->dmabuf_p[i] = NULL;
+				return ret;
+			}
+			sprd_ion_put(buf_info->dmabuf_p[i]);
 		}
 	}
 
