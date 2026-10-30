@@ -1,0 +1,1 @@
+genfscon sysfs /kernel/aod_idle u:object_r:sysfs_aod_idle:s0

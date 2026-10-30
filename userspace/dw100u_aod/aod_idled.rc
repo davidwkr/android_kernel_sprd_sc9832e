@@ -1,0 +1,34 @@
+# /system/etc/init/aod_idled.rc  (init.rc syntax of Android 8.1)
+# Needs sprd_aod_idle built in (=y). For =m, load it before this service:
+#   insmod /vendor/lib/modules/sprd_aod_idle.ko   (see README)
+
+on boot
+    # root-only sysfs nodes: hand the two we write to the service user.
+    # Only works if the driver is built in (=y): with =m the nodes appear at
+    # insmod time, so repeat these four lines right after the insmod.
+    chown system system /sys/kernel/aod_idle/idle
+    chown system system /sys/kernel/aod_idle/idle_brightness
+    chmod 0664 /sys/kernel/aod_idle/idle
+    chmod 0664 /sys/kernel/aod_idle/idle_brightness
+
+# dumpsys and logd need the framework up
+on property:sys.boot_completed=1
+    start aod_idled
+
+# Every exit of the service (stop, crash, oneshot exit) runs this reset: idle=0
+# is intended, a dead service must not leave the touch screen swallowed.
+# "stop" sends SIGKILL to the process group on 8.1, the script's trap never
+# runs; so clear idle from init (never leave the touch screen swallowed).
+on property:init.svc.aod_idled=stopped
+    write /sys/kernel/aod_idle/idle 0
+
+service aod_idled /system/bin/sh /system/bin/aod_idled.sh
+    class late_start
+    disabled
+    oneshot
+    user system
+    group system log
+    # Android 8.1 enforcing: init refuses a service that has no SELinux domain
+    # ("does not have a SELinux domain defined"); without the policy in
+    # sepolicy/ this only starts in permissive. Untested.
+    seclabel u:r:aod_idled:s0
