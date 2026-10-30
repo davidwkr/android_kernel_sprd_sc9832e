@@ -1240,18 +1240,18 @@ static void sprd_musb_idle_work(struct work_struct *work)
 		ret = __sprd_musb_role_set(glue, false, false);
 		if (ret) {
 			/*
-			 * Failed with host still up (-EIO: boost off, wake
-			 * lock kept): put the boost back so a device that
-			 * showed up meanwhile keeps working, and retry later.
+			 * Same state as a failed manual "device" (boost off,
+			 * wake lock kept, host still recorded).  Do not try
+			 * to restore host from here: the work item may have
+			 * switched the hardware to device mode already, the
+			 * VBUS rise from the boost would race the vbus irq
+			 * (not serialized by role_lock), and a retry would
+			 * drop the runtime-PM references again.  Left for
+			 * the user: "device" retries, "host" needs "device"
+			 * first.
 			 */
-			dev_warn(glue->dev, "idle switch failed: %d\n", ret);
-			spin_lock_irqsave(&glue->lock, flags);
-			host = glue->dr_mode == USB_DR_MODE_HOST;
-			spin_unlock_irqrestore(&glue->lock, flags);
-			if (host) {
-				musb_sprd_set_otg_en(glue, 1);
-				sprd_musb_idle_arm(glue);
-			}
+			dev_warn(glue->dev, "idle switch failed: %d, not retried\n",
+				 ret);
 		}
 	}
 	mutex_unlock(&glue->role_lock);
