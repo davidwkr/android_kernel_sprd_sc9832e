@@ -153,6 +153,20 @@ config TOUCHSCREEN_CST9217
 	  Say Y here if you have hynitron touch panel.
 	  If unsure, say N.
 
+config TOUCHSCREEN_CST0XX
+	tristate "Hynitron CST0xx touchscreen controllers"
+	depends on I2C && OF && FB
+	depends on GPIOLIB
+	help
+	  Say Y here if you have a Hynitron CST0xx (CST816 style) touch
+	  panel, as found on the DM63 smartwatch. The input device is
+	  named "cst0xx_ts".
+
+	  If unsure, say N.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called cst0xx_ts.
+
 config TOUCHSCREEN_CHIPONE_ICN8318
 	tristate "chipone icn8318 touchscreen controller"
 	depends on GPIOLIB || COMPILE_TEST
