@@ -499,7 +499,7 @@ int wcn_power_enable_sys_domain(bool enable)
 			wcn_xtl_auto_sel(true);
 		sys_domain = true;
 		WCN_INFO("clear WCN SYS TOP PD\n");
-	} else if ((!btwf_open) && (!gnss_open) && sys_domain) {
+	} else if (!enable && (!btwf_open) && (!gnss_open) && sys_domain) {
 		if (wcn_platform_chip_type() ==
 				WCN_PLATFORM_TYPE_PIKE2)
 			wcn_xtl_auto_sel(false);
