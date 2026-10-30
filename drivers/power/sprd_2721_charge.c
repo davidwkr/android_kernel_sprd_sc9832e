@@ -258,11 +258,23 @@ static void sprdchg_write_cccv(unsigned int cvpoint)
 		BITS_CHGR_CV_V(~0U));
 }
 
+/*
+ * Program the CV for a sprdbat request. The CV code rounds to the nearest
+ * step (up to +3.75 mV); when the override is what limits the CV, ask for
+ * 4 mV less so the programmed voltage never exceeds the override.
+ */
+static void sprdchg_program_cccv(unsigned int req)
+{
+	unsigned int eff = sprdchg_cv_effective(req);
+
+	sprdchg_write_cccv(eff < req ? eff - 4 : eff);
+}
+
 static void sprdchg_set_cccvpoint(unsigned int cvpoint)
 {
 	mutex_lock(&cv_lock);
 	cv_last_req_mv = cvpoint;
-	sprdchg_write_cccv(sprdchg_cv_effective(cvpoint));
+	sprdchg_program_cccv(cvpoint);
 	mutex_unlock(&cv_lock);
 }
 
@@ -273,8 +285,12 @@ static int sprdchg_cv_override_apply(unsigned int mv)
 	mutex_lock(&cv_lock);
 	cv_override_mv = mv;
 	/* reprogram now if a charge has already requested a CV */
-	if (cv_last_req_mv && reg_map)
-		sprdchg_write_cccv(sprdchg_cv_effective(cv_last_req_mv));
+	if (cv_last_req_mv && reg_map) {
+		/* CV code to 0 first, as chip_init does, so the change is monotone */
+		chg_adi_write(ANA_REG_GLB_CHGR_CTRL0,
+			      BITS_CHGR_CV_V(0U), BITS_CHGR_CV_V(~0U));
+		sprdchg_program_cccv(cv_last_req_mv);
+	}
 	mutex_unlock(&cv_lock);
 	return 0;
 }
@@ -308,7 +324,7 @@ static int cv_status_get(char *buf, const struct kernel_param *kp)
 	}
 	val = chg_adi_read(ANA_REG_GLB_CHGR_CTRL0);
 	ret = scnprintf(buf, PAGE_SIZE,
-		"override_mv=%u requested_mv=%u programmed_mv=%u hw_cv_code=%u hw_end_v=%u\n",
+		"override_mv=%u requested_mv=%u target_mv=%u hw_cv_code=%u hw_end_v=%u\n",
 		cv_override_mv, cv_last_req_mv,
 		cv_last_req_mv ? sprdchg_cv_effective(cv_last_req_mv) : 0,
 		(val >> 5) & 0x3f, (val >> 3) & 0x3);
@@ -549,7 +565,12 @@ static int sprdchg_2721_probe(struct platform_device *pdev)
 	{
 		u32 uv;
 
-		/* DT default; a value already set via the module parameter wins */
+		/*
+		 * DT default; a non-zero value already set via the module
+		 * parameter (cmdline) wins. A cmdline cv_override_mv=0 cannot
+		 * disable a DT override (0 means "not set" here); clear the
+		 * runtime value with a write of 0 after boot instead.
+		 */
 		if (!cv_override_mv &&
 		    !of_property_read_u32(pdev->dev.of_node,
 					  "sprd,cv-override-microvolt", &uv)) {
