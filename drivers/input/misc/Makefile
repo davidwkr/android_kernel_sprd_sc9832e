@@ -99,3 +99,4 @@ obj-y += $(foreach item,$(zyt_GSENSOR_LISTS),$(item)/)
 
 obj-$(CONFIG_INPUT_LSM6DS3) += lsm6ds3/
 obj-$(CONFIG_INPUT_ST480)  += st480/
+obj-$(CONFIG_INPUT_SENSORS_HRS3XXX)	+= hrs3xxx.o
