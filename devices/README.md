@@ -7,6 +7,9 @@ Specs for porting this kernel to three UNISOC SL8541E smartwatches. One folder p
 | `dw100u-silver/` | DW100Ultra, silver unit, firmware V11H | [SPEC.md](dw100u-silver/SPEC.md) |
 | `dw100u-v13m/` | DW100Ultra, other unit, firmware V13M | [SPEC.md](dw100u-v13m/SPEC.md) |
 | `dm63/` | DM63 | [SPEC.md](dm63/SPEC.md) |
+| `mt107/` | MT107 (from the stock boot dump only, no unit examined) | [SPEC.md](mt107/SPEC.md) |
+| `mt108/` | MT108 (from the stock boot dump only, no unit examined) | [SPEC.md](mt108/SPEC.md) |
+| `dm82/` | DM82 (from the stock boot dump only, no unit examined) | [SPEC.md](dm82/SPEC.md) |
 
 Each folder has:
 - `stock.config`: the stock kernel's `/proc/config.gz` (or the IKCONFIG embedded in the stock boot image), Linux 4.4.83.

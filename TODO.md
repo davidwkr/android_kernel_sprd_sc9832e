@@ -156,6 +156,29 @@ Details, measurements and code pointers in [`KERNEL_TWEAKS.md`](KERNEL_TWEAKS.md
 - [~] Battery (done: BT rx hold 200 ms, PM print thread off by default; suspend failures traced to userspace alarms, see KERNEL_TWEAKS.md section 3): find the suspend failures (about 40 % of attempts fail on stock), audit wakeup sources (BT 5 s, FM 1 s holds), CPU governor and hotplug limits with the screen off, `cluster_pd` residency.
 - [~] Charging: DM63 `batt_idle` CV override into the charger driver (merged: `cv_override_mv` module parameter / `sprd,cv-override-microvolt`, off by default, never above min(request, `chg-end-vol`, override); not tested on hardware; open: fuel-gauge resync not ported, SELinux write check); per-unit battery profiles stay in each unit's DT.
 
+### 8b. More devices: MT107, MT108, DM82
+
+Specs from the stock boot dumps only (no unit examined): [`devices/mt107/SPEC.md`](devices/mt107/SPEC.md), [`devices/mt108/SPEC.md`](devices/mt108/SPEC.md), [`devices/dm82/SPEC.md`](devices/dm82/SPEC.md). All three: stock 4.4.83, same SL8541E 1H10 board, one DTB each (use it for the first boot), SC2721 charger, WCN/GNSS and cameras already in this tree.
+
+| | MT107 | MT108 | DM82 |
+|---|---|---|---|
+| Panel (stock U-Boot log) | CO5300, 412x502 | ST77916 TFT LCD, 360x360 | CO5300, 468x466 |
+| Touch candidates in DT | `cst0xx_ts`, `hyn_ts`, `btl_ts` | `cst0xx_ts`, `btl_ts` | `cst0xx_ts`, `hyn_ts`, `btl_ts` |
+| Heart rate in DT | `hrs3xxx`, `bd1xxx_hr` | `hrs3xxx` (stock config: HRS3300), `bd1xxx_hr` | `hrs3xxx`, `bd1xxx_hr` |
+| Battery | 730 mAh, 4395 mV | 1030 mAh, 4395 mV | 1250 mAh, 4480 mV |
+| USB cable detect | typec | gpios | gpios |
+| `sprd_aod_idle` | applies (CO5300) | **no** (not a CO5300) | applies (CO5300) |
+
+- [ ] Read on each unit (or a U-Boot log with the `lcd_id` line): exact `lcd_id`, which touch chip answers, which heart-rate chip, accelerometer.
+- [ ] Per-device config fragments (`mt107.fragment`, `mt108.fragment`, `dm82.fragment`) with the touch, HRS and AOD options that apply.
+- [ ] `hrs3xxx`: accept the HRS3300 chip ID as well (it only accepts the HRS3918, ID `0x27`); check the register differences.
+- [ ] Betterlife touch (`btl_ts`, 0x2d): port a driver only if a unit has that chip.
+- [ ] `bd1xxx_hr` heart rate, `och1970` and `msp891` sensors: no driver in this tree; port only if fitted and wanted.
+- [ ] `sprd_aod_idle`: MT107 / DM82 only; check the touch match table covers the fitted chip.
+- [ ] USB role switch on `gpios` cable-detect boards (MT108, DM82): not reviewed for that path (the glue's Type-C notifier is not used there); test before enabling `watch_otg.fragment`.
+- [ ] Charge CV override: the driver already caps at each unit's `chg-end-vol` (4395 mV on MT107/MT108).
+- [ ] MT107 camera: no ACK on i2c-0 (hardware, see the sfd_tool notes); nothing to do in the kernel.
+
 ### 9. Security backports
 
 Plan in [`SECURITY_BACKPORTS.md`](SECURITY_BACKPORTS.md). Order:
