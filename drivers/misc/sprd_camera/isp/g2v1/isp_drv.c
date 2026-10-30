@@ -242,6 +242,12 @@ int isp_get_addr(struct isp_iommu_info *pfinfo, uint32_t n)
 	int i, ret;
 	struct sprd_iommu_map_data iommu_data;
 
+	/* the first plane is always required */
+	if (n && (pfinfo->mfd <= 0 || pfinfo->size <= 0)) {
+		pr_err("no buffer for plane 0\n");
+		return -EINVAL;
+	}
+
 	for (i = 0; i < n; i++, pfinfo++) {
 		if (pfinfo->mfd <= 0 || pfinfo->size <= 0)
 			continue;
@@ -266,10 +272,15 @@ int isp_get_addr(struct isp_iommu_info *pfinfo, uint32_t n)
 			pfinfo->iova = iommu_data.iova_addr
 					+ pfinfo->offset;
 		} else {
-			sprd_ion_get_phys_addr(-1,
+			ret = sprd_ion_get_phys_addr(-1,
 					pfinfo->dmabuf_p,
 					&pfinfo->iova,
 					&pfinfo->size);
+			if (ret) {
+				pr_err("failed to get phy_addr 0x%x\n",
+					pfinfo->mfd);
+				return -EFAULT;
+			}
 			pfinfo->iova += pfinfo->offset;
 		}
 		pr_debug("iova_addr 0x%lx\n", pfinfo->iova);
@@ -1640,9 +1651,15 @@ static int32_t _isp_load_firmware(struct file *file,
 			group->fw_mem.iommu_addr = iommu_data.iova_addr;
 			group->fw_mem.iova_size = iommu_data.iova_size;
 		} else {
-			sprd_ion_get_phys_addr(-1, dmabuf_p,
+			ret = sprd_ion_get_phys_addr(-1, dmabuf_p,
 				&group->fw_mem.iommu_addr,
 				&group->fw_mem.iova_size);
+			if (ret) {
+				ret = -EFAULT;
+				pr_err("isp_ioctl%d: fail to get fw phy addr\n",
+					isp_pipeline->isp_id);
+				goto load_exit;
+			}
 		}
 
 		sprd_cam_pw_on();
@@ -2445,8 +2462,18 @@ static int32_t isp_cfg_img_ion_param(struct file *file,
 	buf->pfinfo[0].offset = img_frm->yaddr;
 	buf->pfinfo[1].offset = img_frm->uaddr;
 	buf->pfinfo[2].offset = img_frm->vaddr;
-	isp_get_sg_table(buf->pfinfo, 3);
-	isp_get_addr(buf->pfinfo, 3);
+	ret = isp_get_sg_table(buf->pfinfo, 3);
+	if (ret) {
+		pr_err("isp_get_sg_table failed\n");
+		isp_put_sg_table(buf->pfinfo, 3);
+		goto exit;
+	}
+	ret = isp_get_addr(buf->pfinfo, 3);
+	if (ret) {
+		pr_err("isp_get_addr failed\n");
+		isp_put_sg_table(buf->pfinfo, 3);
+		goto exit;
+	}
 	/* queued to the hardware: keep the buffers alive until release */
 	isp_pin_sg_table(isp_pipeline, buf->pfinfo, 3);
 
@@ -2501,9 +2528,15 @@ static int32_t isp_set_hiso(struct isp_pipe_dev *isp_pipeline,
 		isp_pipeline->high_iso_mem.iova_addr = iommu_data.iova_addr;
 		isp_pipeline->high_iso_mem.iova_size = iommu_data.iova_size;
 	} else {
-		sprd_ion_get_phys_addr(-1, held,
+		ret = sprd_ion_get_phys_addr(-1, held,
 				       &isp_pipeline->high_iso_mem.iova_addr,
 				       &isp_pipeline->high_iso_mem.iova_size);
+		if (ret) {
+			sprd_ion_put(held);
+			ret = -EFAULT;
+			pr_err("isp_ioctl: fail to get iova_addr\n");
+			return ret;
+		}
 
 	}
 	/* the buffer stays programmed in the hardware: pin it */
@@ -3328,9 +3361,18 @@ get_irq_end:
 			isp_pipeline->isp_src_sns_raw.iova_y_size =
 				iommu_data.iova_size;
 		} else {
-			sprd_ion_get_phys_addr(-1, held,
+			ret = sprd_ion_get_phys_addr(-1, held,
 				&isp_pipeline->isp_src_sns_raw.iova_yaddr,
 				&isp_pipeline->isp_src_sns_raw.iova_y_size);
+			if (ret) {
+				sprd_ion_put(held);
+				ret = -EFAULT;
+				pr_err("isp_ioctl%d: fail to get phy addr\n",
+					isp_pipeline->isp_id);
+				mutex_unlock(&group->
+					     ioctl_mutex[isp_pipeline->isp_id]);
+				return ret;
+			}
 			pr_info("sns_raw_iova_base_addr 0x%lx offset 0x%lx\n",
 				isp_pipeline->isp_src_sns_raw.iova_yaddr,
 				isp_pipeline->isp_src_sns_raw.yaddr);

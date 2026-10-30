@@ -256,6 +256,12 @@ static int isp_get_addr(struct isp_iommu_info *pfinfo, uint32_t n)
 	int i, ret;
 	struct sprd_iommu_map_data iommu_data;
 
+	/* the first plane is always required */
+	if (n && (pfinfo->mfd <= 0 || pfinfo->size <= 0)) {
+		pr_err("no buffer for plane 0\n");
+		return -EINVAL;
+	}
+
 	for (i = 0; i < n; i++, pfinfo++) {
 		if (pfinfo->mfd <= 0 || pfinfo->size <= 0)
 			continue;
