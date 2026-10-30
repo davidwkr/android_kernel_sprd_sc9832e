@@ -329,7 +329,8 @@ static int sbuf_thread(void *data)
 			break;
 		case SMSG_TYPE_EVENT:
 			bufid = mrecv.value;
-			WARN_ON(bufid >= sbuf->ringnr);
+			if (WARN_ON(bufid >= sbuf->ringnr))
+				break;
 			ring = &sbuf->rings[bufid];
 			switch (mrecv.flag) {
 			case SMSG_EVENT_SBUF_RDPTR:
@@ -504,6 +505,8 @@ int sbuf_create(u8 dst, u8 channel, u32 bufnum, u32 txbufsize, u32 rxbufsize)
 		ring->txbuf_virt = sbuf->smem_virt + hsize +
 				(txbufsize + rxbufsize) * i;
 		ring->rxbuf_virt = ring->txbuf_virt + txbufsize;
+		ring->tx_size = txbufsize;
+		ring->rx_size = rxbufsize;
 		init_waitqueue_head(&ring->txwait);
 		init_waitqueue_head(&ring->rxwait);
 #if defined(SIPC_DEBUG_SBUF_RDWT_OWNER)
@@ -670,6 +673,11 @@ int sbuf_write(u8 dst, u8 channel, u32 bufid,
 	sbuf = sbufs[dst][ch_index];
 	if (!sbuf)
 		return -ENODEV;
+	if (bufid >= sbuf->ringnr)
+		return -EINVAL;
+	/* left/rxsize/txsize below are int */
+	if (len > INT_MAX)
+		len = INT_MAX;
 	ring = &sbuf->rings[bufid];
 	ringhd = ring->header;
 	if (sbuf->state != SBUF_STATE_READY) {
@@ -709,7 +717,7 @@ int sbuf_write(u8 dst, u8 channel, u32 bufid,
 	if (timeout == 0) {
 		/* no wait */
 		if ((int)(ringhd->txbuf_wrptr - ringhd->txbuf_rdptr) >=
-				ringhd->txbuf_size) {
+				ring->tx_size) {
 			pr_info("sbuf %d-%d ring %d txbuf is full!\n",
 				dst, channel, bufid);
 			rval = -EBUSY;
@@ -719,7 +727,7 @@ int sbuf_write(u8 dst, u8 channel, u32 bufid,
 		rval = wait_event_interruptible(
 			ring->txwait,
 			(int)(ringhd->txbuf_wrptr - ringhd->txbuf_rdptr) <
-			ringhd->txbuf_size ||
+			ring->tx_size ||
 			sbuf->state == SBUF_STATE_IDLE);
 		if (rval < 0)
 			pr_debug("sbuf_write wait interrupted!\n");
@@ -733,7 +741,7 @@ int sbuf_write(u8 dst, u8 channel, u32 bufid,
 		rval = wait_event_interruptible_timeout(
 			ring->txwait,
 			(int)(ringhd->txbuf_wrptr - ringhd->txbuf_rdptr) <
-			ringhd->txbuf_size ||
+			ring->tx_size ||
 			sbuf->state == SBUF_STATE_IDLE,
 			timeout);
 		if (rval < 0) {
@@ -749,16 +757,32 @@ int sbuf_write(u8 dst, u8 channel, u32 bufid,
 		}
 	}
 
-	while (left && (int)(ringhd->txbuf_wrptr - ringhd->txbuf_rdptr) <
-	       ringhd->txbuf_size && sbuf->state == SBUF_STATE_READY) {
+	/*
+	 * rdptr is written by the peer and can change at any time: take one
+	 * snapshot of both pointers per iteration, validate the occupancy as
+	 * an unsigned value against the AP-side ring size and use only the
+	 * snapshot afterwards.
+	 */
+	while (left && sbuf->state == SBUF_STATE_READY) {
+		u32 wr = ringhd->txbuf_wrptr;
+		u32 rd = ringhd->txbuf_rdptr;
+		u32 used = wr - rd;
+
+		if (used > (u32)ring->tx_size) {
+			pr_err("sbuf_write: bufid = %d, channel = %d bad ptrs, rdptr=%u, wrptr=%u\n",
+			       bufid, channel, rd, wr);
+			rval = -EIO;
+			break;
+		}
+		if (used == (u32)ring->tx_size)
+			break;	/* ring full */
+
 		/* calc txpos & txsize */
-		txpos = ring->txbuf_virt +
-			ringhd->txbuf_wrptr % ringhd->txbuf_size;
-		txsize = ringhd->txbuf_size -
-			(int)(ringhd->txbuf_wrptr - ringhd->txbuf_rdptr);
+		txpos = ring->txbuf_virt + wr % ring->tx_size;
+		txsize = ring->tx_size - used;
 		txsize = min(txsize, left);
 
-		tail = txpos + txsize - (ring->txbuf_virt + ringhd->txbuf_size);
+		tail = txpos + txsize - (ring->txbuf_virt + ring->tx_size);
 		if (tail > 0) {
 			/* ring buffer is rounded */
 			if ((uintptr_t)u_buf.buf > TASK_SIZE) {
@@ -798,10 +822,16 @@ int sbuf_write(u8 dst, u8 channel, u32 bufid,
 		pr_debug("sbuf_write: channel=%d, txpos=%p, txsize=%d\n",
 			 channel, txpos, txsize);
 
-		/* update tx wrptr */
-		ringhd->txbuf_wrptr = ringhd->txbuf_wrptr + txsize;
-		/* tx ringbuf is empty, so need to notify peer side */
-		if (ringhd->txbuf_wrptr - ringhd->txbuf_rdptr == txsize) {
+		/* update tx wrptr, after the data is visible to the peer */
+		wmb();
+		ringhd->txbuf_wrptr = wr + txsize;
+		/* tx ringbuf is empty but for this chunk, so need to notify
+		 * peer side; rdptr is re-read here (not the snapshot): the
+		 * peer may have drained the ring while we copied
+		 */
+		mb();
+		if (used == 0 ||
+		    (wr + txsize) - ringhd->txbuf_rdptr == txsize) {
 			smsg_set(&mevt, channel,
 				 SMSG_TYPE_EVENT,
 				 SMSG_EVENT_SBUF_WRPTR,
@@ -851,6 +881,11 @@ int sbuf_read(u8 dst, u8 channel, u32 bufid,
 	sbuf = sbufs[dst][ch_index];
 	if (!sbuf)
 		return -ENODEV;
+	if (bufid >= sbuf->ringnr)
+		return -EINVAL;
+	/* left/rxsize/txsize below are int */
+	if (len > INT_MAX)
+		len = INT_MAX;
 	ring = &sbuf->rings[bufid];
 	ringhd = ring->header;
 
@@ -922,28 +957,30 @@ int sbuf_read(u8 dst, u8 channel, u32 bufid,
 		}
 	}
 
-	while (left &&
-	       (ringhd->rxbuf_wrptr != ringhd->rxbuf_rdptr) &&
-	       sbuf->state == SBUF_STATE_READY) {
-		/* calc rxpos & rxsize */
-		rxpos = ring->rxbuf_virt +
-			ringhd->rxbuf_rdptr % ringhd->rxbuf_size;
-		rxsize = (int)(ringhd->rxbuf_wrptr - ringhd->rxbuf_rdptr);
-		/* check overrun */
-		if (rxsize > ringhd->rxbuf_size)
-			pr_err("sbuf_read: bufid = %d, channel= %d rxsize=0x%x, rdptr=%d, wrptr=%d",
-			       bufid,
-			       channel,
-			       rxsize,
-			       ringhd->rxbuf_wrptr,
-			       ringhd->rxbuf_rdptr);
+	while (left && sbuf->state == SBUF_STATE_READY) {
+		/* one snapshot of the peer-written wrptr per iteration */
+		u32 wr = ringhd->rxbuf_wrptr;
+		u32 rd = ringhd->rxbuf_rdptr;
+		u32 used = wr - rd;
 
-		rxsize = min(rxsize, left);
+		if (!used)
+			break;
+
+		/* calc rxpos & rxsize */
+		rxpos = ring->rxbuf_virt + rd % ring->rx_size;
+		/* check overrun */
+		if (used > (u32)ring->rx_size) {
+			pr_err("sbuf_read: bufid = %d, channel= %d used=0x%x, rdptr=%u, wrptr=%u",
+			       bufid, channel, used, rd, wr);
+			/* never copy more than the ring holds */
+			used = ring->rx_size;
+		}
+		rxsize = min_t(u32, used, left);
 
 		pr_debug("sbuf_read: channel=%d, buf=%p, rxpos=%p, rxsize=%d\n",
 			 channel, u_buf.buf, rxpos, rxsize);
 
-		tail = rxpos + rxsize - (ring->rxbuf_virt + ringhd->rxbuf_size);
+		tail = rxpos + rxsize - (ring->rxbuf_virt + ring->rx_size);
 
 		if (tail > 0) {
 			/* ring buffer is rounded */
@@ -979,11 +1016,16 @@ int sbuf_read(u8 dst, u8 channel, u32 bufid,
 			}
 		}
 
-		/* update rx rdptr */
-		ringhd->rxbuf_rdptr = ringhd->rxbuf_rdptr + rxsize;
-		/* rx ringbuf is full ,so need to notify peer side */
-		if (ringhd->rxbuf_wrptr - ringhd->rxbuf_rdptr ==
-		    ringhd->rxbuf_size - rxsize) {
+		/* update rx rdptr, after the data is copied out */
+		mb();
+		ringhd->rxbuf_rdptr = rd + rxsize;
+		/* rx ringbuf was full, so need to notify peer side; wrptr is
+		 * re-read here (not the snapshot): the peer may have filled
+		 * the ring while we copied
+		 */
+		mb();
+		if (ringhd->rxbuf_wrptr - (rd + rxsize) ==
+		    ring->rx_size - rxsize) {
 			smsg_set(&mevt, channel,
 				 SMSG_TYPE_EVENT,
 				 SMSG_EVENT_SBUF_RDPTR,
@@ -1030,7 +1072,7 @@ int sbuf_poll_wait(u8 dst, u8 channel, u32 bufid,
 		return mask;
 	}
 	sbuf = sbufs[dst][ch_index];
-	if (!sbuf)
+	if (!sbuf || bufid >= sbuf->ringnr)
 		return mask;
 	ring = &sbuf->rings[bufid];
 	ringhd = ring->header;
@@ -1045,7 +1087,7 @@ int sbuf_poll_wait(u8 dst, u8 channel, u32 bufid,
 	if (ringhd->rxbuf_wrptr != ringhd->rxbuf_rdptr)
 		mask |= POLLIN | POLLRDNORM;
 
-	if (ringhd->txbuf_wrptr - ringhd->txbuf_rdptr < ringhd->txbuf_size)
+	if (ringhd->txbuf_wrptr - ringhd->txbuf_rdptr < ring->tx_size)
 		mask |= POLLOUT | POLLWRNORM;
 
 	return mask;
@@ -1088,6 +1130,8 @@ int sbuf_register_notifier(u8 dst, u8 channel, u32 bufid,
 	sbuf = sbufs[dst][ch_index];
 	if (!sbuf)
 		return -ENODEV;
+	if (bufid >= sbuf->ringnr)
+		return -EINVAL;
 	ring = &sbuf->rings[bufid];
 	ring->handler = handler;
 	ring->data = data;

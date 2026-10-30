@@ -1482,3 +1482,34 @@ The Android userspace on the watches is 8.1 at patch level 2019-11-05. A patched
 4. Full stable merge (`android-4.4-q`), in batches with boot tests.
 5. CIP post-302 fixes, UNISOC bulletin fixes.
 6. Hardening config.
+
+## UNISOC bulletins
+
+Sources: UNISOC security bulletins 2023-01, 2023-03, 2023-05 and 2024-02 (SC9832E listed as affected, all versions), read through the cybersecurity-help.cz mirrors. UNISOC publishes no patches or function names, so each entry was matched to code from the one-line description. Where the match is a guess it says "probable" and the fix is defensive, not a claimed fix of that CVE. Only kernel components are listed; Android service, modem and WLAN firmware entries in the same bulletins are out of scope. Bulletins after 2024-02 were not reviewed.
+
+| CVE | Component | Applies? | Status | Note |
+|---|---|---|---|---|
+| CVE-2022-39116, CVE-2022-39118 | sprd_sysdump | yes (CONFIG_SPRD_SYSDUMP=y) | fixed (defect), attribution probable (description match), "sysdump: bound sprd_sysdump write..." | 5-byte stack buffer, terminator written at [count]. The bug is real; that it is the bulletin bug rests on the description only. |
+| CVE-2022-47488 | spipe (sipc sbuf) | yes | probable, "sipc: sbuf: bound ring indexes..." and "sipc: spool: validate file offset..." | Peer-written rdptr could push txsize past the ring; int truncation of count; unchecked bufid; spool lseek offset. Defensive, match unproven. |
+| CVE-2022-48385 | cp_dump | yes (cproc "mem" dump) | probable, "cproc: reject negative seek offsets..." and "cproc: bound mini_dump segment offset..." | Negative lseek offset, and an int-truncated mini_dump offset after a large lseek, mapped physical memory below the modem region. |
+| CVE-2022-48389 | modem control device | yes (cproc mini_dump) | probable, same cproc commit | sprintf into a fixed stack buffer from shared-memory names. |
+| CVE-2022-48380, CVE-2022-48381 | modem control device | partly | not located | "Resource exhaustion / OOB write"; no matching code found in the built cproc. sprd_modem_control.c is not built on this config (hardened anyway, "modem_control: bound mini_dump..."). |
+| CVE-2023-49667, CVE-2023-49668, CVE-2023-49669, CVE-2023-49670 | cp_dump | yes | probable, covered by the cproc commit | Same code as CVE-2022-48385; no separate bug found. |
+| CVE-2023-49671 | ion | yes | probable, "ion: check dma-buf is an ion buffer..." and "ion: check ion dma-buf in sprd_ion helpers..." | Type confusion on non-ion dma-bufs in INVALIDATE, MSYNC and the exported helpers. Match unproven. |
+| CVE-2023-49672 | ion (use-after-free, logic error) | yes | not located (candidate, not fixed) | Best candidate: `get_ion_buffer()` in sprd_ion.c drops the dma-buf reference before callers use the returned ion_buffer (concurrent close frees it). Fixing needs an API change for out-of-tree callers. Separate hardening commits stop ION_SPRD_CUSTOM_MAP_KERNEL leaking a kernel address and add is-ion checks to the helpers. |
+| CVE-2022-48239, CVE-2022-48240 | camera driver | yes (CONFIG_SPRD_CAMERA=y) | not located | Description names no ioctl; not audited line by line. |
+| CVE-2022-48237, CVE-2022-48238 | Image Filter | unknown | not located | No matching module found in the tree. |
+| CVE-2022-47469, CVE-2022-47470, CVE-2022-47486 | ext4fsfilter | no | not applicable | Driver not present in this tree. |
+| CVE-2022-47457, CVE-2022-47458 | FM driver | no | not applicable | sprdwcn_bsp FM driver exists in the tree but no FM option is enabled in the sharkle config. |
+| CVE-2022-47453 | WCN service | yes (SC2342 integrated) | not located | Missing parameter check; no function named. |
+| CVE-2022-47454, CVE-2022-47455, CVE-2022-47456, CVE-2022-47459 | WLAN driver (sprdwl_ng) | yes (module) | not located | Descriptions give no function; the 2023-01 WLAN entries (CVE-2022-44xxx) are WLAN firmware. |
+| CVE-2022-47460 | GPU device | yes | not UNISOC code | Mali use-after-free, see the Mali section. |
+| (no CVE assigned, Aug 2026) | Modem VoLTE chain | n/a | firmware | Modem side, no kernel patch possible. It makes peer-written shared-memory values (sbuf/sblock pointers) untrusted, which is why the sbuf bounds fixes matter. |
+
+Concrete residual defects (real bugs in this tree, independent of CVE attribution, still open):
+- ion: `sprd_ion_get_buffer()` and `sprd_ion_get_sg_table()` return an `ion_buffer`/`sg_table` pointer after dropping the fd's dma-buf reference, and the pointer is then stored by many in-tree callers (camera cpp lite_r1p0/r2p0/r4p0, cpp r1p0, isp g2v3, dcam_if_r5p0 statistics, cam_iommu, vsp) and used later through `sprd_ion_get_sg()`, `sprd_ion_set_dma()` and `sprd_ion_unmap_dma()`. A concurrent close of the fd can free the buffer (use-after-free; candidate for CVE-2023-49672). A correct fix means every caller keeps a dma-buf reference for the lifetime of its mapping, which is too invasive to do blind. `sprd_ion_get_phys_addr()` and `sprd_ion_is_reserved()` are fixed: they keep the reference while the buffer is used.
+- sbuf/sblock: `sblock_receive()` trusts the peer-supplied block address and length when computing `rxrecord` indexes, and `spool_read()` copies `blk.length` bytes from `blk.addr`. A compromised modem can drive out-of-bounds reads and writes there.
+- sbuf: the debugfs/status dump still reads ring sizes and pointers from the peer-writable header (debug only).
+- ION_SPRD_CUSTOM_PHYS returns physical addresses to any ion client.
+
+Uncertain attribution (separate from the above): the "probable" rows are matched from one-line bulletin text only; a fix there does not prove the bulletin bug is closed.

@@ -68,9 +68,18 @@ static unsigned long user_va2pa(struct mm_struct *mm, unsigned long addr)
 }
 #endif
 
-static struct ion_buffer *get_ion_buffer(int fd, struct dma_buf *dmabuf)
+/*
+ * Look up the ion buffer behind @fd or @dmabuf. With an fd the dma-buf
+ * reference is returned in *held and the caller must dma_buf_put() it
+ * once it is done with the buffer; with a caller-supplied dma-buf *held
+ * is NULL because the caller already owns a reference.
+ */
+static struct ion_buffer *get_ion_buffer_ref(int fd, struct dma_buf *dmabuf,
+					     struct dma_buf **held)
 {
 	struct ion_buffer *buffer;
+
+	*held = NULL;
 
 	if (fd < 0 && !dmabuf) {
 		pr_err("%s, input fd: %d, dmabuf: %p error\n", __func__, fd,
@@ -85,11 +94,34 @@ static struct ion_buffer *get_ion_buffer(int fd, struct dma_buf *dmabuf)
 			       dmabuf);
 			return ERR_PTR(-EBADF);
 		}
-		buffer = dmabuf->priv;
-		dma_buf_put(dmabuf);
-	} else {
-		buffer = dmabuf->priv;
+		*held = dmabuf;
 	}
+
+	buffer = ion_dma_buf_to_buffer(dmabuf);
+	if (!buffer) {
+		if (*held) {
+			dma_buf_put(*held);
+			*held = NULL;
+		}
+		return ERR_PTR(-EINVAL);
+	}
+
+	return buffer;
+}
+
+/*
+ * Legacy lookup for callers that keep the returned pointer (get_buffer,
+ * get_sg_table): the fd reference is dropped here, see the note at those
+ * functions.
+ */
+static struct ion_buffer *get_ion_buffer(int fd, struct dma_buf *dmabuf)
+{
+	struct dma_buf *held;
+	struct ion_buffer *buffer;
+
+	buffer = get_ion_buffer_ref(fd, dmabuf, &held);
+	if (held)
+		dma_buf_put(held);
 
 	return buffer;
 }
@@ -107,8 +139,9 @@ EXPORT_SYMBOL(sprd_ion_client_create);
 int sprd_ion_is_reserved(int fd, struct dma_buf *dmabuf, bool *reserved)
 {
 	struct ion_buffer *buffer;
+	struct dma_buf *held;
 
-	buffer = get_ion_buffer(fd, dmabuf);
+	buffer = get_ion_buffer_ref(fd, dmabuf, &held);
 	if (IS_ERR(buffer))
 		return PTR_ERR(buffer);
 
@@ -120,6 +153,9 @@ int sprd_ion_is_reserved(int fd, struct dma_buf *dmabuf, bool *reserved)
 		*reserved = true;
 	else
 		*reserved = false;
+
+	if (held)
+		dma_buf_put(held);
 
 	return 0;
 }
@@ -206,8 +242,10 @@ int sprd_ion_get_phys_addr(int fd, struct dma_buf *dmabuf,
 {
 	int ret = 0;
 	struct ion_buffer *buffer;
+	struct dma_buf *held;
 
-	buffer = get_ion_buffer(fd, dmabuf);
+	/* the reference is held until the physical address is computed */
+	buffer = get_ion_buffer_ref(fd, dmabuf, &held);
 	if (IS_ERR(buffer))
 		return PTR_ERR(buffer);
 
@@ -215,7 +253,8 @@ int sprd_ion_get_phys_addr(int fd, struct dma_buf *dmabuf,
 		if (!buffer->heap->ops->phys) {
 			pr_err("%s: ion_phys is not implemented by this heap\n",
 			       __func__);
-			return -ENODEV;
+			ret = -ENODEV;
+			goto out;
 		}
 		ret = buffer->heap->ops->phys(buffer->heap, buffer,
 						phys_addr,
@@ -227,8 +266,12 @@ int sprd_ion_get_phys_addr(int fd, struct dma_buf *dmabuf,
 	} else {
 		pr_err("%s, buffer heap type:%d error\n", __func__,
 		       buffer->heap->type);
-		return -EPERM;
+		ret = -EPERM;
 	}
+
+out:
+	if (held)
+		dma_buf_put(held);
 
 	return ret;
 }
@@ -238,8 +281,8 @@ int sprd_ion_check_phys_addr(struct dma_buf *dmabuf)
 	struct sg_table *table = NULL;
 	struct scatterlist *sgl = NULL;
 
-	if (dmabuf && dmabuf->priv)
-		table = ((struct ion_buffer *)(dmabuf->priv))->priv_virt;
+	if (dmabuf && ion_dma_buf_to_buffer(dmabuf))
+		table = ion_dma_buf_to_buffer(dmabuf)->priv_virt;
 	else {
 		if (!dmabuf)
 			pr_err("invalid dmabuf\n");
@@ -280,7 +323,11 @@ int sprd_ion_get_phys_addr_bydmabuf(int fd_buffer, struct dma_buf *dmabuf,
 		return -1;
 	}
 
-	buffer = dmabuf->priv;
+	buffer = ion_dma_buf_to_buffer(dmabuf);
+	if (!buffer || !buffer->heap) {
+		pr_err("%s, dmabuf is not an ion buffer\n", __func__);
+		return -EINVAL;
+	}
 	if (buffer->heap->type == ION_HEAP_TYPE_CARVEOUT) {
 		if (!buffer->heap->ops->phys) {
 			pr_err("%s: ion_phys is not implemented by this heap\n",
@@ -404,7 +451,7 @@ static long sprd_ion_ioctl(struct ion_client *client, unsigned int cmd,
 				return PTR_ERR(dmabuf);
 			}
 
-			buffer = dmabuf->priv;
+			buffer = ion_dma_buf_to_buffer(dmabuf);
 			if (!buffer || !buffer->heap || !buffer->sg_table ||
 			    !buffer->heap->device) {
 				dma_buf_put(dmabuf);
@@ -454,7 +501,12 @@ static long sprd_ion_ioctl(struct ion_client *client, unsigned int cmd,
 			return PTR_ERR(dmabuf);
 		}
 
-		buffer = dmabuf->priv;
+		buffer = ion_dma_buf_to_buffer(dmabuf);
+		if (!buffer || !buffer->heap || !buffer->sg_table ||
+		    !buffer->heap->device) {
+			dma_buf_put(dmabuf);
+			return -EINVAL;
+		}
 		heap = buffer->heap;
 
 		dma_sync_sg_for_cpu(heap->device, buffer->sg_table->sgl,
@@ -492,12 +544,13 @@ static long sprd_ion_ioctl(struct ion_client *client, unsigned int cmd,
 			ion_free(client, handle);
 			return PTR_ERR(kaddr);
 		}
-#if defined(CONFIG_64BIT)
-		data.kaddr = (uint64_t)kaddr;
-#else
-		data.kaddr = (uint32_t)kaddr;
-		data.kaddr = data.kaddr & 0xffffffff;
-#endif
+		/*
+		 * Do not hand the kernel virtual address to user space: it
+		 * cannot be used from there, the mapping is dropped by the
+		 * ion_free() below, and the value would only defeat KASLR and
+		 * disclose heap layout. Callers rely on the return value.
+		 */
+		data.kaddr = 0;
 		data.size = buffer->size;
 
 		ion_free(client, handle);

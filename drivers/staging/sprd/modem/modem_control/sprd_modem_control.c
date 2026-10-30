@@ -64,13 +64,20 @@ const char *status_info[] = {
 	"wdtirq\n",
 };
 
-static int list_each_dump_info(struct cproc_dump_info *base,
+/* @size is the length of the descriptor table: never step outside it */
+static int list_each_dump_info(struct cproc_dump_info *base, u32 size,
 			       struct cproc_dump_info **info)
 {
 	struct cproc_dump_info *next;
+	u32 nr = size / sizeof(struct cproc_dump_info);
 
 	if (!info)
 		return 0;
+
+	if (!base || !nr) {
+		*info = NULL;
+		return 0;
+	}
 
 	next = *info;
 	if (!next)
@@ -78,14 +85,38 @@ static int list_each_dump_info(struct cproc_dump_info *base,
 	else
 		next++;
 
-	if (next->parent_name[0] != '\0') {
+	if (next < base + nr && next->parent_name[0] != '\0') {
 		*info = next;
-	} else {
-		*info = NULL;
-		return 0;
+		return 1;
 	}
 
-	return 1;
+	*info = NULL;
+	return 0;
+}
+
+static bool cproc_range_in(u64 start, u64 end, u64 rbase, u64 rsize)
+{
+	return rsize && start >= rbase && end <= rbase + rsize;
+}
+
+/* The modem-supplied dump range must lie in memory the DT gave this cproc. */
+static bool cproc_dump_range_ok(struct cproc_controller *con, u64 start,
+				u32 size)
+{
+	u64 end = start + size;
+	u32 i;
+
+	if (end < start)
+		return false;
+	if (cproc_range_in(start, end, con->base, con->maxsz) ||
+	    cproc_range_in(start, end, con->iram, con->iramsz))
+		return true;
+	for (i = 0; i < con->segnr; i++)
+		if (cproc_range_in(start, end, con->segs[i].base,
+				   con->segs[i].size))
+			return true;
+
+	return false;
 }
 
 static ssize_t sprd_cproc_seg_dump(u32 base,
@@ -149,8 +180,11 @@ static ssize_t mini_dump_read(struct cproc_proc_entry *entry,
 			      loff_t *ppos)
 {
 	static struct cproc_dump_info *s_cur_info;
+	struct cproc_dump_info cur;
+	u64 dbase;
 	u8 head[sizeof(struct cproc_dump_info) + 32];
-	int len, index, total = 0, offset = 0;
+	int len, index, total = 0;
+	loff_t offset = 0;
 	ssize_t written = 0;
 	void *vmem;
 	struct cproc_segment *seg;
@@ -161,7 +195,7 @@ static ssize_t mini_dump_read(struct cproc_proc_entry *entry,
 
 	con = entry->cproc->controller;
 	index = entry->index;
-	if (index > con->segnr)
+	if (index < 0 || index >= con->segnr)
 		return -EBADF;
 	seg = &con->segs[index];
 	if (seg->attr != DUMP_FIELD)
@@ -170,17 +204,45 @@ static ssize_t mini_dump_read(struct cproc_proc_entry *entry,
 	vmem = seg->v_base;
 
 	if (!s_cur_info)
-		list_each_dump_info(vmem, &s_cur_info);
+		list_each_dump_info(vmem, seg->size, &s_cur_info);
 
 	while (s_cur_info) {
 		if (!count)
 			break;
-		len = snprintf(head, sizeof(head), "%s_%s_0x%8x_0x%x.bin",
-			       s_cur_info->parent_name, s_cur_info->name,
-			       s_cur_info->start_addr, s_cur_info->size);
+
+		/* one snapshot of the modem-written descriptor */
+		memcpy(&cur, s_cur_info, sizeof(cur));
+		if (con->map[0] > con->map[1])
+			dbase = (u64)cur.start_addr +
+				(con->map[0] - con->map[1]);
+		else
+			dbase = (u64)cur.start_addr -
+				(con->map[1] - con->map[0]);
+		if (!cproc_dump_range_ok(con, dbase, cur.size)) {
+			pr_err(CPROC_TAG "mini-dump region 0x%x+0x%x rejected\n",
+			       cur.start_addr, cur.size);
+			*ppos = 0;
+			if (!list_each_dump_info(vmem, seg->size, &s_cur_info))
+				break;
+			continue;
+		}
+		/*
+		 * The names live in modem-shared memory and may be
+		 * unterminated; bound both the string reads and the length
+		 * returned, so that head + *ppos never leaves the buffer.
+		 */
+		len = scnprintf(head, sizeof(head), "%.*s_%.*s_0x%8x_0x%x.bin",
+				MAX_NAME_LEN, cur.parent_name,
+				MAX_NAME_LEN, cur.name,
+				cur.start_addr, cur.size);
 
 		if (*ppos > len) {
 			offset = *ppos - len;
+			/* ppos is user-seekable: stay inside the dump */
+			if (offset > cur.size) {
+				*ppos = 0;
+				return total ? total : -EINVAL;
+			}
 		} else {
 			if (*ppos + count > len)
 				written = len - *ppos;
@@ -198,17 +260,8 @@ static ssize_t mini_dump_read(struct cproc_proc_entry *entry,
 		total += written;
 		count -= written;
 		if (count) {
-			u32 base;
-
-			if (con->map[0] > con->map[1])
-				base = s_cur_info->start_addr +
-					(con->map[0] - con->map[1]);
-			else
-				base = s_cur_info->start_addr -
-					(con->map[1] - con->map[0]);
-
-			written = sprd_cproc_seg_dump(base,
-						      s_cur_info->size,
+			written = sprd_cproc_seg_dump(dbase,
+						      cur.size,
 						      buf + total,
 						      count,
 						      offset);
@@ -217,7 +270,8 @@ static ssize_t mini_dump_read(struct cproc_proc_entry *entry,
 				count -= written;
 				*ppos += written;
 			} else if (written == 0) {
-				if (list_each_dump_info(vmem, &s_cur_info))
+				if (list_each_dump_info(vmem, seg->size,
+							&s_cur_info))
 					*ppos = 0;
 			} else {
 				return written;
@@ -470,7 +524,7 @@ static ssize_t cproc_proc_read(struct file *filp,
 			size = cproc->controller->maxsz;
 		} else {
 			index = entry->index;
-			if (index > cproc->controller->segnr)
+			if (index >= cproc->controller->segnr)
 				return -EBADF;
 
 			seg = &cproc->controller->segs[index];

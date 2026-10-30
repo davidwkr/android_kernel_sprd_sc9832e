@@ -1108,6 +1108,13 @@ static struct dma_buf_ops dma_buf_ops = {
 	.kunmap = ion_dma_buf_kunmap,
 };
 
+struct ion_buffer *ion_dma_buf_to_buffer(struct dma_buf *dmabuf)
+{
+	if (dmabuf->ops != &dma_buf_ops)
+		return NULL;
+	return dmabuf->priv;
+}
+
 static struct dma_buf *__ion_share_dma_buf(struct ion_client *client,
 					   struct ion_handle *handle,
 					   bool lock_client)
