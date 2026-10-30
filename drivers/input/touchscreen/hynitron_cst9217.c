@@ -17,6 +17,8 @@
  *   hynitron,display-coords: <max-x max-y>
  *   vdd_name               : supply regulator, default "vddsdcore"
  *
+ * Based on the previous in-tree hynitron_cst9217 driver.
+ *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
@@ -142,7 +144,7 @@ static void hyn_process_report(struct hyn_ts *ts)
 	if (ret) {
 		dev_err_ratelimited(&ts->client->dev,
 				    "failed to read report: %d\n", ret);
-		return;
+		goto ack;
 	}
 
 	/* key frames (bit 7) are not used */
@@ -171,8 +173,7 @@ static void hyn_process_report(struct hyn_ts *ts)
 		unsigned int y = (p[2] << 4) | (p[3] & 0x0f);
 
 		if (id >= HYN_MAX_POINTS || test_bit(id, &seen) ||
-		    (event && event != (HYN_STAT_DOWN >> 1)) ||
-		    x > ts->max_x || y > ts->max_y)
+		    (event && event != (HYN_STAT_DOWN >> 1)))
 			goto ack;
 
 		__set_bit(id, &seen);
@@ -183,6 +184,8 @@ static void hyn_process_report(struct hyn_ts *ts)
 
 	for (i = 0; i < count; i++) {
 		const u8 *p = hyn_point(buf, i);
+		unsigned int x = (p[1] << 4) | (p[3] >> 4);
+		unsigned int y = (p[2] << 4) | (p[3] & 0x0f);
 
 		if (((p[0] & 0x0f) >> 1) != (HYN_STAT_DOWN >> 1))
 			continue;
@@ -190,9 +193,9 @@ static void hyn_process_report(struct hyn_ts *ts)
 		input_mt_slot(input, p[0] >> 4);
 		input_mt_report_slot_state(input, MT_TOOL_FINGER, true);
 		input_report_abs(input, ABS_MT_POSITION_X,
-				 (p[1] << 4) | (p[3] >> 4));
+				 min_t(unsigned int, x, ts->max_x));
 		input_report_abs(input, ABS_MT_POSITION_Y,
-				 (p[2] << 4) | (p[3] & 0x0f));
+				 min_t(unsigned int, y, ts->max_y));
 	}
 
 	/* slots that were not reported are released here */
@@ -243,7 +246,7 @@ static int hyn_resume(struct device *dev)
 	if (device_may_wakeup(dev))
 		disable_irq_wake(ts->irq);
 
-	/* the I2C adapter, our parent, is already resumed */
+	/* all resume_noirq callbacks, including the adapter's, have run */
 	mutex_lock(&ts->lock);
 	ts->suspended = false;
 	if (ts->pending) {
@@ -255,7 +258,9 @@ static int hyn_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(hyn_pm_ops, hyn_suspend, hyn_resume);
+static const struct dev_pm_ops hyn_pm_ops = {
+	SET_LATE_SYSTEM_SLEEP_PM_OPS(hyn_suspend, hyn_resume)
+};
 
 static void hyn_disable_regulator(void *data)
 {
@@ -433,11 +438,14 @@ static int hyn_probe(struct i2c_client *client, const struct i2c_device_id *id)
 		}
 	}
 
+	/*
+	 * The controller answered the read above, so a NACK of the start
+	 * command is not fatal: it is not known whether a working unit
+	 * acknowledges it.
+	 */
 	ret = hyn_write(ts, HYN_CMD_NORMAL, NULL);
-	if (ret) {
-		dev_err(dev, "failed to start the controller: %d\n", ret);
-		return -ENODEV;
-	}
+	if (ret)
+		dev_warn(dev, "start command failed: %d\n", ret);
 	msleep(20);
 
 	ret = hyn_register_input(ts);
