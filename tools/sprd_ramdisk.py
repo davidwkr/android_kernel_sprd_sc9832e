@@ -48,6 +48,10 @@ MAX_IN_RAMDISK = 64 << 20  # input size caps
 MAX_IN_MISC = 64 << 20     # .ko, Module.symvers
 MAX_IN_KERNEL = 128 << 20
 MAX_ENTRIES = 100000
+MAX_RECORDS = 100000     # .rc lines / .modinfo records parsed
+MAX_RC_SIZE = 1 << 20
+MAX_MODULES = 16
+MAX_NOTES = 100
 PATH_MAX = 4096
 MAX_XZ_MEM = 128 << 20   # xz decoder memory limit
 HEX8 = re.compile(rb'[0-9A-Fa-f]{8}')
@@ -277,6 +281,8 @@ def anomalies(entries):
     seen = {}
     links = set()
     for e in entries:
+        if e.long:
+            continue
         if (e.f['mode'] & 0o170000) == 0o120000:
             n = norm(e.name)
             links.add(n)
@@ -289,15 +295,17 @@ def anomalies(entries):
         if e.long:
             res.append('name of %d bytes over PATH_MAX (kernel skips it)' %
                        e.f['namesize'])
-        parts = norm(e.name).split('/')
-        for k in range(1, len(parts)):
-            if '/'.join(parts[:k]) in links:
-                res.append('%r is under symlink %r' %
-                           (e.name, '/'.join(parts[:k])))
+        if e.long:
+            continue
+        n = norm(e.name)
+        k = n.find('/')
+        while k >= 0:
+            if n[:k] in links:
+                res.append('%r is under symlink %r' % (e.name, n[:k]))
                 break
+            k = n.find('/', k + 1)
         if e.nul:
             res.append('embedded NUL in name %r' % e.name)
-        n = norm(e.name)
         if '..' in n.split('/'):
             res.append('".." component in %r' % e.name)
         if n and e.name != 'TRAILER!!!':
@@ -305,6 +313,8 @@ def anomalies(entries):
                 res.append('duplicate path %r (%r and %r)' %
                            (n, seen[n], e.name))
             seen.setdefault(n, e.name)
+    if len(res) > MAX_NOTES:
+        res = res[:MAX_NOTES] + ['... %d more' % (len(res) - MAX_NOTES)]
     return [safe_name(x) for x in res]
 
 
@@ -330,9 +340,14 @@ def rc_lines(c, entries):
     for e in entries:
         if not is_reg(e) or not norm(e.name).endswith('.rc'):
             continue
+        if e.f['filesize'] > MAX_RC_SIZE:
+            res.append((norm(e.name), 0, '(over 1 MiB, not parsed)'))
+            continue
         data = c[e.data_off:e.data_off + e.f['filesize']]
-        for n, line in enumerate(data.split(b'\n'), 1):
-            s = line.strip()
+        for n, m in enumerate(re.finditer(rb'[^\n]*\n|[^\n]+', data), 1):
+            if n > MAX_RECORDS:
+                break
+            s = m.group().strip()
             if s.startswith(b'#'):
                 continue
             if RC_RE.search(s) or b'.ko' in s:
@@ -384,7 +399,12 @@ def modinfo(ko):
     sec = elf_section(ko, b'.modinfo')
     if sec is None:
         raise Error('no .modinfo section')
-    return [i.decode('utf-8', 'replace') for i in sec.split(b'\0') if i]
+    res = []
+    for m in re.finditer(rb'[^\0]+', sec):
+        if len(res) >= MAX_RECORDS:
+            break
+        res.append(m.group().decode('utf-8', 'replace'))
+    return res
 
 
 def layout_crc(ko):
@@ -499,12 +519,18 @@ def cmd_replace(a):
     if an:
         raise Error('ambiguous cpio names, refusing: %s' % '; '.join(an))
     mods = module_entries(entries)
+    if len(a.module) > MAX_MODULES:
+        raise Error('more than %d --module arguments' % MAX_MODULES)
     new = {}
+    total_in = 0
     for path in a.module:
         b = os.path.basename(path)
         if b in new:
             raise Error('module %s given twice' % b)
         new[b] = read_file(path)
+        total_in += len(new[b])
+        if total_in > MAX_IN_MISC:
+            raise Error('modules total over %d MiB' % (MAX_IN_MISC >> 20))
     kimg = read_file(a.kernel, MAX_IN_KERNEL) if a.kernel else None
     rel = kernel_release(kimg) if kimg is not None else None
     want_crc = symvers_layout_crc(a.symvers) if a.symvers else None
@@ -549,6 +575,7 @@ def cmd_replace(a):
     if bad:
         raise Error('%d module(s) do not match; refusing' % bad)
     target = {}
+    proj = len(p.cpio)
     for b in new:
         hit = [e for e in mods if basename(e.name) == b]
         if not hit:
@@ -564,6 +591,10 @@ def cmd_replace(a):
             raise Error('%s has nlink %d (hard link); not supported' %
                         (b, e.f['nlink']))
         target[e.off] = new[b]
+        proj += pad4(len(new[b])) - pad4(e.f['filesize'])
+    if proj > MAX_OUT:
+        raise Error('projected cpio size %d over the %d MiB cap' %
+                    (proj, MAX_OUT >> 20))
     out = bytearray()
     pos = 0
     for e in entries:
