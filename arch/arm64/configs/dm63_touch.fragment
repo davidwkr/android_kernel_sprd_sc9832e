@@ -1,0 +1,3 @@
+# DM63: Hynitron CST0xx on i2c-3 at 0x38 ("cst0xx,cst0xx_ts"), input
+# device "cst0xx_ts"
+CONFIG_TOUCHSCREEN_CST0XX=y

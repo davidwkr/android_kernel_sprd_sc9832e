@@ -1,0 +1,3 @@
+# DW100U: Hynitron CST9217 on i2c-3 at 0x5a ("hynitron,hyn_ts"), input
+# device "hyn_ts"
+CONFIG_TOUCHSCREEN_CST9217=y
