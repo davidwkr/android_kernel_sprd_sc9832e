@@ -11,3 +11,5 @@ CONFIG_SPRD_AOD_IDLE=y
 CONFIG_SENSORS_SC7A22=y
 # "QST,qmax981" matches qma6981.c
 CONFIG_INPUT_QMA6981_I2C=y
+# "magnetic,och1970" (hall sensor, polled, power-down unless enabled)
+CONFIG_SENSORS_OCH1970=y
