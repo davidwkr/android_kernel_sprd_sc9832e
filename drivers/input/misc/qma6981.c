@@ -1590,6 +1590,10 @@ static struct i2c_driver qmax981_driver = {
 		.name = QMAX981_DEV_NAME,
 		.owner = THIS_MODULE,
 		.of_match_table = qmax981_acc_of_match,
+		/* no sysfs unbind: misc_deregister() does not wait for open
+		 * files, so an fd kept open across remove() would use freed data
+		 */
+		.suppress_bind_attrs = true,
 	},
 	.probe    = qmax981_i2c_probe,
 	.remove   = qmax981_i2c_remove,
