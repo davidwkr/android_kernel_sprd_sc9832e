@@ -190,6 +190,42 @@ class Case(unittest.TestCase):
         self.refused(self.stock(ents), 'does not import it; refusing a '
                   'half-applied ramdisk')
 
+    def test_import_tokenization(self):
+        for line in (b'import "/init.watch_tweaks.rc"',
+                     b'import /init.watch_tweaks.rc # note',
+                     b'import \\\n  /init.watch_tweaks.rc',
+                     b'import\t/init.watch_tweaks.rc'):
+            ents = list(STOCK)
+            ents[0] = (1, 'init.rc', RC + line + b'\n', 0o100750)
+            self.refused(self.stock(ents), 'imports /init.watch_tweaks.rc '
+                         'but the file is missing')
+        # commented out or other path: not an import, so it is added
+        for line in (b'# import /init.watch_tweaks.rc',
+                     b'import /init.watch_tweaks.rc.bak'):
+            ents = list(STOCK)
+            ents[0] = (1, 'init.rc', RC + line + b'\n', 0o100750)
+            r = self.run_tool('add-rc', self.stock(ents), self.path('o.gz'),
+                              '--fragment', FRAG)
+            self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_trailing_backslash(self):
+        for tail in (b'service x /x \\\n', b'service x /x \\'):
+            ents = list(STOCK)
+            ents[0] = (1, 'init.rc', RC + tail, 0o100750)
+            self.refused(self.stock(ents), 'ends with a backslash line '
+                         'continuation')
+
+    def test_missing_final_newline(self):
+        ents = list(STOCK)
+        ents[0] = (1, 'init.rc', RC.rstrip(b'\n'), 0o100750)
+        out = self.path('o.gz')
+        r = self.run_tool('add-rc', self.stock(ents), out,
+                          '--fragment', FRAG)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        b, _ = self.unpack(out)
+        self.assertEqual(b['init.rc'][1], RC.rstrip(b'\n') +
+                         b'\nimport /init.watch_tweaks.rc\n')
+
     def test_trailing_data(self):
         raw = self.stock()
         with open(raw, 'rb') as f:

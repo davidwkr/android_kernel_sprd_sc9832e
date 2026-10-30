@@ -59,8 +59,6 @@ MAX_MODULES = 16
 MAX_NOTES = 100
 MAX_FRAGMENT = 4096
 FRAGMENT = 'init.watch_tweaks.rc'
-IMPORT_RE = re.compile(rb'^[ \t]*import[ \t]+/init\.watch_tweaks\.rc[ \t]*$',
-                       re.M)
 PATH_MAX = 4096
 MAX_XZ_MEM = 128 << 20   # xz decoder memory limit
 HEX8 = re.compile(rb'[0-9A-Fa-f]{8}')
@@ -677,6 +675,72 @@ def cmd_replace(a):
     return 0
 
 
+def rc_statements(data):
+    """Token lists of the logical lines of an init .rc file, tokenised like
+    Android 8.1 init: blanks separate tokens, double quotes group, '#' at
+    the start of a token ends the line, backslash-newline joins lines."""
+    res, tok, cur = [], None, []
+    quote = False
+    i, n = 0, len(data)
+
+    def end_tok():
+        nonlocal tok
+        if tok is not None:
+            cur.append(bytes(tok))
+            tok = None
+
+    while i < n:
+        c = data[i:i + 1]
+        if c == b'\\' and data[i + 1:i + 2] == b'\n':
+            end_tok() if not quote else None
+            i += 2
+            if quote:
+                tok.extend(b' ')
+            continue
+        if c == b'\\' and data[i + 1:i + 2] in (b'"', b'\\', b'n', b't', b'r'):
+            if tok is None:
+                tok = bytearray()
+            tok.extend({b'n': b'\n', b't': b'\t', b'r': b'\r'}.get(
+                data[i + 1:i + 2], data[i + 1:i + 2]))
+            i += 2
+            continue
+        if c == b'\n':
+            end_tok()
+            quote = False
+            if cur:
+                res.append(cur)
+            cur = []
+        elif quote:
+            if c == b'"':
+                quote = False
+            else:
+                tok.extend(c)
+        elif c in (b' ', b'\t', b'\r'):
+            end_tok()
+        elif c == b'#' and tok is None:
+            j = data.find(b'\n', i)
+            i = n if j < 0 else j
+            continue
+        elif c == b'"':
+            quote = True
+            if tok is None:
+                tok = bytearray()
+        else:
+            if tok is None:
+                tok = bytearray()
+            tok.extend(c)
+        i += 1
+    end_tok()
+    if cur:
+        res.append(cur)
+    return res
+
+
+def imports_fragment(data):
+    return any(len(t) == 2 and t[0] == b'import' and
+               t[1] == b'/' + FRAGMENT.encode() for t in rc_statements(data))
+
+
 def read_fragment(path):
     with open(path, 'rb') as f:
         d = f.read(MAX_FRAGMENT + 1)
@@ -719,7 +783,7 @@ def cmd_add_rc(a):
         raise Error('/init.rc over 1 MiB; refusing')
     rcdata = p.cpio[rc.data_off:rc.data_off + rc.f['filesize']]
     have = [e for e in entries if norm(e.name) == FRAGMENT]
-    imported = bool(IMPORT_RE.search(rcdata))
+    imported = imports_fragment(rcdata)
     if have:
         x = have[0]
         same = is_reg(x) and \
@@ -737,6 +801,9 @@ def cmd_add_rc(a):
     if imported:
         raise Error('/init.rc imports /%s but the file is missing; '
                     'refusing' % FRAGMENT)
+    if rcdata.endswith(b'\\') or rcdata.endswith(b'\\\n'):
+        raise Error('/init.rc ends with a backslash line continuation; the '
+                    'import would join the previous line; refusing')
     newrc = rcdata + (b'' if rcdata.endswith(b'\n') else b'\n') + \
         b'import /' + FRAGMENT.encode() + b'\n'
     if len(newrc) > MAX_RC_SIZE:
