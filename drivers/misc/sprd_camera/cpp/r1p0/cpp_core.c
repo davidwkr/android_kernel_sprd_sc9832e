@@ -310,18 +310,40 @@ void cpp_print_reg(void *priv)
 	vfree(reg_buf);
 }
 
+/*
+ * Drop the dma-buf references taken by the get_sg_table helper. They are
+ * held from get_sg_table until free_addr (or until the next get_sg_table
+ * on the same slot) so the ion buffer stays alive while it is mapped.
+ */
+static void cpp_put_dmabufs(struct cpp_iommu_info *pfinfo)
+{
+	int i;
+
+	if (!pfinfo)
+		return;
+
+	for (i = 0; i < 3; i++) {
+		sprd_ion_put(pfinfo->dmabuf_p[i]);
+		pfinfo->dmabuf_p[i] = NULL;
+	}
+}
+
 int cpp_get_sg_table(struct cpp_iommu_info *pfinfo)
 {
 	int i, ret;
 
+	cpp_put_dmabufs(pfinfo);
+
 	for (i = 0; i < 2; i++) {
 		if (pfinfo->mfd[i] > 0) {
-			ret = sprd_ion_get_sg_table(pfinfo->mfd[i],
+			ret = sprd_ion_get_sg_table_ref(pfinfo->mfd[i],
 				NULL,
 				&pfinfo->table[i],
-				&pfinfo->size[i]);
+				&pfinfo->size[i],
+				&pfinfo->dmabuf_p[i]);
 			if (ret) {
 				pr_err("failed to get sg table\n");
+				cpp_put_dmabufs(pfinfo);
 				return -EFAULT;
 			}
 		}
@@ -365,7 +387,7 @@ int cpp_get_addr(struct cpp_iommu_info *pfinfo)
 	return 0;
 }
 
-int cpp_free_addr(struct cpp_iommu_info *pfinfo)
+static int cpp_free_addr_unmap(struct cpp_iommu_info *pfinfo)
 {
 	int i, ret;
 	struct sprd_iommu_unmap_data iommu_data;
@@ -389,6 +411,15 @@ int cpp_free_addr(struct cpp_iommu_info *pfinfo)
 	}
 
 	return 0;
+}
+
+int cpp_free_addr(struct cpp_iommu_info *pfinfo)
+{
+	int ret = cpp_free_addr_unmap(pfinfo);
+
+	cpp_put_dmabufs(pfinfo);
+
+	return ret;
 }
 
 static long sprd_cpp_ioctl(struct file *file, unsigned int cmd,
