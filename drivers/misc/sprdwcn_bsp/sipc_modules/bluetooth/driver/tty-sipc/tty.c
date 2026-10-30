@@ -600,8 +600,9 @@ static int  stty_probe(struct platform_device *pdev)
 	/* optional: a kernel without the per-ring timeout keeps HZ / 2 */
 	set_rx_wake = symbol_get(sbuf_set_rx_wakelock_timeout);
 	if (set_rx_wake) {
-		set_rx_wake(pdata->dst, pdata->channel, pdata->rx_bufid,
-			    STTY_SBUF_RX_WAKE_MS, false);
+		if (set_rx_wake(pdata->dst, pdata->channel, pdata->rx_bufid,
+				STTY_SBUF_RX_WAKE_MS, false))
+			pr_warn("%s: rx wakelock setup failed\n", __func__);
 		symbol_put(sbuf_set_rx_wakelock_timeout);
 	}
 

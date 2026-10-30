@@ -48,10 +48,13 @@
  * notification first, so the lock really ends 20 ms after the read.
  * Without it the 20 ms is useless: wake_lock_timeout() only ever extends
  * a running timeout (__pm_wakeup_event()), it never shortens it.
+ * @more: only used with @release. Expression, true if unread data is in the
+ * ring; evaluated after the unlock, and then the full @hold is re-armed
+ * @hold: hold time (jiffies) re-armed when @more
  * @lock: wake lock point
  * @name: wake lock name
  */
-#define sbuf_update_wakelock(state, need, release, lock, name)	\
+#define sbuf_update_wakelock(state, need, release, more, hold, lock, name)	\
 ({	\
 	if (state) {	\
 		state = 0;	\
@@ -60,6 +63,15 @@
 			if (release)	\
 				wake_unlock(lock);	\
 			wake_lock_timeout(lock, HZ / 50);	\
+			/* data may be left, or have arrived while we read:	\
+			 * the notification armed the hold before our unlock	\
+			 * and was cancelled by it, so re-arm if not drained	\
+			 */	\
+			if (release) {	\
+				smp_mb();	\
+				if (more)	\
+					wake_lock_timeout(lock, hold);	\
+			}	\
 		} else {	\
 			pr_debug("sbuf %s : wake_unlock!\n", name);	\
 			wake_unlock(lock);\
@@ -773,6 +785,8 @@ int sbuf_write(u8 dst, u8 channel, u32 bufid,
 	sbuf_update_wakelock(ring->tx_wakelock_state,
 			     ring->need_wake_lock,
 			     0,
+			     0,
+			     0,
 			     &ring->tx_wake_lock,
 			     ring->tx_wakelock_name
 			    );
@@ -956,6 +970,8 @@ int sbuf_read(u8 dst, u8 channel, u32 bufid,
 	sbuf_update_wakelock(ring->rx_wakelock_state,
 			     ring->need_wake_lock,
 			     ring->rx_release_on_read,
+			     ringhd->rxbuf_wrptr != ringhd->rxbuf_rdptr,
+			     ring->rx_wake_timeout,
 			     &ring->rx_wake_lock,
 			     ring->rx_wakelock_name
 			    );

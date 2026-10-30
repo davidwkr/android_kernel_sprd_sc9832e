@@ -233,10 +233,12 @@ static int spipe_probe(struct platform_device *pdev)
 		u32 ring;
 
 		for (ring = 0; ring < init->ringnr; ring++)
-			sbuf_set_rx_wakelock_timeout(init->dst, init->channel,
-						     ring,
-						     SPIPE_GNSS_RX_WAKE_MAX_MS,
-						     true);
+			if (sbuf_set_rx_wakelock_timeout(init->dst,
+						init->channel, ring,
+						SPIPE_GNSS_RX_WAKE_MAX_MS,
+						true))
+				pr_warn("spipe: %s: rx wakelock setup failed for ring %u\n",
+					init->name, ring);
 	}
 
 	spipe = devm_kzalloc(&pdev->dev,
