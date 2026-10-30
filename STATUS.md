@@ -24,6 +24,7 @@ All work is merged into **`security-backports`** (head `2bf8f5fde`). The topic b
 | `tweaks/gnss-power` | GNSS stop-path analysis, `gnss_engine_state` sysfs | yes |
 | `tweaks/aod-idle` | DM63 `aod_idle` ported in tree | yes |
 | `tweaks/charge-cv` | DM63 `batt_idle` CV override in the SC2721 charger driver | yes |
+| `drivers/otg-role` | `USB_MUSB_SPRD_ROLE_SYSFS` (`watch_otg.fragment`): host/device switch, replaces `otg_role.ko` | not yet |
 | `backup/security-backports-pre-trailer-strip` | backup ref from before the commit-trailer cleanup | – |
 
 **Push state:** `origin/security-backports` is at `18f4c2ac8` (4.4.302 stable merge docs). About 1340 commits since then are local only. The fork is public: check before pushing that no device data is in the tree. A few CIP commits carry `Assisted-by:` trailers written by their upstream authors; they are kept as upstream wrote them. Commits made for this project carry no tool attribution.
@@ -59,6 +60,7 @@ Each work item went through: implementation, a first code review, fixes, then an
 - **GNSS** (`drivers/misc/sprdwcn_bsp/sc23xx/`, the driver actually built): the engine stop powers the GNSS core, rail and WCN domain down when Wi-Fi and BT are off (no change needed). New read-only `/sys/class/misc/gnss_common_ctl/gnss_engine_state` (`off`, `transition`, `assert`, `error`, `sleep`, `on`, `unknown`; `off` is the driver's control state). Failure-path bugs documented, not fixed (failed start leaves the rail on; states stuck until reboot).
 - **DM63 charge CV override** (`drivers/power/sprd_2721_charge.c`): replaces `batt_idle.ko`. Off by default; `echo 4100 > /sys/module/sprd_2721_charge/parameters/cv_override_mv` (or cmdline / DT `sprd,cv-override-microvolt`). With the override on, the driver models the CV register exactly and programs the highest representable CV at or below min(request, `chg-end-vol`, override); unreachable values are rejected at set time. Override off: stock path unchanged. Not ported: `batt_idle`'s fuel-gauge resync (capacity can drift while holding). The safety timer still stops charging briefly every 90 min after the first 6 h (same as `batt_idle`).
 - **DM63 `aod_idle`** (`drivers/video/adf/sprd/drv/sprd_aod_idle.c`, `CONFIG_SPRD_AOD_IDLE`, `dm63_aod.fragment`): same sysfs and `aod_dtap` interface as the stock module, real structs instead of offsets. Idle-mode commands are DCS writes (as stock); `idle_state` is cleared only when the panel is re-initialised at unblank. As a module it is `sprd_aod_idle.ko`: the DM63 `aod_idle.rc` needs the new name, or build it in.
+- **USB host mode** (`drivers/usb/musb/musb_sprd.c`, `CONFIG_USB_MUSB_SPRD_ROLE_SYSFS`, `watch_otg.fragment`, branch `drivers/otg-role`): `/sys/kernel/otg_role/role` (`host`/`device`) as the stock `otg_role.ko`, but in the glue with real structs; same glue on DM63 and both DW100U. VBUS comes from the FAN54015 boost via `sprd_extic_otg_power()` (not verified on hardware); host mode holds `musb-sprd` so the watch does not suspend. Hardware test pending (KERNEL_TWEAKS.md section 5).
 
 ## Build
 
