@@ -22,13 +22,73 @@ Context: the watches run a tracking app with GPS on all day, so the GNSS session
 - `sbuf-4-4-0` is the `spipe_gnss` DT node (`sttygnss0`: dst 4 = `SIPC_ID_GNSS`, channel 4, 1 ring), created by `spipe_probe()`. Done: per-ring `rx_wake_timeout` (default `HZ / 2`) and `rx_release_on_read` (default off), set with `sbuf_set_rx_wakelock_timeout()`; other rings are unchanged. `spipe` sets 100 ms max hold plus release-on-read for `dst == SIPC_ID_GNSS`: once the ring is drained, `sbuf_read()` drops the hold and re-arms 20 ms, so the lock ends about 20 ms after the HAL read; while unread data is left the hold stays. A per-ring spinlock makes the drained check and the release atomic against `sbuf_thread()`, which arms the hold before it wakes the readers. Correction: `wake_lock_timeout()` only ever extends a running timeout, so the earlier assumption that the read path already shortened the `HZ / 2` hold was wrong (it never did). The hold must be long enough for the HAL reader to run: if it expires before the read, unread data sits in the ring and, if the CP only signals on empty -> non-empty, no further notification arrives, so fixes are delayed and eventually lost. A code hook, not a DT property, because the watches boot the vendor dtb. **Required on hardware before shipping:** 1 Hz fixes continuous with the CPU suspending, `sbuf-4-4-0-rx` `total_time` before/after, and no gaps in the fix timestamps.
 - Wake IRQ: nothing to fix. The SIPC notification arrives through the SPRD mailbox (`CONFIG_SPRD_MAILBOX=y`), whose inbox/outbox IRQs use `IRQF_NO_SUSPEND` plus `enable_irq_wake()` (`sprd_mailbox.c`). `smsg-4-4` also takes a `HZ / 2` lock per message, but `sbuf_thread` releases it right after handling (`smsg_ch_wake_unlock`). Remaining: confirm on hardware that fixes keep arriving at 1 Hz with the CPU suspending.
 
-### GNSS driver items (`drivers/misc/sprdwcn_bsp/sc2342/gnss/`)
+### GNSS driver items
 
-- [ ] Check what `wcn_power_ctl.c` does when the engine stops: the GNSS core (in the WCN subsystem) should power down or go to its sleep state, not idle at full power. The HAL config has `SLEEP-ENABLE=TRUE`, `SLEEP-TIMER=300`, `STOP-TIMER=1`; check the kernel side honours the chip's sleep request.
-- [ ] Debug output: `gnss_dbg.c`. Keep it off by default (no per-message printk).
+- [x] Engine stop analysis: done, no kernel bug found on the normal path; see "GNSS stop path analysis" below. `wcn_power_ctl.c` is not part of this build (see below).
+- [x] Debug output: `gnss_dbg.c` is already quiet by default, no change (see below).
 - [ ] Keep the upstream fix "GNSS calibration failure no longer blocks WiFi" (commit `61193d4f`) and the WCN firmware-path fixes; the stock kernel loads GNSS firmware from the `gpsgl` / `gpsbd` partitions.
-- [ ] Nice to have: expose the GNSS engine power state in sysfs (on / sleep / off), for diagnostics without root logcat.
+- [x] GNSS engine power state in sysfs: `gnss_engine_state` (see below). Needs the hardware test.
 - [ ] Not kernel work, for reference: the HAL patches (A-GPS on any network, keep TLS, no session wakelock) live in the `ge2_libgps` repo as a Magisk module. Restarting the GNSS HAL service crashes `system_server` on Android 8.1; never do that from kernel-side recovery logic either.
+
+#### Which driver is actually built
+
+`drivers/misc/sprdwcn_bsp/sc2342/gnss/wcn_power_ctl.c` and `gnss_dbg.c` there belong to the external GreenEye2 chip (`CONFIG_GREENEYE2`, not set on these watches) and are **not compiled**. The SC9832E has GNSS integrated in the WCN block (`CONFIG_SC23XX=y`, `CONFIG_SC2342_INTEG=y`, `CONFIG_WCN_PLATFORM=y`, `CONFIG_WCN_BOOT` off). The live code is under `drivers/misc/sprdwcn_bsp/sc23xx/`:
+
+- `platform/gnss/gnss_common_ctl.c`: the `gnss_common_ctl` misc device (sysfs control used by the HAL), `platform/gnss/gnss_pmnotify_ctl.c` (`/dev/gnss_pmnotify_ctl`), `platform/gnss/gnss_dbg.c` (`gnss_dbg`, `slog_gnss`).
+- `boot/wcn_integrate_boot.c` and `boot/wcn_integrate.c`: start/stop and power sequencing for the two WCN devices (`btwf_device` for Wi-Fi/BT/FM, `gnss_device` for GNSS).
+
+#### GNSS stop path analysis (read from source, nothing run on a device)
+
+Control interface (`gnss_common_ctl.c`): sysfs attributes on the misc device `gnss_common_ctl` (`/sys/class/misc/gnss_common_ctl/`): `gnss_power_enable` (write 1/0, `gnss_power_enable_store()` -> `gnss_power_on()`), `gnss_subsys` (WCN_GNSS = GLONASS firmware / WCN_GNSS_BD = BeiDou firmware, `gnss_subsys_store()`), `gnss_status` (driver state number, `gnss_status_show()`), `gnss_dump`. The `/dev/gnss_common_ctl` node has no file operations; the HAL uses sysfs. This is inferred from the driver; the HAL binary was not disassembled for this analysis.
+
+Start: `gnss_power_on(1)` -> `start_marlin()` -> `start_integrate_wcn()` (`marlin_lock`) -> `start_integrate_wcn_truely()` -> `wcn_power_wq()`: `wcn_power_enable_vddcon(true)`, `wcn_power_enable_sys_domain(true)`, `wcn_proc_native_start()` (firmware download from the `gpsgl`/`gpsbd` file, CPU boot, wait for calibration/boot magic in the shared DDR).
+
+Stop: `gnss_power_on(0)` -> `stop_marlin()` -> `stop_integrate_wcn_truely()` (`boot/wcn_integrate_boot.c`). The open state is a bitmask per device (GNSS and GNSS_BD bits), so the core is only stopped when the last GNSS subsystem bit is cleared. Then, in order:
+
+1. `wcn_wait_wcn_deep_sleep()` polls `wcn_get_sleep_status()` (PMU_APB reg 0xd4, mask 0xf000) every 20 ms, up to `WCN_WAIT_SLEEP_MAX_COUNT` = 32 (640 ms). It never fails: after the timeout the stop continues anyway.
+2. `wcn_proc_native_stop()` writes the DT `ctrl_shutdown` registers (CPU hold).
+3. `wcn_power_enable_sys_domain(false)`: sets the WCN SYS top power-down bit only if neither Wi-Fi/BT nor GNSS is open (`wcn_open_status` check).
+4. `wcn_power_enable_vddcon(false)`: drops the `vddwcn` regulator reference (one enable per device start, one disable per device stop; regulator core refcount covers Wi-Fi/BT coexistence; 26 MHz sys control is turned off when the count reaches 0 on sharkle: `wcn_power_enable_vddcon()` at `boot/wcn_integrate.c:692-725`, `wcn_sys_ctrl_26m(false)` at line 722).
+5. `wcn_sys_soft_reset()`, `wcn_sys_soft_release()`, `wcn_sys_deep_sleep_en()`: act only when neither device is open.
+
+Result (the rail/domain-held claims follow from `wcn_power_enable_vddcon()` and `wcn_power_enable_sys_domain()` at `boot/wcn_integrate.c:480-515` and `692-725` plus the stop calls at `boot/wcn_integrate_boot.c:1105` and `1114`; the actual rail and domain state is inferred from the code and is checked by test step 4, not observed): when the HAL writes `gnss_power_enable=0` and Wi-Fi/BT are off, the GNSS core and the WCN domain are really powered down (rail, domain, 26 MHz; see the notes on what is inferred), not just idled. If Wi-Fi/BT is on, only the GNSS CPU is held (step 2) and the shared rail/domain stay up for them. This is correct behaviour; no change.
+
+Engine "sleep": HAL `SLEEP-ENABLE`/`SLEEP-TIMER`/`STOP-TIMER` are consumed by the GNSS firmware itself (they go over the data channel). The kernel does not implement or gate them. It only (a) lets the firmware report status 6 (sleep) in the shared DDR word `GNSS_STATUS_OFFSET` (0x14F004, `include/linux/gnss.h`), read by `gnss_status_get()` for the dump logic, and (b) on `PM_SUSPEND_PREPARE` signals the HAL through `gnss_pmnotify_ctl` (`gnss_pm_notify()`): while `gnss_status == POWERON` the notifier busy-waits up to 10 x 2 ms (`mdelay`) for the HAL to read the node, so each suspend with the engine on costs up to 20 ms of CPU. WCN suspend/resume hooks are compiled out (`SUSPEND_RESUME_ENABLE 0` in `boot/wcn_integrate_dev.h`), so nothing in the kernel keeps the core awake or forces it up. Whether the chip really enters its sleep state during a session is a firmware matter: use `gnss_engine_state` (below) to check it.
+
+Issues found, not changed (documented only, failure paths, cannot be tested without the hardware):
+
+- Stuck `POWERON_GOING`: `gnss_power_on()` sets `POWERON_GOING` before `start_marlin()` and only leaves it on success. If `start_marlin()` fails (calibration timeout, `gnss_set_boot_status(WCN_BOOT_CP2_ERR_BOOT)` at `boot/wcn_integrate_boot.c:645`, or a firmware download timeout/error), the state stays `POWERON_GOING` and every later start or stop logs "status is not match" and does nothing until reboot. `gnss_engine_state` shows `error` (ERR_BOOT) or `transition` (other failures).
+- A failed GNSS start leaves the core powered. `start_integrate_wcn_truely()` returns -1 on download timeout or `WCN_BOOT_CP2_ERR_BOOT` without setting the open bit, after `wcn_power_wq()` already took `vddcon` and the sys domain; `stop_integrate_wcn_truely()` then refuses (-EINVAL, "not opend"). In `gnss_power_on()` a stop after the early-return ERR_BOOT case leaves `gnss_status` in `POWEROFF_GOING`, and later starts are ignored ("status is not match") until reboot. Only reached when calibration/boot fails; a safe fix needs an unwind that is tested against the real failure.
+- `wcn_power_enable_sys_domain(true)` has an `else if` that also fires for `enable == true` when the domain is already marked on and nothing is open, which would put it in power-down just before a boot. Only reachable after a failed start (same cause as above).
+- `gnss_pm_notify()` spins in `mdelay()` in the suspend notifier (up to 20 ms) when the HAL does not read `gnss_pmnotify_ctl`. Harmless, small.
+
+`gnss_dbg.c` (`sc23xx/platform/gnss/gnss_dbg.c`): there is no per-message printk. Data-path messages use `GNSS_DEBUG()` = `pr_debug()`, which is off unless `DEBUG` is defined for the file (it is not; `-DDEBUG` appears only in `sc2332`) or enabled through dynamic debug (`CONFIG_DYNAMIC_DEBUG=y`, off by default). Only `open()`/`release()` of `gnss_dbg`/`slog_gnss` log with `pr_err`. Default is already off, nothing changed.
+
+#### New sysfs attribute `gnss_engine_state`
+
+`/sys/class/misc/gnss_common_ctl/gnss_engine_state`, mode 0444, read-only, added in `gnss_common_ctl.c` (`gnss_engine_state_show()`). Lock-free and does not access the GNSS core: it reads the driver state word and one status word from the AP-side DDR carve-out, which is mapped per read (vmap/vunmap in `wcn_read_data_from_phy_addr()`, so it may sleep; a mapping failure gives `unknown`; its three error prints, in `wcn_mem_ram_vmap_nocache()` and `wcn_read_data_from_phy_addr()`, are rate limited). The result is a snapshot and may be stale by one transition. Existing attributes are unchanged.
+
+| Value | Meaning | Source |
+|---|---|---|
+| `off` | Software control state only: never started, or stopped through `gnss_power_enable`. Not proof the core is unpowered: on the first Wi-Fi/BT start `start_integrate_wcn()` (`boot/wcn_integrate_boot.c`, `first_time` block) runs a GNSS calibration independent of this attribute, and if it fails the stop is skipped (`!ret`) and the core stays powered while this reads `off` | `gnss_common_ctl_dev.gnss_status == POWEROFF` |
+| `transition` | A start or stop is in progress. Persisting more than about 10 s means a stuck failed start (see Issues) | `POWERON_GOING` / `POWEROFF_GOING`, and boot status is not ERR_BOOT |
+| `assert` | Firmware asserted, memory dump taken | `ASSERT` (set by the dump path) |
+| `error` | Start requested but calibration/boot failed; the core is not usable | `gnss_get_boot_status() == WCN_BOOT_CP2_ERR_BOOT` while the state is `POWERON`, `POWERON_GOING` or `POWEROFF_GOING` |
+| `sleep` | Engine running, firmware reports sleep | `POWERON` and DDR word at `GNSS_STATUS_OFFSET` == 6 |
+| `on` | Engine running, firmware status anything else (rf cali, init, init done, idle off/on) | `POWERON` and DDR word != 6 |
+| `unknown` | `POWERON`, but the DDR carve-out could not be mapped | read error |
+
+`sleep` is the firmware's own report, not an inference from timers. The DDR word is only trusted while the driver state is `POWERON` (it is stale after power-down).
+
+#### Hardware test steps (all read-only on the device)
+
+1. Boot the new kernel; `cat /sys/class/misc/gnss_common_ctl/gnss_engine_state` -> `off`; `cat .../gnss_status` -> 0.
+2. Start a GPS session (tracking app). Poll once per second for the whole session: `while true; do date +%T; cat /sys/class/misc/gnss_common_ctl/gnss_engine_state; sleep 1; done`. Expect `transition` for a few seconds (firmware download and calibration), then `on`, and `sleep` between fixes if the firmware sleeps at 1 Hz. Not seeing `sleep` at 1 Hz polling is inconclusive: short sleeps or phase alignment with the poll can hide it. Proving the firmware never sleeps needs firmware tracing or sleep residency counters, which this attribute does not provide.
+3. Stop the session: expect `transition` then `off` within about 1 s (up to 640 ms deep-sleep wait). If it stays `on`/`sleep` after the app stops, the HAL did not write `gnss_power_enable=0` (userspace). Check `dmesg | grep -E "gnss_ctl|wcn"` for `do stop`, `enable=0,en_count=`, `set WCN SYS TOP PD`.
+4. With Wi-Fi and BT off and the engine `off`: the WCN rail should be off. `cat /sys/kernel/debug/regulator/regulator_summary` (root, debugfs): the `vddwcn` consumer count 0 and use count 0. `dmesg` shows `vddwcn_en_count=0`.
+5. Suspend stats: `cat /sys/kernel/debug/wakeup_sources` (sbuf-4-4-0-rx `total_time`, `active_count`) and `cat /sys/power/suspend_stats` (success/fail counters) before and after a 10 minute screen-off session, once with the engine running and once after it stops. After the stop, WCN wakeup sources should stop growing and suspends should succeed.
+6. Battery: compare `dumpsys batterystats` or the current-now trace for 10 minutes with the engine `off` against the same device before this change; the new attribute is read-only and should not change it.
+7. Failure path (optional): start with the GNSS firmware file missing or the calibration failing and confirm `error` (calibration/boot failure) or `transition` is reported instead of `on`. `transition` persisting more than about 10 s means a stuck failed start: `gnss_status` stays at `POWERON_GOING` and later starts/stops are ignored ("status is not match") until reboot.
 
 ## 2. Flash (NAND / eMMC) write reduction
 

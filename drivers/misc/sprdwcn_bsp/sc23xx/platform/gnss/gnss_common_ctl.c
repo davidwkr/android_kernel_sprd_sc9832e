@@ -370,13 +370,29 @@ static ssize_t gnss_subsys_show(struct device *dev,
 static DEVICE_ATTR_RW(gnss_subsys);
 
 #ifdef CONFIG_SC2342_INTEG
-static int gnss_status_get(void)
+/*
+ * Read the status word the GNSS firmware keeps in the AP-side DDR carve-out
+ * (enum gnss_cp_status_subtype). The carve-out is mapped per read (vmap and
+ * vunmap in wcn_read_data_from_phy_addr()), so this may sleep and is for
+ * process context only; the value is only meaningful while the core is up.
+ * Returns -1 if the mapping fails (the failure log is rate limited).
+ */
+static int gnss_cp_status_read(void)
 {
 	phys_addr_t phy_addr;
 	u32 magic_value;
 
 	phy_addr = wcn_get_gnss_base_addr() + GNSS_STATUS_OFFSET;
-	wcn_read_data_from_phy_addr(phy_addr, &magic_value, sizeof(u32));
+	if (wcn_read_data_from_phy_addr(phy_addr, &magic_value, sizeof(u32)))
+		return -1;
+
+	return magic_value;
+}
+
+static int gnss_status_get(void)
+{
+	int magic_value = gnss_cp_status_read();
+
 	GNSSCOMM_INFO("[%s] magic_value=%d\n", __func__, magic_value);
 
 	return magic_value;
@@ -474,6 +490,65 @@ static ssize_t gnss_status_show(struct device *dev,
 	return i;
 }
 static DEVICE_ATTR_RO(gnss_status);
+
+/*
+ * gnss_engine_state: read-only, diagnostic only. Takes no locks and does
+ * not access the GNSS core: it reads the driver state and one status word
+ * from the AP-side DDR carve-out (mapped per read, may sleep).
+ *   off         software control state POWEROFF (never started or stopped via
+ *               gnss_power_enable). Not proof the core is unpowered: the first
+ *               Wi-Fi/BT start runs a GNSS calibration on its own
+ *               (start_integrate_wcn()), and a failed one leaves it powered
+ *   transition  start or stop in progress (POWERON_GOING/POWEROFF_GOING)
+ *               (shown as error if the boot status is ERR_BOOT)
+ *   assert      the core asserted and a memory dump was taken
+ *   error       started, but calibration/boot failed (WCN_BOOT_CP2_ERR_BOOT)
+ *   sleep       driver state POWERON and the firmware reports status 6
+ *   on          driver state POWERON and any other firmware status
+ *   unknown     POWERON but the status word could not be read
+ */
+static ssize_t gnss_engine_state_show(struct device *dev,
+				      struct device_attribute *attr,
+				      char *buf)
+{
+	const char *state = "unknown";
+
+	switch (READ_ONCE(gnss_common_ctl_dev.gnss_status)) {
+	case GNSS_STATUS_POWEROFF:
+		state = "off";
+		break;
+	case GNSS_STATUS_POWERON_GOING:
+	case GNSS_STATUS_POWEROFF_GOING:
+		state = "transition";
+#ifdef CONFIG_SC2342_INTEG
+		if (gnss_get_boot_status() == WCN_BOOT_CP2_ERR_BOOT)
+			state = "error";
+#endif
+		break;
+	case GNSS_STATUS_ASSERT:
+		state = "assert";
+		break;
+	case GNSS_STATUS_POWERON:
+#ifdef CONFIG_SC2342_INTEG
+		if (gnss_get_boot_status() == WCN_BOOT_CP2_ERR_BOOT) {
+			state = "error";
+		} else {
+			int cp = gnss_cp_status_read();
+
+			if (cp == GNSS_CP_STATUS_SLEEP)
+				state = "sleep";
+			else if (cp >= 0)
+				state = "on";
+		}
+#else
+		state = "on";
+#endif
+		break;
+	}
+
+	return scnprintf(buf, PAGE_SIZE, "%s\n", state);
+}
+static DEVICE_ATTR_RO(gnss_engine_state);
 #ifndef CONFIG_SC2342_INTEG
 static uint gnss_op_reg;
 static uint gnss_indirect_reg_offset;
@@ -564,6 +639,7 @@ static struct attribute *gnss_common_ctl_attrs[] = {
 	&dev_attr_gnss_power_enable.attr,
 	&dev_attr_gnss_dump.attr,
 	&dev_attr_gnss_status.attr,
+	&dev_attr_gnss_engine_state.attr,
 	&dev_attr_gnss_subsys.attr,
 #ifndef CONFIG_SC2342_INTEG
 	&dev_attr_gnss_regr.attr,

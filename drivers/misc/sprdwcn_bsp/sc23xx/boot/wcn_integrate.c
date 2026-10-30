@@ -100,7 +100,7 @@ retry1:
 			usleep_range(8000, 10000);
 			goto retry1;
 		} else {
-			WCN_ERR("malloc err\n");
+			pr_err_ratelimited(WCN_HEADER_ERR "malloc err\n");
 			return NULL;
 		}
 	}
@@ -116,7 +116,7 @@ retry2:
 			usleep_range(8000, 10000);
 			goto retry2;
 		} else {
-			WCN_ERR("vmap err\n");
+			pr_err_ratelimited(WCN_HEADER_ERR "vmap err\n");
 			goto out;
 		}
 	} else {
@@ -177,7 +177,7 @@ int wcn_read_data_from_phy_addr(phys_addr_t phy_addr,
 		return 0;
 	}
 
-	WCN_ERR("wcn_mem_ram_vmap_nocache fail\n");
+	pr_err_ratelimited(WCN_HEADER_ERR "wcn_mem_ram_vmap_nocache fail\n");
 	return -1;
 }
 
