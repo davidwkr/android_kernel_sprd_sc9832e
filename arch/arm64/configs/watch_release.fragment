@@ -1,8 +1,11 @@
 # Release-only additions for the UNISOC SL8541E watches. Apply AFTER watch_hardening.fragment.
 # These remove development and measurement facilities that are used while bringing the
 # kernel up (and by the project's measurement tooling), so do not use for dev builds.
+# NOT READY: only use after the SELinux policy is fixed for enforcing and a release build
+# has booted with all services and vendor HALs checked on each device.
 
-# debugfs exposes driver internals (and some writable knobs) to root. Android 8.1 does not need it.
+# debugfs exposes driver internals (and some writable knobs) to root. AOSP 8.1 does not need it;
+# vendor HALs/daemons that read debugfs are not checked yet, so verify them on the device.
 # CONFIG_DEBUG_FS is not set
 # Kernel tracing (ftrace, events, atrace). Reduces attack surface and kernel size. atrace/systrace stop working.
 # CONFIG_FTRACE is not set
