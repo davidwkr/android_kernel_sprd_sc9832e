@@ -84,7 +84,7 @@ static void sbuf_rx_release_on_read(struct sbuf_ring *ring,
 			 ring->rx_wakelock_name);
 		wake_unlock(&ring->rx_wake_lock);
 		wake_lock_timeout(&ring->rx_wake_lock, HZ / 50);
-	} else {
+	} else if (ring->rx_wakelock_state) {
 		/* data left (short read): like stock, extend by 20 ms */
 		wake_lock_timeout(&ring->rx_wake_lock, HZ / 50);
 	}
