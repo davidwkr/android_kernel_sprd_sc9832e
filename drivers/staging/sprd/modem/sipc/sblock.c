@@ -438,8 +438,9 @@ int sblock_create_ex(u8 dst, u8 channel,
 		return -ENOMEM;
 	}
 
-	sblock->txblk_base = ringhd->txblk_addr;
-	sblock->rxblk_base = ringhd->rxblk_addr;
+	/* computed here, not read back from the peer-writable header */
+	sblock->txblk_base = sblock->mapped_smem_addr + hsize;
+	sblock->rxblk_base = sblock->txblk_base + txblocknum * txblocksize;
 
 	sblock->ring->header = sblock->smem_virt;
 	sblock->ring->txblk_virt = sblock->smem_virt +
@@ -668,7 +669,7 @@ int sblock_get(u8 dst, u8 channel, struct sblock *blk, int timeout)
 	wr = poolhd->txblk_wrptr;
 	rd = poolhd->txblk_rdptr;
 	if (wr != rd && sblock->state == SBLOCK_STATE_READY) {
-		u32 baddr, blen;
+		u32 baddr;
 
 		if (wr - rd > sblock->txblknum) {
 			pr_err_ratelimited("sblock_get %d-%d: bad tx pool occupancy %u (wr=%u rd=%u)\n",
@@ -680,14 +681,13 @@ int sblock_get(u8 dst, u8 channel, struct sblock *blk, int timeout)
 		}
 		txpos = sblock_get_ringpos(rd, sblock->txblknum);
 		baddr = ring->p_txblks[txpos].addr;
-		blen = ring->p_txblks[txpos].length;
 		poolhd->txblk_rdptr = rd + 1;
-		/* the block size is the AP's, not the one in shared memory */
-		if (sblock_peer_blk(baddr, blen, sblock->txblk_base,
+		/* the pool length is unused: blk->length is the AP txblksz */
+		if (sblock_peer_blk(baddr, 0, sblock->txblk_base,
 				    sblock->txblknum, sblock->txblksz,
 				    &index)) {
-			pr_err_ratelimited("sblock_get %d-%d: bad tx block 0x%x len %u dropped\n",
-					   dst, channel, baddr, blen);
+			pr_err_ratelimited("sblock_get %d-%d: bad tx block 0x%x dropped\n",
+					   dst, channel, baddr);
 			rval = -EIO;
 			goto unlock_get;
 		}
@@ -902,7 +902,7 @@ int sblock_receive(u8 dst, u8 channel,
 	wr = ringhd->rxblk_wrptr;
 	rd = ringhd->rxblk_rdptr;
 	if (wr != rd && sblock->state == SBLOCK_STATE_READY) {
-		u32 baddr, blen;
+		u32 baddr, blen, tries;
 
 		if (wr - rd > sblock->rxblknum) {
 			pr_err_ratelimited("sblock_receive %d-%d: bad rx ring occupancy %u (wr=%u rd=%u)\n",
@@ -912,24 +912,36 @@ int sblock_receive(u8 dst, u8 channel,
 			rval = -EIO;
 			goto unlock_recv;
 		}
-		rxpos = sblock_get_ringpos(rd, sblock->rxblknum);
-		baddr = ring->r_rxblks[rxpos].addr;
-		blen = ring->r_rxblks[rxpos].length;
-		ringhd->rxblk_rdptr = rd + 1;
-		if (sblock_peer_blk(baddr, blen, sblock->rxblk_base,
-				    sblock->rxblknum, sblock->rxblksz,
-				    &index)) {
-			pr_err_ratelimited("sblock_receive %d-%d: bad rx block 0x%x len %u dropped\n",
-					   dst, channel, baddr, blen);
-			rval = -EIO;
-			goto unlock_recv;
-		}
-		blk->addr = baddr - sblock->mapped_smem_addr +
+		/*
+		 * Skip bad descriptors: the peer only signals on empty to
+		 * non-empty, so give up only when nothing valid is left.
+		 */
+		rval = -EIO;
+		for (tries = 0; tries < sblock->rxblknum && rd != wr;
+		     tries++, rd++) {
+			rxpos = sblock_get_ringpos(rd, sblock->rxblknum);
+			baddr = ring->r_rxblks[rxpos].addr;
+			blen = ring->r_rxblks[rxpos].length;
+			ringhd->rxblk_rdptr = rd + 1;
+			/* clamp, so the block still returns to the pool */
+			if (blen > sblock->rxblksz)
+				blen = sblock->rxblksz;
+			if (sblock_peer_blk(baddr, blen, sblock->rxblk_base,
+					    sblock->rxblknum, sblock->rxblksz,
+					    &index)) {
+				pr_err_ratelimited("sblock_receive %d-%d: bad rx block 0x%x len %u dropped\n",
+						   dst, channel, baddr, blen);
+				continue;
+			}
+			blk->addr = baddr - sblock->mapped_smem_addr +
 			    sblock->smem_virt;
-		blk->length = blen;
-		pr_debug("sblock_receive: channel=%d, rxpos=%d, addr=%p, len=%d\n",
-			channel, rxpos, blk->addr, blk->length);
-		ring->rxrecord[index] = SBLOCK_BLK_STATE_PENDING;
+			blk->length = blen;
+			pr_debug("sblock_receive: channel=%d, rxpos=%d, addr=%p, len=%d\n",
+				channel, rxpos, blk->addr, blk->length);
+			ring->rxrecord[index] = SBLOCK_BLK_STATE_PENDING;
+			rval = 0;
+			break;
+		}
 	} else {
 		rval = sblock->state == SBLOCK_STATE_READY ? -EAGAIN : -EIO;
 	}
