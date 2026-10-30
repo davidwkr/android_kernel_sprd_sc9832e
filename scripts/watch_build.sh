@@ -79,12 +79,34 @@ MK -j"$JOBS" Image modules
 MALI=$SRC/drivers/gpu/arm/midgard/mali
 BT=$SRC/drivers/misc/sprdwcn_bsp/sipc_modules/bluetooth/driver
 FM=$SRC/drivers/misc/sprdwcn_bsp/sipc_modules/fm/driver
-# only clean a dir that is inside this repo (not a nested/foreign checkout)
+# The vendor module Kbuilds only build in their source dirs. Remove only the
+# files this build created there: snapshot the untracked/ignored files before
+# and delete the new ones afterwards (also on failure), so untracked work in
+# those dirs is never touched. Skip a dir that is not inside this repo.
+SNAP=$(mktemp -d)
+others() { git -C "$1" ls-files --others -z -- . 2>/dev/null; }
+for i in 0 1 2; do
+  d=$(printf '%s\n' "$MALI" "$BT" "$FM" | sed -n "$((i+1))p")
+  others "$d" > "$SNAP/$i"
+done
 clean_dirs() {
-  for d in "$MALI" "$BT" "$FM"; do
+  local i d f
+  for i in 0 1 2; do
+    d=$(printf '%s\n' "$MALI" "$BT" "$FM" | sed -n "$((i+1))p")
     [ "$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" = "$SRC" ] || continue
-    (cd "$d" && git clean -fq . && git clean -fqX .) || true
+    others "$d" | python3 -I -c '
+import os, sys
+before = set(open(sys.argv[1], "rb").read().split(b"\0"))
+base = sys.argv[2].encode()
+for p in sys.stdin.buffer.read().split(b"\0"):
+    if p and p not in before and b".." not in p.split(b"/"):
+        try:
+            os.remove(os.path.join(base, p))
+        except OSError:
+            pass
+' "$SNAP/$i" "$d" || true
   done
+  rm -rf "$SNAP"
 }
 
 echo "== external modules"
