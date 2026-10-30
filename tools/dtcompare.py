@@ -38,7 +38,10 @@ class ParseError(Exception):
 
 
 def load_dtb(path, dtc, tmp):
-    data = open(path, 'rb').read()
+    with open(path, 'rb') as fh:
+        data = fh.read(MAX_INPUT + 1)
+    if len(data) > MAX_INPUT:
+        raise ParseError('input larger than %d bytes' % MAX_INPUT)
     if data[:8] == sb.MAGIC:
         h, lay, _ = sb.parse(data)
         o, n = lay['dt']
@@ -64,7 +67,8 @@ def load_dtb(path, dtc, tmp):
                    timeout=60, preexec_fn=_limits)
     if os.path.getsize(out) > MAX_INPUT:
         raise ParseError('compiled DTB too large')
-    return open(out, 'rb').read()
+    with open(out, 'rb') as fh:
+        return fh.read(MAX_INPUT)
 
 
 MAX_DEPTH = 64

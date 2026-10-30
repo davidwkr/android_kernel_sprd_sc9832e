@@ -35,6 +35,7 @@ NODE_OPEN = re.compile(r'^(\t*)([\w,.@+-]*|/) \{$')
 MAX_INPUT = 64 << 20
 MAX_DEPTH = 64
 MAX_SUFFIX = 10000
+MAX_LABEL = 64
 
 
 class InputError(Exception):
@@ -230,6 +231,7 @@ def main(src, dst):
             lab = sane('_'.join(x.replace('@', '_') for x in parts[-k:]))
             if lab[0].isdigit():
                 lab = 'n_' + lab
+            lab = lab[:MAX_LABEL]
             if lab not in taken or k >= len(parts):
                 break
             k += 1
@@ -268,6 +270,8 @@ def main(src, dst):
            '// phandle / linux,phandle properties are kept on purpose so that the\n'
            '// compiled DTB uses the same phandle numbers as the stock DTB.\n')
     text = '\n'.join(out)
+    if len(text) > min(256 << 20, 4 * os.path.getsize(src) + (1 << 20)):
+        raise InputError('generated output too large')
     text = text.replace('/dts-v1/;\n', '/dts-v1/;\n\n' + hdr, 1)
     open(dst, 'w').write(text)
     print('%s: %d labels, %d converted properties' % (dst, len(labels), len(repl)))
