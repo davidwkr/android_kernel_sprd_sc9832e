@@ -44,6 +44,11 @@ NEWC_FIELDS = ('ino', 'mode', 'uid', 'gid', 'nlink', 'mtime', 'filesize',
                'check')
 MAX_ELF_SECTIONS = 4096
 MAX_OUT = 256 << 20      # decompressed size cap (bomb guard)
+MAX_IN_RAMDISK = 64 << 20  # input size caps
+MAX_IN_MISC = 64 << 20     # .ko, Module.symvers
+MAX_IN_KERNEL = 128 << 20
+MAX_ENTRIES = 100000
+PATH_MAX = 4096
 MAX_XZ_MEM = 128 << 20   # xz decoder memory limit
 HEX8 = re.compile(rb'[0-9A-Fa-f]{8}')
 
@@ -52,9 +57,13 @@ class Error(Exception):
     pass
 
 
-def read_file(path):
+def read_file(path, limit=MAX_IN_MISC):
     with open(path, 'rb') as f:
-        return f.read()
+        d = f.read(limit + 1)
+    if len(d) > limit:
+        raise Error('%s: over %d MiB, refusing' % (os.path.basename(path),
+                                                   limit >> 20))
+    return d
 
 
 def pad4(n):
@@ -158,7 +167,7 @@ def unpack_xz(d):
     used = len(d) - len(dec.unused_data)
     check = d[7] & 0x0f
     p = Packed('xz', d, out, dec.unused_data)
-    for preset in (6, 9):
+    for preset in (6,):
         try:
             c = lzma.compress(out, format=lzma.FORMAT_XZ, check=check,
                               preset=preset)
@@ -205,7 +214,7 @@ def compress(p, data):
 # ------------------------------------------------------------------ cpio --
 
 class Entry:
-    __slots__ = ('off', 'f', 'name', 'data_off', 'hdr_end', 'nul')
+    __slots__ = ('off', 'f', 'name', 'data_off', 'hdr_end', 'nul', 'long')
 
 
 def parse_cpio(c):
@@ -236,6 +245,7 @@ def parse_cpio(c):
             raise Error('cpio: name not NUL terminated at %d' % pos)
         # the kernel's unpacker uses the name up to the first NUL
         e.nul = b'\0' in raw[:-1]
+        e.long = ns > PATH_MAX   # the kernel skips such entries
         e.name = raw.split(b'\0')[0].decode('utf-8', 'backslashreplace')
         e.data_off = pad4(pos + NEWC_HDR + ns)
         e.hdr_end = e.data_off
@@ -243,6 +253,8 @@ def parse_cpio(c):
         if e.data_off + e.f['filesize'] > len(c):
             raise Error('cpio: entry data past end at %d' % pos)
         out.append(e)
+        if len(out) > MAX_ENTRIES:
+            raise Error('cpio: more than %d entries' % MAX_ENTRIES)
         if end <= pos:
             raise Error('cpio: entry does not advance at %d' % pos)
         pos = end
@@ -263,7 +275,26 @@ def anomalies(entries):
     or two entries extracting to the same path."""
     res = []
     seen = {}
+    links = set()
     for e in entries:
+        if (e.f['mode'] & 0o170000) == 0o120000:
+            n = norm(e.name)
+            links.add(n)
+            for d in MODULE_DIRS:
+                dd = d.rstrip('/')
+                if dd == n or dd.startswith(n + '/'):
+                    res.append('symlink %r is on the module dir path' %
+                               e.name)
+    for e in entries:
+        if e.long:
+            res.append('name of %d bytes over PATH_MAX (kernel skips it)' %
+                       e.f['namesize'])
+        parts = norm(e.name).split('/')
+        for k in range(1, len(parts)):
+            if '/'.join(parts[:k]) in links:
+                res.append('%r is under symlink %r' %
+                           (e.name, '/'.join(parts[:k])))
+                break
         if e.nul:
             res.append('embedded NUL in name %r' % e.name)
         n = norm(e.name)
@@ -412,7 +443,7 @@ def kernel_release(img):
 # ------------------------------------------------------------- commands ---
 
 def load(path):
-    p = decompress(read_file(path))
+    p = decompress(read_file(path, MAX_IN_RAMDISK))
     entries, end = parse_cpio(p.cpio)
     return p, entries, end
 
@@ -474,7 +505,7 @@ def cmd_replace(a):
         if b in new:
             raise Error('module %s given twice' % b)
         new[b] = read_file(path)
-    kimg = read_file(a.kernel) if a.kernel else None
+    kimg = read_file(a.kernel, MAX_IN_KERNEL) if a.kernel else None
     rel = kernel_release(kimg) if kimg is not None else None
     want_crc = symvers_layout_crc(a.symvers) if a.symvers else None
     if a.symvers and not a.kernel:
@@ -586,6 +617,9 @@ def cmd_replace(a):
     print('replaced %d module(s); cpio %d -> %d bytes; %s; wrote %s (%d '
           'bytes)' % (len(target), len(p.cpio), len(out), p.describe(),
                       a.out, len(blob)))
+    if p.params is None:
+        print('note: the stock compressed stream is not reproducible; the '
+              'output uses default %s settings and differs from it' % p.fmt)
     if not target:
         print('no replacements: compressed stream %s the stock one' %
               ('IDENTICAL to' if blob == p.raw else 'differs from'))
