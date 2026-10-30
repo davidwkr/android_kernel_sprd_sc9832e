@@ -264,20 +264,26 @@ static void gnss_power_on(bool enable)
 	if (enable && gnss_common_ctl_dev.gnss_status == GNSS_STATUS_POWEROFF) {
 		gnss_common_ctl_dev.gnss_status = GNSS_STATUS_POWERON_GOING;
 
-		/* special for cali fail flow */
 #ifdef CONFIG_SC2342_INTEG
-		if (gnss_get_boot_status() == WCN_BOOT_CP2_ERR_BOOT) {
-			GNSSCOMM_ERR("%s: last start failed\n", __func__);
-			gnss_common_ctl_dev.gnss_status = GNSS_STATUS_POWERON;
-			return;
-		}
+		/*
+		 * A failed start has been unwound by the boot code (core
+		 * off, state back to POWEROFF), so a new request is a real
+		 * retry: forget the previous failure.
+		 */
+		if (gnss_get_boot_status() == WCN_BOOT_CP2_ERR_BOOT)
+			gnss_set_boot_status(WCN_BOOT_CP2_OK); /* init val */
 #endif
 		ret = start_marlin(gnss_common_ctl_dev.gnss_subsys);
-		if (ret != 0)
+		if (ret != 0) {
 			GNSSCOMM_ERR("%s: start marlin failed ret=%d\n",
 					__func__, ret);
-		else
+			/* nothing is left powered by the GNSS start: allow
+			 * the HAL to retry without a reboot
+			 */
+			gnss_common_ctl_dev.gnss_status = GNSS_STATUS_POWEROFF;
+		} else {
 			gnss_common_ctl_dev.gnss_status = GNSS_STATUS_POWERON;
+		}
 	} else if (!enable && gnss_common_ctl_dev.gnss_status
 			== GNSS_STATUS_POWERON) {
 		gnss_common_ctl_dev.gnss_status = GNSS_STATUS_POWEROFF_GOING;
@@ -286,11 +292,17 @@ static void gnss_power_on(bool enable)
 			gnss_set_boot_status(WCN_BOOT_CP2_OK); /* init val */
 #endif
 		ret = stop_marlin(gnss_common_ctl_dev.gnss_subsys);
-		if (ret != 0)
+		if (ret == 0) {
+			gnss_common_ctl_dev.gnss_status = GNSS_STATUS_POWEROFF;
+		} else {
 			GNSSCOMM_INFO("%s: stop marlin failed ret=%d\n",
 				 __func__, ret);
-		else
-			gnss_common_ctl_dev.gnss_status = GNSS_STATUS_POWEROFF;
+			/* not opened: nothing to stop. Otherwise the stop was
+			 * refused (dump/loopcheck), the core is still up
+			 */
+			gnss_common_ctl_dev.gnss_status = (ret == -EINVAL) ?
+				GNSS_STATUS_POWEROFF : GNSS_STATUS_POWERON;
+		}
 	} else {
 		GNSSCOMM_INFO("%s: status is not match\n", __func__);
 	}
@@ -409,7 +421,8 @@ void gnss_dump_mem_ctrl_co(void)
 		return;
 	dump_flag = 1;
 
-	if (gnss_get_boot_status() == WCN_BOOT_CP2_ERR_BOOT)
+	if (gnss_get_boot_status() == WCN_BOOT_CP2_ERR_BOOT &&
+	    gnss_common_ctl_dev.gnss_status != GNSS_STATUS_POWEROFF)
 		gnss_common_ctl_dev.gnss_status = GNSS_STATUS_POWERON;
 
 	temp_status = gnss_common_ctl_dev.gnss_status;
@@ -496,13 +509,14 @@ static DEVICE_ATTR_RO(gnss_status);
  * not access the GNSS core: it reads the driver state and one status word
  * from the AP-side DDR carve-out (mapped per read, may sleep).
  *   off         software control state POWEROFF (never started or stopped via
- *               gnss_power_enable). Not proof the core is unpowered: the first
- *               Wi-Fi/BT start runs a GNSS calibration on its own
- *               (start_integrate_wcn()), and a failed one leaves it powered
+ *               gnss_power_enable). A failed start is unwound (core, rail and
+ *               sys domain off) and also lands here, shown as error
  *   transition  start or stop in progress (POWERON_GOING/POWEROFF_GOING)
  *               (shown as error if the boot status is ERR_BOOT)
  *   assert      the core asserted and a memory dump was taken
- *   error       started, but calibration/boot failed (WCN_BOOT_CP2_ERR_BOOT)
+ *   error       calibration/boot failed (WCN_BOOT_CP2_ERR_BOOT). The failed
+ *               start was unwound and the state is back to POWEROFF; the
+ *               value is kept until the next start request clears it
  *   sleep       driver state POWERON and the firmware reports status 6
  *   on          driver state POWERON and any other firmware status
  *   unknown     POWERON but the status word could not be read
@@ -516,6 +530,11 @@ static ssize_t gnss_engine_state_show(struct device *dev,
 	switch (READ_ONCE(gnss_common_ctl_dev.gnss_status)) {
 	case GNSS_STATUS_POWEROFF:
 		state = "off";
+#ifdef CONFIG_SC2342_INTEG
+		/* last start failed and was unwound; a retry is possible */
+		if (gnss_get_boot_status() == WCN_BOOT_CP2_ERR_BOOT)
+			state = "error";
+#endif
 		break;
 	case GNSS_STATUS_POWERON_GOING:
 	case GNSS_STATUS_POWEROFF_GOING:
