@@ -44,7 +44,9 @@
 #define COMMAND_HEAD        1
 #define STTY_SBUF_WRITE_TIMEOUT_MS 3000
 /* rx wake lock hold: data is read in the sbuf notifier, then only the tty
- * flip work and the HCI reader need to run (default sbuf hold is HZ / 2)
+ * flip work and the HCI reader need to run (default sbuf hold is HZ / 2).
+ * No release-on-read: the reader is the notifier, which runs before sbuf
+ * arms the hold, so the hold is simply this long.
  */
 #define STTY_SBUF_RX_WAKE_MS 200
 
@@ -556,6 +558,7 @@ static int  stty_probe(struct platform_device *pdev)
 					dev.platform_data;
 	struct stty_device *stty;
 	int rval = 0;
+	typeof(&sbuf_set_rx_wakelock_timeout) set_rx_wake;
 
 	if (pdev->dev.of_node && !pdata) {
 		rval = stty_parse_dt(&pdata, &pdev->dev);
@@ -594,8 +597,13 @@ static int  stty_probe(struct platform_device *pdev)
 		return rval;
 	}
 
-	sbuf_set_rx_wakelock_timeout(pdata->dst, pdata->channel,
-				     pdata->rx_bufid, STTY_SBUF_RX_WAKE_MS);
+	/* optional: a kernel without the per-ring timeout keeps HZ / 2 */
+	set_rx_wake = symbol_get(sbuf_set_rx_wakelock_timeout);
+	if (set_rx_wake) {
+		set_rx_wake(pdata->dst, pdata->channel, pdata->rx_bufid,
+			    STTY_SBUF_RX_WAKE_MS, false);
+		symbol_put(sbuf_set_rx_wakelock_timeout);
+	}
 
 	pr_debug("stty_probe init device addr: 0x%p\n", stty);
 	platform_set_drvdata(pdev, stty);
