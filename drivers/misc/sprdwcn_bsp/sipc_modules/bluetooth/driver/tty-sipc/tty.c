@@ -43,6 +43,10 @@
 #define STTY_STATE_CLOSE	0
 #define COMMAND_HEAD        1
 #define STTY_SBUF_WRITE_TIMEOUT_MS 3000
+/* rx wake lock hold: data is read in the sbuf notifier, then only the tty
+ * flip work and the HCI reader need to run (default sbuf hold is HZ / 2)
+ */
+#define STTY_SBUF_RX_WAKE_MS 200
 
 static unsigned int log_level = MTTY_LOG_LEVEL_DEBUG;
 
@@ -589,6 +593,9 @@ static int  stty_probe(struct platform_device *pdev)
 		pr_debug("regitster notifier failed (%d)\n", rval);
 		return rval;
 	}
+
+	sbuf_set_rx_wakelock_timeout(pdata->dst, pdata->channel,
+				     pdata->rx_bufid, STTY_SBUF_RX_WAKE_MS);
 
 	pr_debug("stty_probe init device addr: 0x%p\n", stty);
 	platform_set_drvdata(pdev, stty);
