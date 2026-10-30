@@ -28,3 +28,18 @@ CONFIG_SPRD_SIPC_WCN=y
 
 # Per-task delay accounting (android-recommended.config; read by taskstats clients).
 CONFIG_TASK_DELAY_ACCT=y
+
+# Backlight: every stock config has BACKLIGHT_PWM off and BACKLIGHT_SC2721_RGBLED on.
+# sprd_sharkle_defconfig has BACKLIGHT_PWM=y: its pwm-backlight driver (DT node "sprd_backlight")
+# registers the backlight name "sprd_backlight", the same name sprd_panel.c uses for the OLED
+# backlight (oled_backlight_init), so the second registration fails (return ignored) and brightness/AOD
+# can break. The OLED watches use the panel's own backlight.
+# CONFIG_BACKLIGHT_PWM is not set
+# sc2721_rgbled_bl.c matches only "sprd,sc2721-bltc-rgb", which is status "okay" only in the MT108
+# DT (ST77916 LCD, not is_oled, so no oled backlight): there it is the LCD backlight (also named
+# "sprd_backlight"). It does not probe on the other devices (node disabled), so it cannot collide.
+CONFIG_BACKLIGHT_SC2721_RGBLED=y
+
+# Boot-logo copy path of sprd_dispc.c (64-bit DMA mask, iova - 0x80000000): stock has it =y and
+# every stock DT carries video-mode panel entries; without it the first frame scans from a wrong address.
+CONFIG_DISP_LITE_R2P0=y

@@ -62,6 +62,10 @@ for f in $FRAGS; do
     done
     [ "$line" = "$last" ] || continue
     if ! grep -qxF "$line" "$O/.config"; then
+      # a symbol olddefconfig does not write (unreachable) counts as "not set"
+      case $line in
+        "# CONFIG_"*" is not set") grep -qE "^${opt}=" "$O/.config" || continue ;;
+      esac
       echo "MISMATCH ($f): wanted \"$line\", got \"$(grep -E "^(# )?${opt}([= ]|$)" "$O/.config" || echo missing)\"" >&2
       bad=$((bad+1))
     fi
@@ -75,7 +79,13 @@ MK -j"$JOBS" Image modules
 MALI=$SRC/drivers/gpu/arm/midgard/mali
 BT=$SRC/drivers/misc/sprdwcn_bsp/sipc_modules/bluetooth/driver
 FM=$SRC/drivers/misc/sprdwcn_bsp/sipc_modules/fm/driver
-clean_dirs() { for d in "$MALI" "$BT" "$FM"; do (cd "$d" && git clean -fq . && git clean -fqX .) || true; done; }
+# only clean a dir that is inside this repo (not a nested/foreign checkout)
+clean_dirs() {
+  for d in "$MALI" "$BT" "$FM"; do
+    [ "$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" = "$SRC" ] || continue
+    (cd "$d" && git clean -fq . && git clean -fqX .) || true
+  done
+}
 
 echo "== external modules"
 # build in the source dirs; copy first, clean afterwards (also on failure)
