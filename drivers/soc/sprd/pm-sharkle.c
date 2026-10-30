@@ -82,7 +82,8 @@
 	pr_info("##--"#_offset": 0x%08x\n", mid); \
 	} while (0)
 
-static u32 print_thread_enable = 1;
+/* debug aid, off by default: echo 1 > /d/power/print_thread_enable */
+static u32 print_thread_enable;
 static u32 print_thread_interval = 30;
 
 static u32 sprd_hard_irq[SPRD_HARD_INTERRUPT_NUM] = {0, };
@@ -844,16 +845,16 @@ static int sprd_deep_print_thread(void *data)
 	unsigned int cnt = 0;
 
 	while (1) {
-		wake_lock(&messages_wakelock);
-		if (print_thread_enable)
+		if (print_thread_enable) {
+			wake_lock(&messages_wakelock);
 			sprd_deep_sleep_status();
-		if (!pm_get_wakeup_count(&cnt, false)) {
-			pr_info("PM: has wakeup events in progressing\n");
-			pm_print_active_wakeup_sources();
-
+			if (!pm_get_wakeup_count(&cnt, false)) {
+				pr_info("PM: has wakeup events in progressing\n");
+				pm_print_active_wakeup_sources();
+			}
+			msleep(100);
+			wake_unlock(&messages_wakelock);
 		}
-		msleep(100);
-		wake_unlock(&messages_wakelock);
 		set_current_state(TASK_INTERRUPTIBLE);
 		schedule_timeout(print_thread_interval * HZ);
 	}
