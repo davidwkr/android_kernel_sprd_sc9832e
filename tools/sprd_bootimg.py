@@ -540,8 +540,10 @@ def cmd_pack(a):
     if os.path.exists(extra_p):
         e = read_file(extra_p)
         off = h['extra_offset']
-        if off + len(e) > pad_to or off < end:
-            raise Error('extra trailing data does not fit')
+        limit = pad_to - 64 if (avb and not a.no_avb) else pad_to
+        if off + len(e) > limit or off < end:
+            raise Error('extra trailing data does not fit (it may not '
+                        'overlap the image or the AVB footer)')
         out[off:off + len(e)] = e
     elif 'extra_offset' in h:
         raise Error('missing %s (header.json records trailing data at 0x%x); '
@@ -586,6 +588,9 @@ def cmd_pack(a):
             raise Error('self-check: %s section mismatch' % key)
     if pend != end:
         raise Error('self-check: image end mismatch')
+    if os.path.exists(extra_p):
+        if out[off:off + len(e)] != e:
+            raise Error('self-check: trailing data mismatch')
     if avb and not a.no_avb:
         fa = find_avb(bytes(out), end)
         if not fa or fa[0] != voff or fa[1] != len(vb) or fa[2] != end:
