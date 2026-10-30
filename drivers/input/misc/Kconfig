@@ -931,6 +931,15 @@ config HEARTRATE_HRS3918
 	help
 	  Accept the HRS3918 (chip ID 0x27) as a supported device.
 
+config HEARTRATE_HRS3300
+	bool "HRS3300 chip support"
+	depends on INPUT_SENSORS_HRS3XXX
+	default y
+	help
+	  Accept the HRS3300 (chip ID 0x21) as a supported device. Only
+	  probing, power and the sysfs/input interface are provided; no
+	  measurement is implemented for this chip.
+
 source "drivers/input/misc/lis2dh/Kconfig"
 
 source "drivers/input/misc/lsm6ds3/Kconfig"

@@ -1,15 +1,15 @@
 # MT108 (ST77916 360x360 LCD): see devices/mt108/SPEC.md. Merge on top of
 # the device config. DT touch: cst0xx_ts only (no hyn_ts node; btl_ts and
 # bd1xxx_hr have no driver). sprd_aod_idle is NOT enabled (CO5300 only).
-# hrs3xxx accepts only the HRS3918 id; the stock config selects HRS3300, so
-# the probe may fail on a unit with that chip. watch_otg.fragment is
-# deliberately not enabled.
+# hrs3xxx accepts HRS3918 (id 0x27) and HRS3300 (id 0x21, the stock
+# config's chip); probe and power only, no measurement for either chip.
 CONFIG_TOUCHSCREEN_CST0XX=y
 # no hyn_ts node, and the ST77916 LCD must never get CO5300 idle commands
 # CONFIG_TOUCHSCREEN_CST9217 is not set
 # CONFIG_SPRD_AOD_IDLE is not set
 CONFIG_INPUT_SENSORS_HRS3XXX=y
 CONFIG_HEARTRATE_HRS3918=y
+CONFIG_HEARTRATE_HRS3300=y
 CONFIG_SENSORS_SC7A22=y
 # "QST,qmax981" matches qma6981.c
 CONFIG_INPUT_QMA6981_I2C=y

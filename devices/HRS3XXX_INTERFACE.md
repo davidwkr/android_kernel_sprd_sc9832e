@@ -83,11 +83,13 @@ driven by a 40 ms timer plus the chip FIFO.
 
 ## Implemented by `drivers/input/misc/hrs3xxx.c`
 
-Probe (power GPIO, ID check, power off), input device and capabilities, `enable` and
+Probe (power GPIO, ID check for HRS3918 `0x27` and HRS3300 `0x21`, each behind its Kconfig bool `HEARTRATE_HRS3918` / `HEARTRATE_HRS3300`; `chipinfo` reports `hrs3918` or `hrs3300`; power off), input device and capabilities, `enable` and
 `chipinfo` attributes with the formats above, suspend/resume (sensor powered off while
 suspended, mode kept). Not implemented: chip measurement and the heart-rate/SpO2
 algorithms; while enabled the driver reports "no valid sample" (0 for bpm/SpO2/wear,
 -1 for REL_HWHEEL/REL_MISC) once per second.
+
+HRS3300 (unverified, no unit): only the ID (reg 0x00 = 0x21) is checked and ENABLE (reg 0x01) is written 0 for standby, which is the register and disabled state in the public hrs3300 register description (ENABLE 0x01, PDRIVER 0x0C, data 0x08/0x09/0x0A/0x0D/0x0E/0x0F). The power-up value (typ. 0x68), LED drive and sample readout are not programmed, so the HRS3300 does not measure yet; the stock path (HAL name `hrs3300`) is untested on a unit.
 
 Note: the input core in this tree drops EV_REL events whose value is 0
 (`input_get_disposition`), so an all-zero frame reaches userspace as
