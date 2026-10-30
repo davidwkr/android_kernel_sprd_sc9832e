@@ -18,17 +18,16 @@
 TAG=aod_idled
 D=/sys/kernel/aod_idle
 FIFO=/data/system/aod_idled.fifo
-PIDF=$FIFO.pid
 SUB=
 
 logi() { log -t "$TAG" -p i "$*"; }
 loge() { log -t "$TAG" -p e "$*"; }
 
 stop_reader() {
-	[ -f "$PIDF" ] && kill $(cat "$PIDF") 2>/dev/null	# logcat
+	# only the in-memory pid of our own reader subshell; it traps TERM and
+	# kills/waits its own logcat child
 	[ -n "$SUB" ] && { kill $SUB 2>/dev/null; wait $SUB 2>/dev/null; }
 	SUB=
-	rm -f "$PIDF"
 }
 
 cleanup() {
@@ -86,6 +85,7 @@ reconcile() {
 	return 1
 }
 
+rm -f "$FIFO"	# stale from a killed run
 logi "start"
 reconcile
 
@@ -103,8 +103,9 @@ while :; do
 		exec 3<>"$FIFO"		# read-write: no EOF when writers come and go
 		# reader: logcat blocks in the kernel until the next event (-T 1: no
 		# old backlog); "X" is written when it ends so the loop below wakes
-		( logcat -b events -T 1 power_screen_state:I screen_toggled:I '*:S' 2>/dev/null &
-		  echo $! > "$PIDF"; wait $!; echo X ) > "$FIFO" &
+		( trap 'kill $LP 2>/dev/null; wait $LP 2>/dev/null; exit 0' TERM
+		  logcat -b events -T 1 power_screen_state:I screen_toggled:I '*:S' 2>/dev/null &
+		  LP=$!; wait $LP; echo X ) > "$FIFO" &
 		SUB=$!
 		pending=0
 		while read -r line <&3; do

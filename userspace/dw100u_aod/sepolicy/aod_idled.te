@@ -18,10 +18,9 @@ allow aod_idled logcat_exec:file rx_file_perms;
 allow aod_idled dumpsys_exec:file rx_file_perms;
 allow aod_idled aod_idled_exec:file r_file_perms;
 
-# fifo + pid file in /data/system (system uid)
+# fifo in /data/system (system uid)
 allow aod_idled system_data_file:dir rw_dir_perms;
 allow aod_idled system_data_file:fifo_file create_file_perms;
-allow aod_idled system_data_file:file create_file_perms;
 
 # the two sysfs nodes (label in genfscon)
 type sysfs_aod_idle, fs_type, sysfs_type;
