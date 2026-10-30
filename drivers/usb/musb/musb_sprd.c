@@ -1289,6 +1289,14 @@ static void sprd_musb_role_exit(struct sprd_glue *glue)
 	 */
 	if (glue->vbus_irq > 0)
 		disable_irq(glue->vbus_irq);
+	if (glue->usbid_irq > 0)
+		disable_irq(glue->usbid_irq);
+	/*
+	 * Type-C notifier: unregistering from the blocking chain waits for a
+	 * callback in flight, so none can queue glue->work afterwards.
+	 * sprd_musb_exit() unregisters again later: harmless (-ENOENT).
+	 */
+	unregister_ext_notifier(&glue->hot_plug_nb);
 
 	/* leave host mode (boost off), then drain everything that can still
 	 * touch the glue before the child is destroyed */
