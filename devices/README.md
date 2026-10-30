@@ -46,6 +46,22 @@ Related: [`../TODO.md`](../TODO.md) (work plan), [`../KERNEL_TWEAKS.md`](../KERN
 - Header cmdline: `console=ttyS1,115200n8 buildvariant=user`. U-Boot adds `androidboot.hardware=sl8541e_1h10`, `lcd_id=...`, `lcd_base`, `lcd_size`, `vbat_ocv`, `sysdump_magic`, `modem=shutdown`, `ltemode=...`.
 - The ramdisk loads `mali.ko`, `sprdbt_tty.ko`, `sprd_fm.ko` from `/lib/modules` (`insmod` in the init scripts), and `sprdwl_ng.ko` from the same folder (loaded later by the Wi-Fi HAL). These must be rebuilt for a new kernel.
 
+### Repacking the boot image
+
+`tools/sprd_bootimg.py` (python3, stdlib only) inspects, unpacks and rebuilds these images. Run it with `python3 -I` on a copy of the dump, and keep dumps out of the repo.
+
+```
+python3 -I tools/sprd_bootimg.py info boot.img
+python3 -I tools/sprd_bootimg.py unpack boot.img dir/
+python3 -I tools/sprd_bootimg.py pack dir/ new.img --kernel Image [--ramdisk FILE] [--dt FILE]
+```
+
+- Layout: header page, kernel, ramdisk, DT table (each padded to 2048), zero fill, then the AVB vbmeta blob at the next 4096 boundary and the 64-byte AVB footer at the end of the 36700160-byte partition. `dt_size` is the header word after `page_size`.
+- The header id is SHA-1 over kernel, ramdisk, second (each followed by its size) and the DT table with its size, as in AOSP `mkbootimg` v0. `info` checks it; `pack` recomputes it.
+- `pack` with no substitutions reproduces the stock image byte for byte (checked on DM63, DW100U silver and one other DW100U stock dump, MT107, MT108 and DM82). With a new kernel the AVB blob moves to the new image end and the footer is updated, but its hash descriptor is stale: this only boots with the bootloader unlocked (orange).
+- The built `Image` is about 23 MB against 17 MB stock. It fits (about 25 MB used of 35 MB, and below the ramdisk address `0x05400000`). `pack` refuses a kernel whose runtime size reaches the ramdisk address.
+- Test procedure: flash the result to `recovery` only, as described in `TODO.md` section 7.
+
 ### Partitions (same on all three)
 
 `boot cache fbootlogo gpsbd gpsgl l_deltanv l_fixnv1 l_fixnv2 l_gdsp l_ldsp l_modem l_runtimenv1 l_runtimenv2 logo logo_2..6 misc miscdata persist pm_sys prodnv recovery sml sml_bak system trustos trustos_bak uboot uboot_bak uboot_log userdata vbmeta vbmeta_bak vendor wcnmodem`
