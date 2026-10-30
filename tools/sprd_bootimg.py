@@ -183,18 +183,52 @@ def avb_hash_desc(vb):
     return None
 
 
-def avb_hash_state(vb, image, size):
-    """'ok', 'stale' or 'unknown' for the hash descriptor over image[:size]."""
+def avb_hash_state(vb, image, orig):
+    """Check the hash descriptor over its own image_size.
+
+    Returns (state, descriptor, note); state is 'ok', 'stale' or 'unknown'.
+    A descriptor size that differs from the footer's original_image_size, or
+    that lies beyond the image, is reported in note and counts as stale.
+    """
     d = avb_hash_desc(vb)
     if not d:
-        return 'unknown', None
+        return 'unknown', None, 'no hash descriptor'
+    note = ''
+    if d['image_size'] != orig:
+        note = ('descriptor image_size %d != footer original_image_size %d'
+                % (d['image_size'], orig))
+    if d['image_size'] > len(image):
+        return 'stale', d, note or 'descriptor image_size out of bounds'
     try:
         m = hashlib.new(d['algo'])
     except ValueError:
-        return 'unknown', d
+        return 'unknown', d, 'unsupported hash algorithm ' + d['algo']
     m.update(d['salt'])
-    m.update(bytes(image[:size]))
-    return ('ok' if m.digest() == d['digest'] else 'stale'), d
+    m.update(memoryview(image)[:d['image_size']])
+    return ('ok' if m.digest() == d['digest'] and not note else 'stale'), \
+        d, note
+
+
+def nz_bounds(img, lo, hi, skip):
+    """First and last+1 non-zero offsets in img[lo:hi] outside the skip
+    ranges (sorted list of (start, end)), or None. O(1) extra memory."""
+    mv = memoryview(img)
+    first = last = None
+    pos, segs = lo, []
+    for s0, e0 in skip + [(hi, hi)]:
+        if s0 > pos:
+            segs.append((pos, s0))
+        pos = max(pos, e0)
+    for s0, e0 in segs:
+        for c in range(s0, e0, 1 << 20):
+            ce = min(c + (1 << 20), e0)
+            chunk = bytes(mv[c:ce])
+            if chunk.count(0) == len(chunk):
+                continue
+            if first is None:
+                first = c + len(chunk) - len(chunk.lstrip(b'\0'))
+            last = c + len(chunk.rstrip(b'\0'))
+    return None if first is None else (first, last)
 
 
 # ------------------------------------------------------------ DT / FDT ---
@@ -304,9 +338,10 @@ def cmd_info(a):
     if avb:
         print('avb            vbmeta at 0x%x size %d, footer original size %d '
               '(image end 0x%x)' % (avb[0], avb[1], avb[2], end))
-        st, d = avb_hash_state(img[avb[0]:avb[0] + avb[1]], img, avb[2])
-        print('avb hash       %s (partition %r, %s)' %
-              (st, d['name'] if d else '?', d['algo'] if d else '?'))
+        st, d, note = avb_hash_state(img[avb[0]:avb[0] + avb[1]], img, avb[2])
+        print('avb hash       %s (partition %r, %s)%s' %
+              (st, d['name'] if d else '?', d['algo'] if d else '?',
+               ', ' + note if note else ''))
     # id
     bid = bytes.fromhex(h['id_raw'])
     rec = detect_recipe(bid, k, r, s, dt)
@@ -332,6 +367,14 @@ def cmd_unpack(a):
     if not zero_ok:
         raise Error('non-zero page padding: cannot rebuild exactly')
     os.makedirs(a.dir, exist_ok=True)
+    managed = [os.path.join(a.dir, n) for n in
+               list(FILES.values()) + ['header.json']]
+    if os.listdir(a.dir) and not a.force:
+        raise Error('%s is not empty (use --force to replace the managed '
+                    'files)' % a.dir)
+    for m in managed:
+        if os.path.exists(m):
+            os.remove(m)
     for key, data in parts.items():
         if data:
             write_file(os.path.join(a.dir, FILES[key]), data)
@@ -343,8 +386,8 @@ def cmd_unpack(a):
     h['image_size'] = len(img)
     h['image_end'] = end
     # AVB blob + footer, then whatever else is non-zero after the image
-    rest = bytearray(img[end:])
     avb = find_avb(img, end)
+    skip = []
     if avb:
         voff, vsz, orig = avb
         write_file(os.path.join(a.dir, FILES['vbmeta']), img[voff:voff + vsz])
@@ -353,13 +396,11 @@ def cmd_unpack(a):
                         vbmeta_offset=voff, vbmeta_size=vsz,
                         original_image_size=orig,
                         footer_tail=img[-28:].hex())
-        rest[voff - end:voff - end + vsz] = bytes(vsz)
-        rest[-64:] = bytes(64)
-    nzs = [i for i, b in enumerate(rest) if b]
-    if nzs:
-        lo, hi = nzs[0], nzs[-1] + 1
-        write_file(os.path.join(a.dir, FILES['extra']), bytes(rest[lo:hi]))
-        h['extra_offset'] = end + lo
+        skip = [(voff, voff + vsz), (len(img) - 64, len(img))]
+    nz = nz_bounds(img, end, len(img), skip)
+    if nz:
+        write_file(os.path.join(a.dir, FILES['extra']), img[nz[0]:nz[1]])
+        h['extra_offset'] = nz[0]
     with open(os.path.join(a.dir, 'header.json'), 'w') as f:
         json.dump(h, f, indent=2)
         f.write('\n')
@@ -454,12 +495,13 @@ def cmd_pack(a):
             AVB_FOOTER_MAGIC, avb.get('major', 1), avb.get('minor', 0), end, voff,
             len(vb),
             bytes.fromhex(avb['footer_tail'])[:28])
-        st, d = avb_hash_state(vb, out, end)
+        st, d, note = avb_hash_state(vb, out, end)
         if st != 'ok':
             print('warning: AVB hash descriptor (partition %r) %s for this '
                   'image; only valid on an unlocked (orange) device. For a '
                   'recovery test, reuse the stock recovery vbmeta.bin.' %
-                  (d['name'] if d else '?', st), file=sys.stderr)
+                  (d['name'] if d else '?', st + (' (%s)' % note if note else '')),
+                  file=sys.stderr)
     write_file(a.out, bytes(out))
     print('packed %s: kernel %d ramdisk %d dt %d, image end 0x%x, total %d, '
           'id %s' % (a.out, len(k), len(r), len(dt), end, len(out),
@@ -477,6 +519,8 @@ def main():
     p = sub.add_parser('unpack', help='split an image into files')
     p.add_argument('img')
     p.add_argument('dir')
+    p.add_argument('--force', action='store_true',
+                   help='unpack into a non-empty dir, deleting old parts')
     p.set_defaults(fn=cmd_unpack)
     p = sub.add_parser('pack', help='rebuild an image from an unpacked dir')
     p.add_argument('dir')
