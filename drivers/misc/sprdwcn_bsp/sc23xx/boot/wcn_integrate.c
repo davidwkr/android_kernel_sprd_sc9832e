@@ -706,6 +706,11 @@ int wcn_power_enable_vddcon(bool enable)
 	if (s_wcn_device.vddwcn != NULL) {
 		if (enable) {
 			ret = regulator_enable(s_wcn_device.vddwcn);
+			if (ret) {
+				WCN_ERR("vddcon enable failed ret=%d\n", ret);
+				mutex_unlock(&(s_wcn_device.vddwcn_lock));
+				return ret;
+			}
 			s_wcn_device.vddwcn_en_count++;
 			if (wcn_platform_chip_type() ==
 				WCN_PLATFORM_TYPE_SHARKLE)
