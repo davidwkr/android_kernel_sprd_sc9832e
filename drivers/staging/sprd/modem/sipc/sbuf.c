@@ -757,27 +757,29 @@ int sbuf_write(u8 dst, u8 channel, u32 bufid,
 		}
 	}
 
-	if ((int)(ringhd->txbuf_wrptr - ringhd->txbuf_rdptr) < 0 ||
-	    (int)(ringhd->txbuf_wrptr - ringhd->txbuf_rdptr) > ring->tx_size) {
-		pr_err("sbuf_write: bufid = %d, channel = %d bad ptrs, rdptr=%d, wrptr=%d\n",
-		       bufid, channel, ringhd->txbuf_rdptr,
-		       ringhd->txbuf_wrptr);
-		if (rval >= 0)
-			rval = -EIO;
-	}
-
 	/*
-	 * rdptr is written by the peer: a value ahead of wrptr would make
-	 * the free-space computation below exceed the ring size.
+	 * rdptr is written by the peer and can change at any time: take one
+	 * snapshot of both pointers per iteration, validate the occupancy as
+	 * an unsigned value against the AP-side ring size and use only the
+	 * snapshot afterwards.
 	 */
-	while (left && (int)(ringhd->txbuf_wrptr - ringhd->txbuf_rdptr) >= 0 &&
-	       (int)(ringhd->txbuf_wrptr - ringhd->txbuf_rdptr) <
-	       ring->tx_size && sbuf->state == SBUF_STATE_READY) {
+	while (left && sbuf->state == SBUF_STATE_READY) {
+		u32 wr = ringhd->txbuf_wrptr;
+		u32 rd = ringhd->txbuf_rdptr;
+		u32 used = wr - rd;
+
+		if (used > (u32)ring->tx_size) {
+			pr_err("sbuf_write: bufid = %d, channel = %d bad ptrs, rdptr=%u, wrptr=%u\n",
+			       bufid, channel, rd, wr);
+			rval = -EIO;
+			break;
+		}
+		if (used == (u32)ring->tx_size)
+			break;	/* ring full */
+
 		/* calc txpos & txsize */
-		txpos = ring->txbuf_virt +
-			ringhd->txbuf_wrptr % ring->tx_size;
-		txsize = ring->tx_size -
-			(int)(ringhd->txbuf_wrptr - ringhd->txbuf_rdptr);
+		txpos = ring->txbuf_virt + wr % ring->tx_size;
+		txsize = ring->tx_size - used;
 		txsize = min(txsize, left);
 
 		tail = txpos + txsize - (ring->txbuf_virt + ring->tx_size);
@@ -821,9 +823,9 @@ int sbuf_write(u8 dst, u8 channel, u32 bufid,
 			 channel, txpos, txsize);
 
 		/* update tx wrptr */
-		ringhd->txbuf_wrptr = ringhd->txbuf_wrptr + txsize;
-		/* tx ringbuf is empty, so need to notify peer side */
-		if (ringhd->txbuf_wrptr - ringhd->txbuf_rdptr == txsize) {
+		ringhd->txbuf_wrptr = wr + txsize;
+		/* tx ringbuf was empty, so need to notify peer side */
+		if (used == 0) {
 			smsg_set(&mevt, channel,
 				 SMSG_TYPE_EVENT,
 				 SMSG_EVENT_SBUF_WRPTR,
@@ -949,30 +951,25 @@ int sbuf_read(u8 dst, u8 channel, u32 bufid,
 		}
 	}
 
-	while (left &&
-	       (ringhd->rxbuf_wrptr != ringhd->rxbuf_rdptr) &&
-	       sbuf->state == SBUF_STATE_READY) {
-		/* calc rxpos & rxsize */
-		rxpos = ring->rxbuf_virt +
-			ringhd->rxbuf_rdptr % ring->rx_size;
-		rxsize = (int)(ringhd->rxbuf_wrptr - ringhd->rxbuf_rdptr);
-		/* check overrun: wrptr is written by the peer */
-		if (rxsize < 0 || rxsize > ring->rx_size) {
-			pr_err("sbuf_read: bufid = %d, channel= %d rxsize=0x%x, rdptr=%d, wrptr=%d",
-			       bufid,
-			       channel,
-			       rxsize,
-			       ringhd->rxbuf_wrptr,
-			       ringhd->rxbuf_rdptr);
-			if (rxsize < 0) {
-				rval = -EIO;
-				break;
-			}
-			/* never copy more than the ring holds */
-			rxsize = ring->rx_size;
-		}
+	while (left && sbuf->state == SBUF_STATE_READY) {
+		/* one snapshot of the peer-written wrptr per iteration */
+		u32 wr = ringhd->rxbuf_wrptr;
+		u32 rd = ringhd->rxbuf_rdptr;
+		u32 used = wr - rd;
 
-		rxsize = min(rxsize, left);
+		if (!used)
+			break;
+
+		/* calc rxpos & rxsize */
+		rxpos = ring->rxbuf_virt + rd % ring->rx_size;
+		/* check overrun */
+		if (used > (u32)ring->rx_size) {
+			pr_err("sbuf_read: bufid = %d, channel= %d used=0x%x, rdptr=%u, wrptr=%u",
+			       bufid, channel, used, rd, wr);
+			/* never copy more than the ring holds */
+			used = ring->rx_size;
+		}
+		rxsize = min_t(u32, used, left);
 
 		pr_debug("sbuf_read: channel=%d, buf=%p, rxpos=%p, rxsize=%d\n",
 			 channel, u_buf.buf, rxpos, rxsize);
@@ -1014,10 +1011,9 @@ int sbuf_read(u8 dst, u8 channel, u32 bufid,
 		}
 
 		/* update rx rdptr */
-		ringhd->rxbuf_rdptr = ringhd->rxbuf_rdptr + rxsize;
-		/* rx ringbuf is full ,so need to notify peer side */
-		if (ringhd->rxbuf_wrptr - ringhd->rxbuf_rdptr ==
-		    ring->rx_size - rxsize) {
+		ringhd->rxbuf_rdptr = rd + rxsize;
+		/* rx ringbuf was full, so need to notify peer side */
+		if (wr - (rd + rxsize) == ring->rx_size - rxsize) {
 			smsg_set(&mevt, channel,
 				 SMSG_TYPE_EVENT,
 				 SMSG_EVENT_SBUF_RDPTR,
