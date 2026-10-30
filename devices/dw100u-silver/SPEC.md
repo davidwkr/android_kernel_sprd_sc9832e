@@ -66,3 +66,7 @@ Required for a working watch: Hynitron touch (present) and HRS3xxx heart rate (p
 ## Bring-up order
 
 This unit goes first: its touch driver is already in the tree.
+
+## AOD
+
+`CONFIG_SPRD_AOD_IDLE` (`arch/arm64/configs/dw100u_aod.fragment`, with `dw100u_touch.fragment`) puts the CO5300 in idle mode and gives double-tap wake from `hyn_ts`; details and test steps in `KERNEL_TWEAKS.md` (Display/AOD). It is meant to replace the userspace Magisk module `wearit_aod`; the helper script, `.rc` and the overlay `config_powerDecoupleAutoSuspendModeFromDisplay=true` (userspace) still have to be provided. Untested on hardware.

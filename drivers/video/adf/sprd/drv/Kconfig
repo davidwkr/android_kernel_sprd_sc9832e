@@ -21,7 +21,9 @@ config SPRD_AOD_IDLE
 	  Switches the MIPI-DSI OLED panel (CO5300) between normal and idle
 	  mode (DCS 0x38/0x39) from /sys/kernel/aod_idle/, with a separate
 	  idle brightness, and provides double-tap-to-wake from the
-	  "cst0xx_ts" touch screen through the "aod_dtap" input device.
-	  In-tree replacement for the stock aod_idle.ko of the DM63.
+	  "cst0xx_ts" (DM63) or "hyn_ts" (DW100U) touch screen through the
+	  "aod_dtap" input device.
+	  In-tree replacement for the stock aod_idle.ko of the DM63; also
+	  used on the DW100U.
 
 	  If unsure, say N.

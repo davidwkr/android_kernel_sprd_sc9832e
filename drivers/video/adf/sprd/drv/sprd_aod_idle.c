@@ -16,8 +16,8 @@
  *   /sys/kernel/aod_idle/peek             debug: write a DCS reg, read value
  *   input device "aod_dtap"               KEY_WAKEUP press+release
  *
- * While idle is on, an input filter on the "cst0xx_ts" touch screen swallows
- * all contacts; two touch-downs within dtap_ms emit KEY_WAKEUP.
+ * While idle is on, an input filter on the "cst0xx_ts" (DM63) or "hyn_ts"
+ * (DW100U) touch screen swallows all contacts; two touch-downs within dtap_ms emit KEY_WAKEUP.
  *
  * DSI commands are only sent while the panel and DSI platform devices are
  * runtime active (touching a powered-down DSI host can hang the SoC); both
@@ -52,7 +52,8 @@
 #define DCS_SET_BRIGHTNESS	0x51
 #define POWER_MODE_IDLE		0x40	/* 0x9c normal -> 0xdc idle on co5300 */
 
-#define TOUCH_NAME		"cst0xx_ts"
+/* touch screens that carry the double tap: DM63 (CST0xx), DW100U (Hynitron) */
+static const char * const touch_names[] = { "cst0xx_ts", "hyn_ts" };
 
 static struct panel_device *pd;
 static struct backlight_device *bd;	/* may be NULL: no level restore */
@@ -393,7 +394,14 @@ static bool dtap_filter(struct input_handle *handle, unsigned int type,
 
 static bool dtap_match(struct input_handler *handler, struct input_dev *dev)
 {
-	return dev->name && !strcmp(dev->name, TOUCH_NAME);
+	int i;
+
+	if (!dev->name)
+		return false;
+	for (i = 0; i < ARRAY_SIZE(touch_names); i++)
+		if (!strcmp(dev->name, touch_names[i]))
+			return true;
+	return false;
 }
 
 /* one touchscreen: a static handle, no allocation */

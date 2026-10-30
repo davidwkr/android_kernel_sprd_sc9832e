@@ -1,0 +1,5 @@
+# DW100U (silver V11H, V13M): panel idle mode (AOD) switch + double-tap wake
+# on the Hynitron touch screen ("hyn_ts"). Needs dw100u_touch.fragment.
+# The CO5300 command set is the same as on the DM63 (see KERNEL_TWEAKS.md).
+# Use =m to load it from an .rc (insmod sprd_aod_idle.ko).
+CONFIG_SPRD_AOD_IDLE=y
