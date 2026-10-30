@@ -48,15 +48,16 @@ Stop: `gnss_power_on(0)` -> `stop_marlin()` -> `stop_integrate_wcn_truely()` (`b
 1. `wcn_wait_wcn_deep_sleep()` polls `wcn_get_sleep_status()` (PMU_APB reg 0xd4, mask 0xf000) every 20 ms, up to `WCN_WAIT_SLEEP_MAX_COUNT` = 32 (640 ms). It never fails: after the timeout the stop continues anyway.
 2. `wcn_proc_native_stop()` writes the DT `ctrl_shutdown` registers (CPU hold).
 3. `wcn_power_enable_sys_domain(false)`: sets the WCN SYS top power-down bit only if neither Wi-Fi/BT nor GNSS is open (`wcn_open_status` check).
-4. `wcn_power_enable_vddcon(false)`: drops the `vddwcn` regulator reference (one enable per device start, one disable per device stop; regulator core refcount covers Wi-Fi/BT coexistence; 26 MHz sys control is turned off when the count reaches 0 on sharkle).
+4. `wcn_power_enable_vddcon(false)`: drops the `vddwcn` regulator reference (one enable per device start, one disable per device stop; regulator core refcount covers Wi-Fi/BT coexistence; 26 MHz sys control is turned off when the count reaches 0 on sharkle: `wcn_power_enable_vddcon()` at `boot/wcn_integrate.c:692-725`, `wcn_sys_ctrl_26m(false)` at line 722).
 5. `wcn_sys_soft_reset()`, `wcn_sys_soft_release()`, `wcn_sys_deep_sleep_en()`: act only when neither device is open.
 
-Result: when the HAL writes `gnss_power_enable=0` and Wi-Fi/BT are off, the GNSS core and the WCN domain are really powered down (rail, domain, 26 MHz), not just idled. If Wi-Fi/BT is on, only the GNSS CPU is held (step 2) and the shared rail/domain stay up for them. This is correct behaviour; no change.
+Result (the rail/domain-held claims follow from `wcn_power_enable_vddcon()` and `wcn_power_enable_sys_domain()` at `boot/wcn_integrate.c:480-515` and `692-725` plus the stop calls at `boot/wcn_integrate_boot.c:1105` and `1114`; the actual rail and domain state is inferred from the code and is checked by test step 4, not observed): when the HAL writes `gnss_power_enable=0` and Wi-Fi/BT are off, the GNSS core and the WCN domain are really powered down (rail, domain, 26 MHz; see the notes on what is inferred), not just idled. If Wi-Fi/BT is on, only the GNSS CPU is held (step 2) and the shared rail/domain stay up for them. This is correct behaviour; no change.
 
 Engine "sleep": HAL `SLEEP-ENABLE`/`SLEEP-TIMER`/`STOP-TIMER` are consumed by the GNSS firmware itself (they go over the data channel). The kernel does not implement or gate them. It only (a) lets the firmware report status 6 (sleep) in the shared DDR word `GNSS_STATUS_OFFSET` (0x14F004, `include/linux/gnss.h`), read by `gnss_status_get()` for the dump logic, and (b) on `PM_SUSPEND_PREPARE` signals the HAL through `gnss_pmnotify_ctl` (`gnss_pm_notify()`): while `gnss_status == POWERON` the notifier busy-waits up to 10 x 2 ms (`mdelay`) for the HAL to read the node, so each suspend with the engine on costs up to 20 ms of CPU. WCN suspend/resume hooks are compiled out (`SUSPEND_RESUME_ENABLE 0` in `boot/wcn_integrate_dev.h`), so nothing in the kernel keeps the core awake or forces it up. Whether the chip really enters its sleep state during a session is a firmware matter: use `gnss_engine_state` (below) to check it.
 
 Issues found, not changed (documented only, failure paths, cannot be tested without the hardware):
 
+- Stuck `POWERON_GOING`: `gnss_power_on()` sets `POWERON_GOING` before `start_marlin()` and only leaves it on success. If `start_marlin()` fails (calibration timeout, `gnss_set_boot_status(WCN_BOOT_CP2_ERR_BOOT)` at `boot/wcn_integrate_boot.c:645`, or a firmware download timeout/error), the state stays `POWERON_GOING` and every later start or stop logs "status is not match" and does nothing until reboot. `gnss_engine_state` shows `error` (ERR_BOOT) or `transition` (other failures).
 - A failed GNSS start leaves the core powered. `start_integrate_wcn_truely()` returns -1 on download timeout or `WCN_BOOT_CP2_ERR_BOOT` without setting the open bit, after `wcn_power_wq()` already took `vddcon` and the sys domain; `stop_integrate_wcn_truely()` then refuses (-EINVAL, "not opend"). In `gnss_power_on()` a stop after the early-return ERR_BOOT case leaves `gnss_status` in `POWEROFF_GOING`, and later starts are ignored ("status is not match") until reboot. Only reached when calibration/boot fails; a safe fix needs an unwind that is tested against the real failure.
 - `wcn_power_enable_sys_domain(true)` has an `else if` that also fires for `enable == true` when the domain is already marked on and nothing is open, which would put it in power-down just before a boot. Only reachable after a failed start (same cause as above).
 - `gnss_pm_notify()` spins in `mdelay()` in the suspend notifier (up to 20 ms) when the HAL does not read `gnss_pmnotify_ctl`. Harmless, small.
@@ -65,14 +66,14 @@ Issues found, not changed (documented only, failure paths, cannot be tested with
 
 #### New sysfs attribute `gnss_engine_state`
 
-`/sys/class/misc/gnss_common_ctl/gnss_engine_state`, mode 0444, read-only, added in `gnss_common_ctl.c` (`gnss_engine_state_show()`). Lock-free and does no hardware access: it reads the driver state word and one status word from the GNSS DDR carve-out (plain DDR, safe at any time). The result is a snapshot and may be stale by one transition. Existing attributes are unchanged.
+`/sys/class/misc/gnss_common_ctl/gnss_engine_state`, mode 0444, read-only, added in `gnss_common_ctl.c` (`gnss_engine_state_show()`). Lock-free and does not access the GNSS core: it reads the driver state word and one status word from the AP-side DDR carve-out, which is mapped per read (vmap/vunmap in `wcn_read_data_from_phy_addr()`, so it may sleep; a mapping failure logs rate limited and gives `unknown`). The result is a snapshot and may be stale by one transition. Existing attributes are unchanged.
 
 | Value | Meaning | Source |
 |---|---|---|
 | `off` | Core powered down, or never started | `gnss_common_ctl_dev.gnss_status == POWEROFF` |
-| `transition` | A start or stop is in progress | `POWERON_GOING` / `POWEROFF_GOING` |
+| `transition` | A start or stop is in progress. Persisting more than about 10 s means a stuck failed start (see Issues) | `POWERON_GOING` / `POWEROFF_GOING`, and boot status is not ERR_BOOT |
 | `assert` | Firmware asserted, memory dump taken | `ASSERT` (set by the dump path) |
-| `error` | Start requested but calibration/boot failed; the core is not usable | `POWERON` and `gnss_get_boot_status() == WCN_BOOT_CP2_ERR_BOOT` |
+| `error` | Start requested but calibration/boot failed; the core is not usable | `gnss_get_boot_status() == WCN_BOOT_CP2_ERR_BOOT` while the state is `POWERON`, `POWERON_GOING` or `POWEROFF_GOING` |
 | `sleep` | Engine running, firmware reports sleep | `POWERON` and DDR word at `GNSS_STATUS_OFFSET` == 6 |
 | `on` | Engine running, firmware status anything else (rf cali, init, init done, idle off/on) | `POWERON` and DDR word != 6 |
 | `unknown` | `POWERON`, but the DDR carve-out could not be mapped | read error |
@@ -87,7 +88,7 @@ Issues found, not changed (documented only, failure paths, cannot be tested with
 4. With Wi-Fi and BT off and the engine `off`: the WCN rail should be off. `cat /sys/kernel/debug/regulator/regulator_summary` (root, debugfs): the `vddwcn` consumer count 0 and use count 0. `dmesg` shows `vddwcn_en_count=0`.
 5. Suspend stats: `cat /sys/kernel/debug/wakeup_sources` (sbuf-4-4-0-rx `total_time`, `active_count`) and `cat /sys/power/suspend_stats` (success/fail counters) before and after a 10 minute screen-off session, once with the engine running and once after it stops. After the stop, WCN wakeup sources should stop growing and suspends should succeed.
 6. Battery: compare `dumpsys batterystats` or the current-now trace for 10 minutes with the engine `off` against the same device before this change; the new attribute is read-only and should not change it.
-7. Failure path (optional): start with the antenna/firmware file missing and confirm `error` or `transition` is reported instead of `on`, and note whether `gnss_status` gets stuck (documented issue above).
+7. Failure path (optional): start with the GNSS firmware file missing or the calibration failing and confirm `error` (calibration/boot failure) or `transition` is reported instead of `on`. `transition` persisting more than about 10 s means a stuck failed start: `gnss_status` stays at `POWERON_GOING` and later starts/stops are ignored ("status is not match") until reboot.
 
 ## 2. Flash (NAND / eMMC) write reduction
 

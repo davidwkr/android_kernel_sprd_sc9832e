@@ -371,10 +371,11 @@ static DEVICE_ATTR_RW(gnss_subsys);
 
 #ifdef CONFIG_SC2342_INTEG
 /*
- * Read the status word the GNSS firmware keeps in the shared DDR carve-out
- * (enum gnss_cp_status_subtype). The carve-out is plain DDR, so the read is
- * safe at any time, but the value is only meaningful while the core is up.
- * Returns -1 if the carve-out cannot be mapped.
+ * Read the status word the GNSS firmware keeps in the AP-side DDR carve-out
+ * (enum gnss_cp_status_subtype). The carve-out is mapped per read (vmap and
+ * vunmap in wcn_read_data_from_phy_addr()), so this may sleep and is for
+ * process context only; the value is only meaningful while the core is up.
+ * Returns -1 if the mapping fails (the failure log is rate limited).
  */
 static int gnss_cp_status_read(void)
 {
@@ -492,9 +493,11 @@ static DEVICE_ATTR_RO(gnss_status);
 
 /*
  * gnss_engine_state: read-only, diagnostic only. Takes no locks and does
- * not touch the hardware, only the driver state and a DDR status word.
+ * not access the GNSS core: it reads the driver state and one status word
+ * from the AP-side DDR carve-out (mapped per read, may sleep).
  *   off         driver state POWEROFF: core powered down (or never started)
  *   transition  start or stop in progress (POWERON_GOING/POWEROFF_GOING)
+ *               (shown as error if the boot status is ERR_BOOT)
  *   assert      the core asserted and a memory dump was taken
  *   error       started, but calibration/boot failed (WCN_BOOT_CP2_ERR_BOOT)
  *   sleep       driver state POWERON and the firmware reports status 6
@@ -514,6 +517,10 @@ static ssize_t gnss_engine_state_show(struct device *dev,
 	case GNSS_STATUS_POWERON_GOING:
 	case GNSS_STATUS_POWEROFF_GOING:
 		state = "transition";
+#ifdef CONFIG_SC2342_INTEG
+		if (gnss_get_boot_status() == WCN_BOOT_CP2_ERR_BOOT)
+			state = "error";
+#endif
 		break;
 	case GNSS_STATUS_ASSERT:
 		state = "assert";
