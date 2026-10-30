@@ -262,7 +262,7 @@ static int jpg_open(struct inode *inode, struct file *filp)
 	jpg_fp->is_clock_enabled = 0;
 	jpg_fp->is_jpg_acquired = 0;
 	jpg_fp->jpg_hw_dev = &jpg_hw_dev;
-	sprd_ion_pin_init(&jpg_fp->pins);
+	sprd_ion_pin_init(&jpg_fp->pins, "jpg");
 
 	jpg_hw_dev.condition_work_MBIO = 0;
 	jpg_hw_dev.condition_work_VLC = 0;

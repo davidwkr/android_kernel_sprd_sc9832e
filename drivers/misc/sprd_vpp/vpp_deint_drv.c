@@ -620,7 +620,7 @@ static int deint_open(struct inode *inode, struct file *filp)
 	deint_fp->is_deint_acquired = 0;
 	deint_fp->condition_work = 0;
 	deint_fp->deint_int_status = 0;
-	sprd_ion_pin_init(&deint_fp->pins);
+	sprd_ion_pin_init(&deint_fp->pins, "vpp_deint");
 
 	init_waitqueue_head(&deint_fp->wait_queue_work);
 

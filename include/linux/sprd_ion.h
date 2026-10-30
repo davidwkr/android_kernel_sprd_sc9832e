@@ -60,9 +60,10 @@ struct sprd_ion_pin_list {
 	struct list_head head;
 	spinlock_t lock;
 	unsigned int count;
+	const char *name;	/* for the "list full" warning */
 };
 
-void sprd_ion_pin_init(struct sprd_ion_pin_list *list);
+void sprd_ion_pin_init(struct sprd_ion_pin_list *list, const char *name);
 int sprd_ion_pin_add(struct sprd_ion_pin_list *list, unsigned long iova,
 		     size_t size, struct dma_buf *dmabuf);
 void sprd_ion_pin_release(struct sprd_ion_pin_list *list, unsigned long iova,

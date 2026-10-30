@@ -516,6 +516,7 @@ static void sprd_cppcore_dma_isr(void *priv)
  */
 static void cpp_clear_slot(struct cpp_iommu_info *pfinfo, int i)
 {
+	pfinfo->mapped[i] = 0;
 	sprd_ion_put(pfinfo->dmabuf_p[i]);
 	pfinfo->dmabuf_p[i] = NULL;
 	pfinfo->table[i] = NULL;
@@ -550,6 +551,7 @@ static void cpp_abandon_slots(struct cpp_iommu_info *pfinfo, int from)
 	int i;
 
 	for (i = from; i < 3; i++) {
+		pfinfo->mapped[i] = 0;
 		pfinfo->dmabuf_p[i] = NULL;
 		pfinfo->table[i] = NULL;
 		pfinfo->buf[i] = NULL;
@@ -636,6 +638,8 @@ int sprd_cpp_core_get_addr(
 				return -EFAULT;
 			}
 
+			pfinfo->mapped[i] = 1;
+
 			pfinfo->iova[i] = iommu_data.iova_addr
 					+ pfinfo->offset[i];
 		} else {
@@ -676,7 +680,8 @@ static int sprd_cpp_core_free_addr_unmap(
 		if (pfinfo->size[i] <= 0)
 			continue;
 
-		if (sprd_iommu_attach_device(pfinfo->dev) == 0) {
+		if (pfinfo->mapped[i] &&
+		    sprd_iommu_attach_device(pfinfo->dev) == 0) {
 			iommu_data.iova_addr = pfinfo->iova[i]
 					- pfinfo->offset[i];
 			iommu_data.iova_size = pfinfo->size[i];

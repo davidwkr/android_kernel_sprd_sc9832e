@@ -472,7 +472,7 @@ static int vsp_open(struct inode *inode, struct file *filp)
 	init_waitqueue_head(&vsp_fp->wait_queue_work);
 	vsp_fp->vsp_int_status = 0;
 	vsp_fp->condition_work = 0;
-	sprd_ion_pin_init(&vsp_fp->pins);
+	sprd_ion_pin_init(&vsp_fp->pins, "vsp_enc");
 
 	vsp_pw_on(VSP_PW_DOMAIN_VSP_ENC);
 

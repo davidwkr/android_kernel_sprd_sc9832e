@@ -252,8 +252,9 @@ struct sprd_ion_pin {
 	size_t size;
 };
 
-void sprd_ion_pin_init(struct sprd_ion_pin_list *list)
+void sprd_ion_pin_init(struct sprd_ion_pin_list *list, const char *name)
 {
+	list->name = name;
 	INIT_LIST_HEAD(&list->head);
 	spin_lock_init(&list->lock);
 	list->count = 0;
@@ -276,6 +277,9 @@ int sprd_ion_pin_add(struct sprd_ion_pin_list *list, unsigned long iova,
 	spin_lock(&list->lock);
 	if (list->count >= SPRD_ION_PIN_MAX) {
 		spin_unlock(&list->lock);
+		pr_warn_ratelimited("%s: pinned dma-buf list full (%d), mapping refused; is free_iova paired with get_iova?\n",
+				    list->name ? list->name : "sprd_ion",
+				    SPRD_ION_PIN_MAX);
 		kfree(pin);
 		return -ENOSPC;
 	}
