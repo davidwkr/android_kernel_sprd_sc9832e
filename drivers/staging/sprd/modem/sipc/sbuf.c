@@ -40,44 +40,52 @@
 
 /* *
  * sbuf_update_wakelock - according sbuf state, update sbuf wake lock
- * @state: the wake lock state, 1: means a notification armed the lock
- * since the last read, only then we do the below, 0: do nothing
- * @need: whether a wake lock is needed after the read, 1: hold it for
- * another 20 ms, 0: unlock it immediately
- * @release: only used when @need is 1. 1: drop the hold armed by the
- * notification first, so the lock really ends 20 ms after the read.
- * Without it the 20 ms is useless: wake_lock_timeout() only ever extends
- * a running timeout (__pm_wakeup_event()), it never shortens it.
- * @more: only used with @release. Expression, true if unread data is in the
- * ring; evaluated after the unlock, and then the full @hold is re-armed
- * @hold: hold time (jiffies) re-armed when @more
+ * @state: the wake lock state, 1: means have got a long wake lock,
+ * only state is 1 ,we can do below function,
+ * ortherwise system can't enter to sleep, 0: do nothing
+ * @ need:  whether need wake lock, 1: update wake lock time to 20ms,
+ * 0: unlock it immediately
  * @lock: wake lock point
  * @name: wake lock name
  */
-#define sbuf_update_wakelock(state, need, release, more, hold, lock, name)	\
+#define sbuf_update_wakelock(state, need, lock, name)	\
 ({	\
 	if (state) {	\
 		state = 0;	\
 		if (need) {	\
 			pr_debug("sbuf %s : wake_lock hz/50!\n", name);	\
-			if (release)	\
-				wake_unlock(lock);	\
 			wake_lock_timeout(lock, HZ / 50);	\
-			/* data may be left, or have arrived while we read:	\
-			 * the notification armed the hold before our unlock	\
-			 * and was cancelled by it, so re-arm if not drained	\
-			 */	\
-			if (release) {	\
-				smp_mb();	\
-				if (more)	\
-					wake_lock_timeout(lock, hold);	\
-			}	\
 		} else {	\
 			pr_debug("sbuf %s : wake_unlock!\n", name);	\
 			wake_unlock(lock);\
 		}	\
 	}	\
 })
+
+/* *
+ * sbuf_rx_release_on_read - end the rx hold ~20 ms after the ring is drained
+ * wake_lock_timeout() only ever extends a running timeout
+ * (__pm_wakeup_event()), it never shortens it, so the hold armed by the
+ * notification has to be dropped first. rx_wl_lock makes the drained check
+ * and the release atomic against sbuf_thread() arming the hold for new data.
+ * While unread data is left the hold and the state stay as they are.
+ */
+static void sbuf_rx_release_on_read(struct sbuf_ring *ring,
+				    VOLA_SBUF_RING *ringhd)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&ring->rx_wl_lock, flags);
+	if (ring->rx_wakelock_state &&
+	    ringhd->rxbuf_wrptr == ringhd->rxbuf_rdptr) {
+		ring->rx_wakelock_state = 0;
+		pr_debug("sbuf %s : release, wake_lock hz/50!\n",
+			 ring->rx_wakelock_name);
+		wake_unlock(&ring->rx_wake_lock);
+		wake_lock_timeout(&ring->rx_wake_lock, HZ / 50);
+	}
+	spin_unlock_irqrestore(&ring->rx_wl_lock, flags);
+}
 
 struct name_node {
 	struct list_head list;
@@ -239,6 +247,7 @@ static int sbuf_thread(void *data)
 	struct sbuf_ring *ring;
 	struct smsg mcmd, mrecv;
 	int rval, bufid;
+	unsigned long flags;
 	struct sched_param param = {.sched_priority = 90};
 
 	/*set the thread as a real time thread, and its priority is 90*/
@@ -331,14 +340,29 @@ static int sbuf_thread(void *data)
 					 ring->tx_wakelock_name);
 				break;
 			case SMSG_EVENT_SBUF_WRPTR:
+				/* arm the hold before readers can drain the
+				 * ring, see sbuf_rx_release_on_read()
+				 */
+				if (ring->rx_release_on_read) {
+					spin_lock_irqsave(&ring->rx_wl_lock,
+							  flags);
+					wake_lock_timeout(&ring->rx_wake_lock,
+							  ring->rx_wake_timeout);
+					ring->rx_wakelock_state = 1;
+					spin_unlock_irqrestore(&ring->rx_wl_lock,
+							       flags);
+				}
+
 				wake_up_interruptible_all(&ring->rxwait);
 				if (ring->handler)
 					ring->handler(SBUF_NOTIFY_READ,
 						      ring->data);
 
-				wake_lock_timeout(&ring->rx_wake_lock,
-						  ring->rx_wake_timeout);
-				ring->rx_wakelock_state = 1;
+				if (!ring->rx_release_on_read) {
+					wake_lock_timeout(&ring->rx_wake_lock,
+							  ring->rx_wake_timeout);
+					ring->rx_wakelock_state = 1;
+				}
 				pr_debug("sbuf %s : wake_lock %lu jiffies!\n",
 					 ring->rx_wakelock_name,
 					 ring->rx_wake_timeout);
@@ -482,6 +506,7 @@ int sbuf_create(u8 dst, u8 channel, u32 bufnum, u32 txbufsize, u32 rxbufsize)
 #endif
 		mutex_init(&ring->txlock);
 		mutex_init(&ring->rxlock);
+		spin_lock_init(&ring->rx_wl_lock);
 		ring->need_wake_lock = 1;
 		ring->rx_wake_timeout = HZ / 2;
 		ring->rx_release_on_read = 0;
@@ -784,9 +809,6 @@ int sbuf_write(u8 dst, u8 channel, u32 bufid,
 
 	sbuf_update_wakelock(ring->tx_wakelock_state,
 			     ring->need_wake_lock,
-			     0,
-			     0,
-			     0,
 			     &ring->tx_wake_lock,
 			     ring->tx_wakelock_name
 			    );
@@ -967,14 +989,14 @@ int sbuf_read(u8 dst, u8 channel, u32 bufid,
 		u_buf.buf += rxsize;
 	}
 
-	sbuf_update_wakelock(ring->rx_wakelock_state,
-			     ring->need_wake_lock,
-			     ring->rx_release_on_read,
-			     ringhd->rxbuf_wrptr != ringhd->rxbuf_rdptr,
-			     ring->rx_wake_timeout,
-			     &ring->rx_wake_lock,
-			     ring->rx_wakelock_name
-			    );
+	if (ring->rx_release_on_read && ring->need_wake_lock)
+		sbuf_rx_release_on_read(ring, ringhd);
+	else
+		sbuf_update_wakelock(ring->rx_wakelock_state,
+				     ring->need_wake_lock,
+				     &ring->rx_wake_lock,
+				     ring->rx_wakelock_name
+				    );
 
 	mutex_unlock(&ring->rxlock);
 
