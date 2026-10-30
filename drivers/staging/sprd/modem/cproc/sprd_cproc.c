@@ -120,14 +120,24 @@ struct cproc_dump_info {
 	u32 size;
 };
 
-static int list_each_dump_info(struct cproc_dump_info *base,
+/*
+ * Walk the dump descriptor table in modem-shared memory. The table is
+ * @size bytes long; never step outside it, whether or not the modem
+ * terminated it.
+ */
+static int list_each_dump_info(struct cproc_dump_info *base, u32 size,
 			       struct cproc_dump_info **info)
 {
 	struct cproc_dump_info *next;
-	int ret = 1;
+	u32 nr = size / sizeof(struct cproc_dump_info);
 
 	if (!info)
 		return 0;
+
+	if (!base || !nr) {
+		*info = NULL;
+		return 0;
+	}
 
 	next = *info;
 	if (!next)
@@ -135,14 +145,44 @@ static int list_each_dump_info(struct cproc_dump_info *base,
 	else
 		next++;
 
-	if (next->parent_name[0] != '\0') {
+	if (next < base + nr && next->parent_name[0] != '\0') {
 		*info = next;
-	} else {
-		*info = NULL;
-		ret = 0;
+		return 1;
 	}
 
-	return ret;
+	*info = NULL;
+	return 0;
+}
+
+static bool cproc_range_in(u64 start, u64 end, u64 rbase, u64 rsize)
+{
+	return rsize && start >= rbase && end <= rbase + rsize;
+}
+
+/*
+ * The descriptor's start/size come from the modem: only dump memory that
+ * the device tree gave to this cproc (CP image, its segments, iram and
+ * the descriptor region itself).
+ */
+static bool cproc_dump_range_ok(struct cproc_init_data *pd, u32 start, u32 size)
+{
+	u64 s = start, e = (u64)start + size;
+	u32 i;
+
+	if (e < s)
+		return false;
+	if (cproc_range_in(s, e, pd->base, pd->maxsz))
+		return true;
+	if (cproc_range_in(s, e, pd->mini_mem_paddr, pd->mini_mem_size))
+		return true;
+	if (pd->ctrl && cproc_range_in(s, e, pd->ctrl->iram_addr,
+				       pd->ctrl->iram_size))
+		return true;
+	for (i = 0; i < pd->segnr; i++)
+		if (cproc_range_in(s, e, pd->segs[i].base, pd->segs[i].maxsz))
+			return true;
+
+	return false;
 }
 
 static ssize_t sprd_cproc_seg_dump(u32 base,
@@ -405,21 +445,39 @@ static ssize_t cproc_proc_read(struct file *filp,
 
 	} else if ((flag & BE_MNDUMP) != 0) {
 		static struct cproc_dump_info *s_cur_info;
+		struct cproc_dump_info cur;
 		u8 head[sizeof(struct cproc_dump_info) + 32];
 		int len, total = 0;
 		loff_t offset = 0;
 		ssize_t written = 0;
+		struct cproc_init_data *pd = cproc->initdata;
 
 		if (!s_cur_info && *ppos)
 			return 0;
 
 		if (!s_cur_info)
-			list_each_dump_info(cproc->initdata->mini_mem,
+			list_each_dump_info(pd->mini_mem, pd->mini_mem_size,
 					    &s_cur_info);
 
 		while (s_cur_info) {
 			if (!count)
 				break;
+
+			/* one snapshot of the modem-written descriptor */
+			memcpy(&cur, s_cur_info, sizeof(cur));
+
+			if (!cproc_dump_range_ok(pd, cur.start_addr,
+						 cur.size)) {
+				pr_err("%s: mini-dump region 0x%x+0x%x rejected\n",
+				       __func__, cur.start_addr, cur.size);
+				*ppos = 0;
+				if (!list_each_dump_info(pd->mini_mem,
+							pd->mini_mem_size,
+							&s_cur_info))
+					break;
+				continue;
+			}
+
 			/*
 			 * Names live in modem-shared memory and may be
 			 * unterminated: bound the string reads and the
@@ -427,17 +485,17 @@ static ssize_t cproc_proc_read(struct file *filp,
 			 */
 			len = scnprintf(head, sizeof(head),
 					"%.*s_%.*s_0x%8x_0x%x.bin",
-					(int)sizeof(s_cur_info->parent_name),
-					s_cur_info->parent_name,
-					(int)sizeof(s_cur_info->name),
-					s_cur_info->name,
-					s_cur_info->start_addr,
-					s_cur_info->size);
+					(int)sizeof(cur.parent_name),
+					cur.parent_name,
+					(int)sizeof(cur.name),
+					cur.name,
+					cur.start_addr,
+					cur.size);
 
 			if (*ppos > len) {
 				offset = *ppos - len;
 				/* ppos is user-seekable: stay inside the dump */
-				if (offset > s_cur_info->size) {
+				if (offset > cur.size) {
 					*ppos = 0;
 					return total ? total : -EINVAL;
 				}
@@ -459,8 +517,8 @@ static ssize_t cproc_proc_read(struct file *filp,
 			count -= written;
 			if (count) {
 				written = sprd_cproc_seg_dump(
-						s_cur_info->start_addr,
-						s_cur_info->size,
+						cur.start_addr,
+						cur.size,
 						buf + total,
 						count,
 						offset);
@@ -470,7 +528,8 @@ static ssize_t cproc_proc_read(struct file *filp,
 					*ppos += written;
 				} else if (written == 0) {
 					if (list_each_dump_info(
-						cproc->initdata->mini_mem,
+						pd->mini_mem,
+						pd->mini_mem_size,
 						&s_cur_info))
 						*ppos = 0;
 				} else {
