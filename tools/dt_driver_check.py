@@ -23,10 +23,32 @@ MAXF = 2 << 20
 
 
 def read(p, lim=MAXF):
-    if not stat.S_ISREG(os.stat(p).st_mode) or os.path.getsize(p) > lim:
-        return ""
-    with open(p, "r", errors="replace") as f:
-        return f.read()
+    """Read at most lim bytes of a regular file; "" if not regular or larger."""
+    try:
+        fd = os.open(p, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        fd = os.open(p, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return ""
+        data = b""
+        while len(data) <= lim:
+            chunk = os.read(fd, lim + 1 - len(data))
+            if not chunk:
+                break
+            data += chunk
+        return "" if len(data) > lim else data.decode("utf-8", "replace")
+    finally:
+        os.close(fd)
+
+
+def esc(s):
+    """Escape everything non-printable in input-derived text."""
+    return re.sub(r"[^\x20-\x7e\t]", lambda m: "\\x%02x" % ord(m.group()) if ord(m.group()) < 256 else "\\u%04x" % ord(m.group()), s)
+
+
+def out(line):
+    print(esc(line))
 
 
 # ---------------------------------------------------------------- DTS parse
@@ -251,7 +273,7 @@ def main():
         hits = [(k, h) for k in cl for h in comp.get(k, [])]
         where = "%s:%d" % (n.path, c[1])
         if not hits:
-            print("NODRV\t%s\t%s" % (where, ",".join(cl)))
+            out("NODRV\t%s\t%s" % (where, ",".join(cl)))
             continue
         files = {}
         for k, (f, ln) in hits:
@@ -259,7 +281,7 @@ def main():
         built = [f for f in files if gate_file(cfg, src, f)]
         if not built:
             unk = [f for f in files if gate_file(cfg, src, f) is None]
-            print("%s\t%s\t%s\t%s" % ("UNKGATE" if unk else "NOTBUILT", where, ",".join(cl),
+            out("%s\t%s\t%s\t%s" % ("UNKGATE" if unk else "NOTBUILT", where, ",".join(cl),
                                       ",".join("%s:%d" % (f, files[f][1]) for f in files)))
             continue
         # property check against built matching files (+ same-composite siblings ignored)
@@ -271,15 +293,15 @@ def main():
                 seen.add(prop)
                 if fn == "of_get_child_by_name":
                     if not any(k.name.split("@")[0] == prop for k in n.kids):
-                        print("MISSING\t%s\tchild-node %s\t%s:%d" % (where, prop, f, ln))
+                        out("MISSING\t%s\tchild-node %s\t%s:%d" % (where, prop, f, ln))
                     continue
                 if prop not in n.props:
                     if fn.startswith("of_get_named_gpio") or fn.startswith("of_parse_phandle") or "of_property_read" in fn or "get_property" in fn or "find_property" in fn or fn in ("regulator_get", "gpiod_get"):
-                        print("MISSING\t%s\t%s\t%s:%d %s" % (where, prop, f, ln, fn))
+                        out("MISSING\t%s\t%s\t%s:%d %s" % (where, prop, f, ln, fn))
                 elif fn == "of_property_read_u32_array":
                     m = re.search(r",\s*(\d+)\s*$", tail.strip())
                     if m and cells(n.props[prop][0]) != int(m.group(1)):
-                        print("CELLS\t%s\t%s has %d, driver wants %s\t%s:%d" % (
+                        out("CELLS\t%s\t%s has %d, driver wants %s\t%s:%d" % (
                             where, prop, cells(n.props[prop][0]), m.group(1), f, ln))
     return 0
 
