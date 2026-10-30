@@ -5,6 +5,9 @@
 # the probe may fail on a unit with that chip. watch_otg.fragment is
 # deliberately not enabled.
 CONFIG_TOUCHSCREEN_CST0XX=y
+# no hyn_ts node, and the ST77916 LCD must never get CO5300 idle commands
+# CONFIG_TOUCHSCREEN_CST9217 is not set
+# CONFIG_SPRD_AOD_IDLE is not set
 CONFIG_INPUT_SENSORS_HRS3XXX=y
 CONFIG_HEARTRATE_HRS3918=y
 CONFIG_SENSORS_SC7A22=y
