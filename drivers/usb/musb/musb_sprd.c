@@ -481,8 +481,9 @@ static int musb_sprd_resume_child(struct device *dev, void *data)
 {
 	int ret;
 
+	/* returns 1 if already active: that is not an error */
 	ret = pm_runtime_get_sync(dev);
-	if (ret) {
+	if (ret < 0) {
 		dev_err(dev, "musb child device enters resume failed!!!\n");
 		/* get_sync() took a reference even though it failed */
 		pm_runtime_put_noidle(dev);
@@ -569,12 +570,20 @@ static void sprd_musb_recover_work(struct work_struct *work)
 	struct musb *musb = platform_get_drvdata(glue->musb);
 
 	dev_info(glue->dev, "try to recover musb controller\n");
+#ifdef CONFIG_USB_MUSB_SPRD_ROLE_SYSFS
+	if (READ_ONCE(glue->role_busy))
+		return;
+#endif
 	if (!glue->vbus_active || !is_host_active(musb))
 		return;
 	glue->vbus_active = 0;
 	glue->wq_mode = USB_DR_MODE_HOST;
 	schedule_work(&glue->work);
 	msleep(300);
+#ifdef CONFIG_USB_MUSB_SPRD_ROLE_SYSFS
+	if (READ_ONCE(glue->role_busy))
+		return;		/* a role change owns the state now */
+#endif
 	glue->vbus_active = 1;
 	glue->wq_mode = USB_DR_MODE_HOST;
 	schedule_work(&glue->work);
@@ -641,8 +650,9 @@ static void sprd_musb_work(struct work_struct *work)
 		if (glue->dr_mode == USB_DR_MODE_HOST)
 			MUSB_HST_MODE(musb);
 
+		/* returns 1 if already active: that is not an error */
 		ret = pm_runtime_get_sync(glue->dev);
-		if (ret) {
+		if (ret < 0) {
 			spin_lock_irqsave(&glue->lock, flags);
 			glue->dr_mode = USB_DR_MODE_UNKNOWN;
 			spin_unlock_irqrestore(&glue->lock, flags);
@@ -1026,6 +1036,13 @@ static int __sprd_musb_role_set(struct sprd_glue *glue, bool host, bool final)
 	if (!musb)
 		return -ENODEV;
 
+	/*
+	 * Keep recover_work from touching vbus_active / wq_mode behind our
+	 * back: block it first, before any state is read or written.
+	 */
+	WRITE_ONCE(glue->role_busy, true);
+	cancel_delayed_work_sync(&glue->recover_work);
+
 	/* may sleep, so read it before taking the spinlock */
 	vbus = gpio_is_valid(glue->gpio_device) ?
 		!!gpio_get_value(glue->gpio_device) : 0;
@@ -1059,11 +1076,7 @@ static int __sprd_musb_role_set(struct sprd_glue *glue, bool host, bool final)
 	spin_unlock_irqrestore(&glue->lock, flags);
 
 	if (!queue)
-		return ret;
-
-	/* keep recover_work from restarting host behind our back */
-	WRITE_ONCE(glue->role_busy, true);
-	cancel_delayed_work_sync(&glue->recover_work);
+		goto done;
 
 	schedule_work(&glue->work);
 	/* return when the switch is done, so "device; adb" works */
@@ -1269,6 +1282,13 @@ static void sprd_musb_role_exit(struct sprd_glue *glue)
 		role_kobj = NULL;
 	}
 	role_glue = NULL;
+
+	/*
+	 * The vbus irq can still queue glue->work / re-arm state; it is only
+	 * freed later (devm / musb exit), so silence it before draining.
+	 */
+	if (glue->vbus_irq > 0)
+		disable_irq(glue->vbus_irq);
 
 	/* leave host mode (boost off), then drain everything that can still
 	 * touch the glue before the child is destroyed */
