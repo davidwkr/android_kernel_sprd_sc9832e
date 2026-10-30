@@ -1370,7 +1370,7 @@ static int qmax981_i2c_probe(struct i2c_client *client,
 	struct qmax981_data *qmax981 = NULL;
 	struct QMAX981_acc_platform_data *pdata = client->dev.platform_data;
 	int err = 0;
-	char buf = 0 ;
+	char buf[16] = { 0 };	/* chip id string "XX-XX\n" */
 	struct class *gsensor_class;
 	struct device *gsensor_cmd_dev;
 	struct device_node *np;
@@ -1433,7 +1433,7 @@ static int qmax981_i2c_probe(struct i2c_client *client,
 
 	dev_info(&client->dev, "%s found\n", id->name);
 
-	err = qmax981_read_chip_id(client, &buf);
+	err = qmax981_read_chip_id(client, buf);
 	if (err < 0) {
 		LOG_INFO("%s: qmax981 read id fail!\n", __func__);
 		return err;
