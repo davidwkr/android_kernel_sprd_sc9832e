@@ -21,57 +21,15 @@ CROSS_COMPILE=${CROSS_COMPILE:-aarch64-linux-gnu-}
 JOBS=${JOBS:-$(nproc)}
 export ARCH CROSS_COMPILE
 
-case $DEVICE in
-  dm63)                      DEVFRAGS="dm63_touch watch_hrs watch_sc7a22 dm63_aod" ;;
-  dw100u-silver|dw100u-v13m) DEVFRAGS="dw100u_touch watch_hrs watch_sc7a22 dw100u_aod" ;;
-  mt107)                     DEVFRAGS="mt107" ;;
-  mt108)                     DEVFRAGS="mt108" ;;
-  dm82)                      DEVFRAGS="dm82" ;;
-  *) usage ;;
-esac
-# parity before hardening: hardening wins on any overlap
-FRAGS="watch_base watch_stock_parity watch_hardening $DEVFRAGS"
-CFG=$SRC/arch/arm64/configs
-
+. "$(dirname "${BASH_SOURCE[0]}")/watch_lib.sh"
+[ "$DEVICE" != dw100u ] || usage   # the shared name is only for watch_defconfig.sh
+watch_select "$DEVICE"
 cd "$SRC"
 mkdir -p "$O" "$RES"
 MK() { make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" O="$O" "$@"; }
 
-echo "== config: sprd_sharkle_defconfig + $FRAGS"
-MK sprd_sharkle_defconfig
-files=()
-for f in $FRAGS; do files+=("$CFG/$f.fragment"); done
-./scripts/kconfig/merge_config.sh -m -O "$O" "$O/.config" "${files[@]}" >/dev/null
-MK olddefconfig
-
-echo "== verify fragments"
-bad=0
-for f in $FRAGS; do
-  while IFS= read -r line; do
-    case $line in
-      CONFIG_*=*) ;;
-      "# CONFIG_"*" is not set") ;;
-      *) continue ;;
-    esac
-    opt=${line#\# }; opt=${opt%%[= ]*}
-    # a later fragment may override an earlier one: check only the last setting
-    last=
-    for g in $FRAGS; do
-      l=$(grep -E "^(# )?${opt}([= ]|$)" "$CFG/$g.fragment" | tail -n1 || true)
-      if [ -n "$l" ]; then last=$l; fi
-    done
-    [ "$line" = "$last" ] || continue
-    if ! grep -qxF "$line" "$O/.config"; then
-      # a symbol olddefconfig does not write (unreachable) counts as "not set"
-      case $line in
-        "# CONFIG_"*" is not set") grep -qE "^${opt}=" "$O/.config" || continue ;;
-      esac
-      echo "MISMATCH ($f): wanted \"$line\", got \"$(grep -E "^(# )?${opt}([= ]|$)" "$O/.config" || echo missing)\"" >&2
-      bad=$((bad+1))
-    fi
-  done < "$CFG/$f.fragment"
-done
-if [ "$bad" -ne 0 ]; then echo "FAIL: $bad fragment option(s) did not take effect" >&2; exit 1; fi
+watch_assemble
+watch_verify
 
 echo "== build Image + modules (-j$JOBS)"
 MK -j"$JOBS" Image modules
