@@ -10,8 +10,10 @@ set -euo pipefail
 
 usage() { echo "usage: $0 [--check] DEVICE|all  (dm63|dw100u|mt107|mt108|dm82)" >&2; exit 2; }
 CHECK=0
-if [ "${1:-}" = "--check" ]; then CHECK=1; shift; fi
-[ $# -eq 1 ] || usage
+args=()
+for a in "$@"; do if [ "$a" = "--check" ]; then CHECK=1; else args+=("$a"); fi; done
+[ ${#args[@]} -eq 1 ] || usage
+set -- "${args[0]}"
 
 SRC=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 ARCH=${ARCH:-arm64}
@@ -20,7 +22,8 @@ export ARCH CROSS_COMPILE
 . "$(dirname "${BASH_SOURCE[0]}")/watch_lib.sh"
 cd "$SRC"
 
-TMP=$(mktemp -d)
+mkdir -p "$HOME/.cache"
+TMP=$(mktemp -d "$HOME/.cache/watch_defconfig.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
 MK() { make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" O="$O" "$@"; }
 
@@ -29,7 +32,7 @@ one() {
   O=$TMP/obj-$DEFCONFIG
   mkdir -p "$O"
   watch_assemble
-  watch_verify || return 1
+  watch_verify
   MK savedefconfig >/dev/null
   if [ "$CHECK" -eq 1 ]; then
     if ! diff -u "$CFG/$DEFCONFIG" "$O/defconfig" >"$TMP/diff"; then
@@ -46,7 +49,10 @@ one() {
 
 if [ "$1" = all ]; then
   rc=0
-  for d in dm63 dw100u mt107 mt108 dm82; do one "$d" || rc=1; done
+  # one process per device so errexit stays active inside each run
+  for d in dm63 dw100u mt107 mt108 dm82; do
+    "$0" $([ "$CHECK" -eq 1 ] && echo --check) "$d" || rc=1
+  done
   exit $rc
 fi
 one "$1"

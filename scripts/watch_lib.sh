@@ -1,6 +1,8 @@
 # Shared by watch_build.sh and watch_defconfig.sh: the one place that knows
 # which fragments make up a device config. Source it, do not run it.
-# Needs: usage() defined by the caller; SRC, ARCH, CROSS_COMPILE for MK.
+# Needs: usage() defined by the caller; SRC; for watch_assemble/watch_verify
+# also MK() and O set. Call them plainly (not as `f || x`), so the caller's
+# `set -e` stays active inside them; they fail through errexit/return 1.
 
 # watch_select DEVICE: sets DEVFRAGS, FRAGS, CFG, DEFCONFIG (file name without
 # path). dw100u is accepted as the name of the shared silver/v13m config.
@@ -21,6 +23,8 @@ watch_select() {
 
 # watch_assemble: sprd_sharkle_defconfig + fragments + olddefconfig into $O/.config
 watch_assemble() {
+  local f files
+  cd "$SRC"
   echo "== config: sprd_sharkle_defconfig + $FRAGS"
   MK sprd_sharkle_defconfig
   files=()
@@ -31,9 +35,10 @@ watch_assemble() {
 
 # watch_verify: fail unless every fragment line took effect in $O/.config
 watch_verify() {
+  local f g l line opt last bad=0
   echo "== verify fragments"
-  bad=0
   for f in $FRAGS; do
+    [ -r "$CFG/$f.fragment" ] || { echo "FAIL: cannot read $CFG/$f.fragment" >&2; return 1; }
     while IFS= read -r line; do
       case $line in
         CONFIG_*=*) ;;

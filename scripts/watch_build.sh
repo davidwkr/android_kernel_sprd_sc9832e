@@ -22,13 +22,14 @@ JOBS=${JOBS:-$(nproc)}
 export ARCH CROSS_COMPILE
 
 . "$(dirname "${BASH_SOURCE[0]}")/watch_lib.sh"
+[ "$DEVICE" != dw100u ] || usage   # the shared name is only for watch_defconfig.sh
 watch_select "$DEVICE"
 cd "$SRC"
 mkdir -p "$O" "$RES"
 MK() { make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" O="$O" "$@"; }
 
 watch_assemble
-watch_verify || exit 1
+watch_verify
 
 echo "== build Image + modules (-j$JOBS)"
 MK -j"$JOBS" Image modules
