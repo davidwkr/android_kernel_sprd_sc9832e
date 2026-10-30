@@ -133,7 +133,7 @@ The 4395 mV end voltage equals the DW100U silver (V11H) values; it is not the DM
 | `sprd,sc7a22` | `drivers/input/misc/sc7a22.c` (`SENSORS_SC7A22`) | yes |
 | `QST,qmax981` | `drivers/input/misc/qma6981.c` (`INPUT_QMA6981_I2C`; the stock symbol is `INPUT_QMAX981`) | yes (as a sibling driver; the DM63 / DW100U note it unbound) |
 | `compass,af6837` | none | not needed (unbound on DM63 / DW100U) |
-| `magnetic,och1970` | none (`SENSORS_OCH1970` missing) | not needed unless the hall sensor is wanted |
+| `magnetic,och1970` | `drivers/input/misc/och1970.c` (`SENSORS_OCH1970`, in `mt107.fragment`) | yes: polled, power-down unless enabled via sysfs; from the datasheet, not verified on a unit |
 | `pressure,msp891` | none (`SENSORS_MSP891` missing) | not needed unless the sensor is wanted; port if it is fitted |
 | `rotary-encoder` | `drivers/input/misc/rotary_encoder.c` (`INPUT_GPIO_ROTARY_ENCODER`) | yes |
 | `gpio-keys` | generic | yes |
