@@ -68,7 +68,8 @@
  * (__pm_wakeup_event()), it never shortens it, so the hold armed by the
  * notification has to be dropped first. rx_wl_lock makes the drained check
  * and the release atomic against sbuf_thread() arming the hold for new data.
- * While unread data is left the hold and the state stay as they are.
+ * While unread data is left the state stays and, like stock, the hold is
+ * extended by 20 ms.
  */
 static void sbuf_rx_release_on_read(struct sbuf_ring *ring,
 				    VOLA_SBUF_RING *ringhd)
@@ -82,6 +83,9 @@ static void sbuf_rx_release_on_read(struct sbuf_ring *ring,
 		pr_debug("sbuf %s : release, wake_lock hz/50!\n",
 			 ring->rx_wakelock_name);
 		wake_unlock(&ring->rx_wake_lock);
+		wake_lock_timeout(&ring->rx_wake_lock, HZ / 50);
+	} else {
+		/* data left (short read): like stock, extend by 20 ms */
 		wake_lock_timeout(&ring->rx_wake_lock, HZ / 50);
 	}
 	spin_unlock_irqrestore(&ring->rx_wl_lock, flags);
@@ -248,6 +252,7 @@ static int sbuf_thread(void *data)
 	struct smsg mcmd, mrecv;
 	int rval, bufid;
 	unsigned long flags;
+	bool release;
 	struct sched_param param = {.sched_priority = 90};
 
 	/*set the thread as a real time thread, and its priority is 90*/
@@ -340,10 +345,11 @@ static int sbuf_thread(void *data)
 					 ring->tx_wakelock_name);
 				break;
 			case SMSG_EVENT_SBUF_WRPTR:
+				release = ring->rx_release_on_read;
 				/* arm the hold before readers can drain the
 				 * ring, see sbuf_rx_release_on_read()
 				 */
-				if (ring->rx_release_on_read) {
+				if (release) {
 					spin_lock_irqsave(&ring->rx_wl_lock,
 							  flags);
 					wake_lock_timeout(&ring->rx_wake_lock,
@@ -358,7 +364,7 @@ static int sbuf_thread(void *data)
 					ring->handler(SBUF_NOTIFY_READ,
 						      ring->data);
 
-				if (!ring->rx_release_on_read) {
+				if (!release) {
 					wake_lock_timeout(&ring->rx_wake_lock,
 							  ring->rx_wake_timeout);
 					ring->rx_wakelock_state = 1;
