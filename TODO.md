@@ -123,13 +123,17 @@ Present in this tree and used: ADF display (`drivers/video/adf/sprd`, matches st
 
 ### 6. Boot image
 
-- [ ] Repack: stock ramdisk (or Magisk-patched ramdisk on the silver) + new `Image` + device DT table, same header fields as stock.
-- [ ] Write a repack script that reproduces the stock boot image byte-for-byte from its parts first (proves the packer), then swaps the kernel and modules.
+- [x] Repack: stock ramdisk (or Magisk-patched ramdisk on the silver) + new `Image` + device DT table, same header fields as stock. `tools/sprd_bootimg.py pack DIR OUT --kernel Image` does this (size check done on a DM63 copy: 25.7 MB used of 35 MB). Not yet booted on hardware.
+- [x] Write a repack script that reproduces the stock boot image byte-for-byte from its parts first (proves the packer), then swaps the kernel and modules. Done for kernel, ramdisk and DT table (6 of 6 stock dumps identical). Still open: swapping the modules inside the ramdisk (needs a cpio unpack/repack step, see section 5).
 
 ### 7. Test (safe order)
 
-- [ ] Flash the test image to the **recovery** partition and start it with `adb reboot recovery`. If it doesn't boot, a normal reboot uses the untouched `boot` partition.
-- [ ] Have a full partition backup and the UNISOC download tool (`sfd_tool`) ready for unbrick.
+- [ ] **Prerequisites, all mandatory and done before any flash** (each is per device model, and each needs the owner's OK because it is device access):
+  - full backup of the target partitions (at least `boot`, `recovery`, `vbmeta` and the partition table), verified by checksum (read back or dump twice and compare);
+  - the unbrick tool (UNISOC download mode with `sfd_tool`) tested to work on that model, using the backup;
+  - bootloader state confirmed unlocked (orange) on that unit;
+  - the recovery partition's own AVB needs: read its size first and pack with `--partition-size SIZE` (the AVB footer must sit at its end); dump the stock recovery, unpack it and reuse ITS `vbmeta.bin` (partition `recovery`, recovery key) with our kernel + boot ramdisk + DT table; do not use `--no-avb` for the first test. Details in `devices/README.md`, "Repacking the boot image".
+- [ ] Only then: flash the test image to the **recovery** partition and start it with `adb reboot recovery`. If it doesn't boot, a normal reboot uses the untouched `boot` partition.
 - [ ] DW100U silver first (touch driver already present), then V13M, then DM63 (after the CST0xx port).
 - [ ] Checklist per device:
   - display

@@ -46,6 +46,25 @@ Related: [`../TODO.md`](../TODO.md) (work plan), [`../KERNEL_TWEAKS.md`](../KERN
 - Header cmdline: `console=ttyS1,115200n8 buildvariant=user`. U-Boot adds `androidboot.hardware=sl8541e_1h10`, `lcd_id=...`, `lcd_base`, `lcd_size`, `vbat_ocv`, `sysdump_magic`, `modem=shutdown`, `ltemode=...`.
 - The ramdisk loads `mali.ko`, `sprdbt_tty.ko`, `sprd_fm.ko` from `/lib/modules` (`insmod` in the init scripts), and `sprdwl_ng.ko` from the same folder (loaded later by the Wi-Fi HAL). These must be rebuilt for a new kernel.
 
+### Repacking the boot image
+
+`tools/sprd_bootimg.py` (python3, stdlib only) inspects, unpacks and rebuilds these images. Run it with `python3 -I` on a copy of the dump, and keep dumps out of the repo.
+
+```
+python3 -I tools/sprd_bootimg.py info boot.img
+python3 -I tools/sprd_bootimg.py unpack boot.img dir/
+python3 -I tools/sprd_bootimg.py pack dir/ new.img --kernel Image [--ramdisk FILE] [--dt FILE]
+```
+
+- Layout: header page, kernel, ramdisk, DT table (each padded to 2048), zero fill, then the AVB vbmeta blob at the next 4096 boundary and the 64-byte AVB footer at the end of the partition (36700160 bytes for `boot`). `dt_size` is the header word after `page_size`, and the id includes the DT table: both follow the vendor (CAF-style) `mkbootimg` v0.
+- The header id is SHA-1 over kernel, ramdisk, second (each followed by its size) and the DT table with its size. `info` checks it; `pack` recomputes it.
+- Byte-for-byte check: unpack then pack with no substitutions reproduces all 6 stock dumps: DM63, DW100U silver (Magisk-patched ramdisk), DW100U (second stock dump, `sfd_tool/dw100u/boot.img`, older kernel build, unpatched ramdisk), MT107, MT108, DM82.
+- AVB: the stock vbmeta blobs are signed (SHA256_RSA2048) with a hash descriptor for partition `boot`. With a changed image `pack` moves the blob to the new image end, rewrites the footer (keeping its version fields) and warns when the descriptor hash no longer matches. A stale hash is the normal state of a modified image on an unlocked (orange) device (the Magisk-patched silver dump already has one and boots), so the footer is kept by default. `--no-avb` drops it; do not use it for the first test.
+- Footer position: pass `--partition-size N` with the real size of the target partition. Without it `pack` assumes the stock `boot` size and warns. The partition XMLs of MT107, MT108 and DM82 list `recovery` at 35 MB (36700160 bytes, same as `boot`); the DM63 and DW100U sizes are not recorded here, read them from the device first.
+- The built `Image` is about 23 MB against 17 MB stock. On a DM63 copy it uses about 25.7 MB of 35 MB. `pack` refuses a kernel where `kernel_addr + text_offset + max(image_size, file size)` reaches the ramdisk address `0x05400000`. These header addresses may not be the real SPRD U-Boot load addresses, so the check is a sanity limit only.
+- Recovery test (details in `TODO.md` section 7). Prerequisites come first and are mandatory: a full backup of `boot`, `recovery`, `vbmeta` and the partition table verified by checksum, the unbrick tool (`sfd_tool`, UNISOC download mode) tested on that model, and an unlocked (orange) bootloader confirmed on the unit. All of these are device access and need the owner's OK. Then read the `recovery` partition size, dump the stock `recovery`, unpack it, and reuse its `vbmeta.bin` (partition `recovery`, recovery key): copy it into the unpacked boot directory and run `pack DIR recovery-test.img --partition-size SIZE --kernel Image`. Do not use `--no-avb` for the first test. Only then flash to `recovery`.
+- `unpack` refuses a non-empty directory; `--force` deletes the old managed files first so stale parts never reach `pack`.
+
 ### Partitions (same on all three)
 
 `boot cache fbootlogo gpsbd gpsgl l_deltanv l_fixnv1 l_fixnv2 l_gdsp l_ldsp l_modem l_runtimenv1 l_runtimenv2 logo logo_2..6 misc miscdata persist pm_sys prodnv recovery sml sml_bak system trustos trustos_bak uboot uboot_bak uboot_log userdata vbmeta vbmeta_bak vendor wcnmodem`
