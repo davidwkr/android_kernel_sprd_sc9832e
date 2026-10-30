@@ -18,7 +18,7 @@ Kernel side: `CONFIG_SPRD_AOD_IDLE` (`sprd_aod_idle.c`, `dw100u_aod.fragment`). 
 - Double tap wake needs no code here: the driver emits `KEY_WAKEUP`, the framework wakes, the Awake event writes `idle=0` (the driver also drops idle on display RUN). Asleep (screen off after AOD) leaves idle as is, like stock.
 - `stop` kills the process group with SIGKILL on 8.1, so the trap does not run; the rc clears idle from init on `init.svc.aod_idled=stopped`. The trap only covers plain SIGTERM (Magisk route).
 - The service is `oneshot`: if the sysfs node is missing it logs once and exits, no restart loop.
-- Events are debounced 1 s (2 to 3 per transition); Dozing waits that second so idle_brightness is written after the framework's doze brightness.
+- Events are coalesced in a 1 s window (a timer injects a marker into the fifo `/data/system/aod_idled.fifo`; 2 to 3 events per transition give one reconcile); Dozing waits that second so idle_brightness is written after the framework's doze brightness.
 - Writes are refused with EIO while the panel is powered down; Dozing is retried 4 times 1 s apart, once more after 15 s, and the next event re-arms it. If it gave up, check `status` for `panel_powered=0` (DOZE_SUSPEND runtime-suspended the DSI) during the hardware test.
 
 ## SELinux (Android 8.1, enforcing)

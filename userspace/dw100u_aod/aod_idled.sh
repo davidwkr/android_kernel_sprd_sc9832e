@@ -9,18 +9,32 @@
 # Signal: the event log (blocking logcat read, no polling) tags
 # power_screen_state and screen_toggled. An event only triggers a re-read of
 # mWakefulness from "dumpsys power"; the event value is never trusted.
-# Fallback: setprop persist.sys.aod_idled.poll <seconds> polls instead.
+# Fallback: setprop persist.sys.aod_idled.poll <seconds> polls instead (read on
+# every poll iteration; switching event -> poll needs "stop aod_idled; start
+# aod_idled", it is only checked again when the logcat reader restarts).
 # Properties: persist.sys.aod_brightness (0..255, optional idle brightness).
 # Plain POSIX sh for Android 8.1 mksh/toybox.
 
 TAG=aod_idled
 D=/sys/kernel/aod_idle
-POLL=$(getprop persist.sys.aod_idled.poll)
+FIFO=/data/system/aod_idled.fifo
+PIDF=$FIFO.pid
+SUB=
 
 logi() { log -t "$TAG" -p i "$*"; }
 loge() { log -t "$TAG" -p e "$*"; }
 
+stop_reader() {
+	[ -f "$PIDF" ] && kill $(cat "$PIDF") 2>/dev/null	# logcat
+	[ -n "$SUB" ] && { kill $SUB 2>/dev/null; wait $SUB 2>/dev/null; }
+	SUB=
+	rm -f "$PIDF"
+}
+
 cleanup() {
+	stop_reader
+	exec 3<&- 2>/dev/null
+	rm -f "$FIFO"
 	# never leave the panel idle (touch swallowed) when the service stops
 	echo 0 > "$D/idle" 2>/dev/null
 	logi "stopping"
@@ -28,7 +42,6 @@ cleanup() {
 }
 trap cleanup TERM INT HUP
 
-# oneshot service: log once and stop, no restart loop
 [ -w "$D/idle" ] || { loge "$D/idle missing or not writable (kernel/chown/SELinux?), exiting"; exit 0; }
 
 wakefulness() {
@@ -51,14 +64,13 @@ set_idle() {	# $1 = 0|1 ; the driver refuses (EIO) while the panel is powered do
 	return 0
 }
 
-# Debounce 1 s (2-3 events per transition), then re-read the state and act.
+# Re-read the state and act (events are coalesced by the caller).
 # Dozing: the framework's own doze brightness (DCS 0x51) lands about 1 s after
 # doze starts and would overwrite idle_brightness, so write idle_brightness
-# after that settle, every time (also when idle is already 1). If the panel/DSI
+# after that settle (the 1 s event coalescing window), every time (also when idle is already 1). If the panel/DSI
 # is runtime-suspended the driver returns EIO: retry 4x 1 s, then once more
 # after 15 s; the next event re-arms everything.
 reconcile() {
-	sleep 1
 	n=0
 	while [ $n -lt 6 ]; do
 		case "$(wakefulness)" in
@@ -74,26 +86,47 @@ reconcile() {
 	return 1
 }
 
-logi "start, poll='${POLL:-event}'"
+logi "start"
 reconcile
 
 fails=0
 while :; do
+	POLL=$(getprop persist.sys.aod_idled.poll)
 	if [ -n "$POLL" ] && [ "$POLL" -gt 0 ] 2>/dev/null; then
 		sleep "$POLL"
 		reconcile
 		continue
 	fi
 	start=$(date +%s)
-	# -T 1: no old backlog; blocks in the kernel until the next event
-	logcat -b events -T 1 power_screen_state:I screen_toggled:I '*:S' 2>/dev/null |
-	while read -r line; do
-		reconcile
-	done
+	rm -f "$FIFO"
+	if mkfifo "$FIFO"; then
+		exec 3<>"$FIFO"		# read-write: no EOF when writers come and go
+		# reader: logcat blocks in the kernel until the next event (-T 1: no
+		# old backlog); "X" is written when it ends so the loop below wakes
+		( logcat -b events -T 1 power_screen_state:I screen_toggled:I '*:S' 2>/dev/null &
+		  echo $! > "$PIDF"; wait $!; echo X ) > "$FIFO" &
+		SUB=$!
+		pending=0
+		while read -r line <&3; do
+			case "$line" in
+			X) break ;;
+			T) pending=0; reconcile ;;	# window closed: one reconcile
+			*) # first event opens a 1 s window, later ones are absorbed
+				if [ $pending = 0 ]; then
+					pending=1
+					( sleep 1; echo T > "$FIFO" ) &
+				fi ;;
+			esac
+		done
+		stop_reader
+		exec 3<&-
+	else
+		loge "mkfifo $FIFO failed"
+	fi
 	# logd restarted or logcat missing: back off, never spin
 	[ $(( $(date +%s) - start )) -lt 5 ] && fails=$((fails + 1)) || fails=0
 	[ $fails -gt 6 ] && fails=6
-	loge "logcat ended, retry in $((fails * 5 + 5)) s"
+	loge "reader ended, retry in $((fails * 5 + 5)) s"
 	sleep $((fails * 5 + 5))
 	reconcile
 done
