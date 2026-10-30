@@ -90,6 +90,12 @@ rm -f "${RES:?}/Image" "${RES:?}/sprdwl_ng.ko" "${RES:?}/mali.ko" "${RES:?}/sprd
 cp "$O/arch/$ARCH/boot/Image" "$RES/"
 cp "$(find "$O/drivers" -name sprdwl_ng.ko | head -n1)" "$RES/"
 cp "$MALI/mali.ko" "$BT/sprdbt_tty.ko" "$FM/sprd_fm.ko" "$RES/"
+# strip debug info only (never --strip-all: modules need their symbol table)
+for k in sprdwl_ng mali sprdbt_tty sprd_fm; do
+  before=$(stat -c %s "$RES/$k.ko")
+  "${CROSS_COMPILE}strip" --strip-debug "$RES/$k.ko"
+  echo "strip $k.ko: $before -> $(stat -c %s "$RES/$k.ko") bytes"
+done
 (cd "$RES" && sha256sum Image sprdwl_ng.ko mali.ko sprdbt_tty.ko sprd_fm.ko > sha256sum.txt)
 cat "$RES/sha256sum.txt"
 echo "OK: $RES"
