@@ -3300,6 +3300,8 @@ static int sprdbat_remove(struct platform_device *pdev)
 {
 	struct sprdbat_drivier_data *data = platform_get_drvdata(pdev);
 
+	if (sprd_ext_ic_op && sprd_ext_ic_op->battery_gone)
+		sprd_ext_ic_op->battery_gone();
 	sysfs_remove_group(&data->battery->dev.kobj,
 		&sprd_bat_group);
 	if (sprdbat_data->usb_charger)

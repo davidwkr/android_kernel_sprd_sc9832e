@@ -340,6 +340,8 @@ struct sprd_ext_ic_operations {
 	void (*ext_register_notifier)(struct notifier_block *);
 	void (*ext_unregster_notifier)(struct notifier_block *);
 	int (*support_fchg)(void);
+	/* optional: the battery driver is being unbound, drop cached pointers */
+	void (*battery_gone)(void);
 };
 
 #if defined(CONFIG_USB_SPRD_DWC) || defined(CONFIG_USB_DWC3_SPRD)

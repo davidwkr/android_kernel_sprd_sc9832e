@@ -238,13 +238,13 @@ static unsigned int cv_last_req_mv;	/* last CV requested by sprdbat */
 static unsigned int sprdchg_cv_effective(unsigned int req)
 {
 	unsigned int ov = READ_ONCE(cv_override_mv);
+	struct sprdbat_drivier_data *b = READ_ONCE(bat_drv_data);
 
 	if (!ov)
 		return req;
-	if (bat_drv_data && bat_drv_data->pdata &&
-	    bat_drv_data->pdata->chg_end_vol_pure &&
-	    ov > bat_drv_data->pdata->chg_end_vol_pure)
-		ov = bat_drv_data->pdata->chg_end_vol_pure;
+	if (b && b->pdata && b->pdata->chg_end_vol_pure &&
+	    ov > b->pdata->chg_end_vol_pure)
+		ov = b->pdata->chg_end_vol_pure;
 	return min(req, ov);
 }
 
@@ -532,6 +532,7 @@ static unsigned int gr_gap_s = GR_GAP_FLOOR_S;
 
 /* state, under gr_lock */
 static unsigned int gr_relaxed_s, gr_last_hold_mv, gr_count;
+static s64 gr_rest_start_ms;		/* boottime of the first qualifying sample, 0 = none */
 static unsigned long gr_last_j;
 static bool gr_done_once;
 static int gr_ocv = -1, gr_cur, gr_cap = -1, gr_ui_cap = -1, gr_ocv_soc = -1;
@@ -561,12 +562,21 @@ static unsigned int gr_hold_target_mv(void)
 	return eff < req ? eff : 0;
 }
 
+/* any invalidation: forget the rest so far (gr_lock held) */
 static void gr_idle(const char *why)
 {
 	gr_relaxed_s = 0;
+	gr_rest_start_ms = 0;
 	gr_ocv_soc = -1;
 	gr_reason = why;
 }
+
+/*
+ * Lock order (outer to inner): gr_lock, battery lock (bat_drv_data->lock),
+ * cv_lock, gauge lock (inside sprdfgu_force_set_soc). sprdbat already takes
+ * its lock before cv_lock and the gauge lock; nothing takes gr_lock while
+ * holding one of the others.
+ */
 
 /* one evaluation; gr_lock held */
 static void gr_step(void)
@@ -574,14 +584,20 @@ static void gr_step(void)
 	struct sprdbat_drivier_data *b = READ_ONCE(bat_drv_data);
 	unsigned int hold = gr_hold_target_mv();
 	bool full = false;
-	int ocv, cur, cap, soc, raw;
+	int ocv, cur, cap, soc, raw, werr;
 	s64 now = ktime_to_ms(ktime_get_boottime());
 
 	/* rest must be continuous: a gap (suspend, freeze) restarts it */
-	if (gr_last_poll_ms && now - gr_last_poll_ms > 2 * GR_POLL_S * 1000LL)
+	if (gr_last_poll_ms && now - gr_last_poll_ms > 2 * GR_POLL_S * 1000LL) {
 		gr_relaxed_s = 0;
+		gr_rest_start_ms = 0;
+	}
 	gr_last_poll_ms = now ? now : 1;
 
+	if (!READ_ONCE(gr_ready)) {
+		gr_idle("off");
+		return;
+	}
 	if (!b || !b->pdata) {
 		gr_idle("no_battery");
 		return;
@@ -605,6 +621,7 @@ static void gr_step(void)
 	if (hold != gr_last_hold_mv) {
 		gr_last_hold_mv = hold;
 		gr_relaxed_s = 0;
+		gr_rest_start_ms = 0;
 	}
 	if (abs(cur) > (int)gr_relax_ma ||
 	    abs(ocv - (int)hold) > (int)gr_hold_mv) {
@@ -619,7 +636,10 @@ static void gr_step(void)
 		return;
 	}
 	gr_ocv_soc = soc;
-	gr_relaxed_s += GR_POLL_S;
+	/* time actually observed since the first qualifying sample */
+	if (!gr_rest_start_ms)
+		gr_rest_start_ms = now ? now : 1;
+	gr_relaxed_s = (now - gr_rest_start_ms) / 1000;
 	if (gr_relaxed_s < gr_rest_s) {
 		gr_reason = "resting";
 		return;
@@ -638,18 +658,28 @@ static void gr_step(void)
 		return;
 	}
 	/*
-	 * Re-check right before the write. cv_override_mv, cv_last_req_mv and
-	 * cv_unreachable are read without cv_lock here and in gr_hold_target_mv():
-	 * benign, a stale value only delays or skips one resync.
+	 * Final eligibility check and the write are done together under the
+	 * battery lock (plug/unplug and state changes) and cv_lock (every CV
+	 * and override change), so none of them can happen in between. The
+	 * disable paths (gauge_resync=0, remove) clear their flag first and then
+	 * wait for this work with gr_lock/cancel_delayed_work_sync().
 	 */
-	if (READ_ONCE(b->bat_info.module_state) != POWER_SUPPLY_STATUS_CHARGING ||
+	mutex_lock(&b->lock);
+	mutex_lock(&cv_lock);
+	if (!READ_ONCE(gauge_resync) || !READ_ONCE(gr_ready) ||
+	    READ_ONCE(b->bat_info.module_state) != POWER_SUPPLY_STATUS_CHARGING ||
 	    !(READ_ONCE(b->bat_info.usb_online) ||
 	      READ_ONCE(b->bat_info.ac_online)) ||
 	    gr_hold_target_mv() != hold) {
+		mutex_unlock(&cv_lock);
+		mutex_unlock(&b->lock);
 		gr_idle("not_holding");
 		return;
 	}
-	if (sprdfgu_force_set_soc(soc)) {
+	werr = sprdfgu_force_set_soc(soc);
+	mutex_unlock(&cv_lock);
+	mutex_unlock(&b->lock);
+	if (werr) {
 		gr_reason = "set_failed";
 		return;
 	}
@@ -659,6 +689,7 @@ static void gr_step(void)
 	gr_to = soc;
 	gr_count++;
 	gr_relaxed_s = 0;
+	gr_rest_start_ms = 0;
 	gr_reason = "resynced";
 	pr_info("sprdchg: gauge resync %d.%d%% -> %d.%d%% (ui %d%%, ocv %d mV, %d mA, hold %u mV)\n",
 		raw / 10, raw % 10, soc / 10, soc % 10, gr_ui_cap, ocv, cur,
@@ -671,27 +702,59 @@ static void gr_work_fn(struct work_struct *w)
 
 	mutex_lock(&gr_lock);
 	gr_step();
-	again = READ_ONCE(gauge_resync) && READ_ONCE(cv_override_mv);
-	mutex_unlock(&gr_lock);
-	/* freezable: never runs across system suspend/resume */
+	again = READ_ONCE(gr_ready) && READ_ONCE(gauge_resync) &&
+		READ_ONCE(cv_override_mv);
+	/* freezable: never runs across system suspend/resume. Requeued under
+	 * gr_lock so that remove (clears gr_ready under gr_lock, then cancels)
+	 * cannot miss it. */
 	if (again)
 		queue_delayed_work(system_freezable_wq, &gr_work,
 				   GR_POLL_S * HZ);
+	mutex_unlock(&gr_lock);
 }
 
 /* start or stop polling to match gauge_resync and cv_override_mv */
 static void gr_update(void)
 {
-	if (!READ_ONCE(gr_ready))
+	/* readiness and enqueue are decided together under gr_lock */
+	mutex_lock(&gr_lock);
+	if (!READ_ONCE(gr_ready)) {
+		mutex_unlock(&gr_lock);
 		return;
+	}
 	if (READ_ONCE(gauge_resync) && READ_ONCE(cv_override_mv)) {
 		queue_delayed_work(system_freezable_wq, &gr_work,
 				   GR_POLL_S * HZ);
+		mutex_unlock(&gr_lock);
 		return;
 	}
-	cancel_delayed_work_sync(&gr_work);
-	mutex_lock(&gr_lock);
 	gr_idle("off");
+	gr_last_poll_ms = 0;
+	mutex_unlock(&gr_lock);
+	cancel_delayed_work_sync(&gr_work);
+}
+
+/* charger remove: stop the polling for good */
+static void gr_shutdown(void)
+{
+	mutex_lock(&gr_lock);
+	WRITE_ONCE(gr_ready, false);
+	gr_idle("off");
+	mutex_unlock(&gr_lock);
+	cancel_delayed_work_sync(&gr_work);
+}
+
+/*
+ * Battery driver unbind (ext op battery_gone): drop the cached pointer before
+ * its devm data goes away. gr_step() holds gr_lock for a whole evaluation,
+ * so none is running on the old data once this returns.
+ */
+static void sprdchg_battery_gone(void)
+{
+	mutex_lock(&gr_lock);
+	WRITE_ONCE(bat_drv_data, NULL);
+	gr_idle("no_battery");
+	gr_last_poll_ms = 0;
 	mutex_unlock(&gr_lock);
 }
 
@@ -931,6 +994,7 @@ static struct sprd_ext_ic_operations sprd_2721_op = {
 	.get_charging_fault =  sprdchg_get_charge_fault,
 	.get_charge_cur_ext = sprdchg_get_chg_cur,
 	.set_termina_vol_ext = sprdchg_set_cccvpoint,
+	.battery_gone = sprdchg_battery_gone,
 };
 
 static int sprd2721_get_property(struct power_supply *psy,
@@ -1080,8 +1144,7 @@ static int sprdchg_2721_remove(struct platform_device *pdev)
 {
 	struct sprd2721_device *sprd_2721 = platform_get_drvdata(pdev);
 
-	WRITE_ONCE(gr_ready, false);
-	cancel_delayed_work_sync(&gr_work);
+	gr_shutdown();
 	power_supply_unregister(&sprd_2721->charger);
 	return 0;
 }
