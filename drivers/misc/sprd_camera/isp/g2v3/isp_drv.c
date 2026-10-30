@@ -135,12 +135,16 @@ static int isp_get_sg_table(struct isp_iommu_info *pfinfo, uint32_t n)
 {
 	int i, ret;
 
+	for (i = 0; i < n; i++)
+		pfinfo[i].dmabuf_p = NULL;
+
 	for (i = 0; i < n; i++, pfinfo++) {
 		if (pfinfo->mfd > 0) {
-			ret = sprd_ion_get_sg_table(pfinfo->mfd,
+			ret = sprd_ion_get_sg_table_ref(pfinfo->mfd,
 				NULL,
 				&pfinfo->table,
-				&pfinfo->size);
+				&pfinfo->size,
+				&pfinfo->dmabuf_p);
 			if (ret) {
 				pr_err("failed to get sg table %d\n", i);
 				return -EFAULT;
@@ -148,6 +152,22 @@ static int isp_get_sg_table(struct isp_iommu_info *pfinfo, uint32_t n)
 		}
 	}
 	return 0;
+}
+
+/*
+ * Drop the references taken by isp_get_sg_table(); pfinfo->table must not
+ * be used afterwards. Callers hold them only while the table is consumed
+ * by isp_get_addr().
+ */
+static void isp_put_sg_table(struct isp_iommu_info *pfinfo, uint32_t n)
+{
+	uint32_t i;
+
+	for (i = 0; i < n; i++, pfinfo++) {
+		sprd_ion_put(pfinfo->dmabuf_p);
+		pfinfo->dmabuf_p = NULL;
+		pfinfo->table = NULL;
+	}
 }
 
 static int isp_get_addr(struct isp_iommu_info *pfinfo, uint32_t n)
@@ -1755,17 +1775,13 @@ static int32_t _isp_load_firmware(struct file *file, void __user *param)
 		spin_lock_init(&match_data.awb_lock);
 		cam_ion_client = sprd_ion_client_get(init_mem.fw_buf_dev_fd);
 		/*mapping prefetch iommu buffer*/
-		ret = sprd_ion_get_sg_table(init_mem.fw_buf_mfd, NULL, &table,
-			(size_t *)&size);
+		/* the reference is kept in dmabuf_p until the last release */
+		ret = sprd_ion_get_sg_table_ref(init_mem.fw_buf_mfd, NULL,
+			&table, (size_t *)&size, &dmabuf_p);
 		if (ret) {
 			ret = -EFAULT;
 			pr_err("isp_ioctl%d: sprd_ion_get_sg_table failed.\n",
 				isp_pipeline->isp_id);
-			goto load_exit;
-		}
-		dmabuf_p = dma_buf_get(init_mem.fw_buf_mfd);
-		if (IS_ERR_OR_NULL(dmabuf_p)) {
-			pr_err("failed to get dma buf %p\n", dmabuf_p);
 			goto load_exit;
 		}
 		if (sprd_iommu_attach_device(&pdev->dev) == 0) {
@@ -2247,6 +2263,7 @@ int32_t sprd_isp_path_set(enum isp_dev_id isp_id, enum isp_img_id img_id,
 	int32_t ret = 0;
 	size_t size = 0;
 	struct sg_table *table;
+	struct dma_buf *held = NULL;
 	struct sprd_iommu_map_data iommu_data;
 	uint32_t count = 0;
 
@@ -2287,8 +2304,8 @@ int32_t sprd_isp_path_set(enum isp_dev_id isp_id, enum isp_img_id img_id,
 			img_buf.img_y_fd = p_addr->mfd_y;
 			img_buf.img_u_fd = p_addr->mfd_u;
 			img_buf.img_v_fd = p_addr->mfd_v;
-			ret = sprd_ion_get_sg_table(img_buf.img_y_fd, NULL,
-						    &table, &size);
+			ret = sprd_ion_get_sg_table_ref(img_buf.img_y_fd, NULL,
+						    &table, &size, &held);
 			if (ret) {
 				ret = -EFAULT;
 				pr_err("sprd_ion_get_sg_table error\n");
@@ -2337,8 +2354,10 @@ int32_t sprd_isp_path_set(enum isp_dev_id isp_id, enum isp_img_id img_id,
 							&img_buf.iova_y_size);
 				img_buf.iova_yaddr += img_buf.yaddr;
 			}
-			ret = sprd_ion_get_sg_table(img_buf.img_u_fd, NULL,
-						    &table, &size);
+			sprd_ion_put(held);
+			held = NULL;
+			ret = sprd_ion_get_sg_table_ref(img_buf.img_u_fd, NULL,
+						    &table, &size, &held);
 			if (ret) {
 				ret = -EFAULT;
 				pr_err("sprd_ion_get_sg_table error\n");
@@ -2378,6 +2397,8 @@ int32_t sprd_isp_path_set(enum isp_dev_id isp_id, enum isp_img_id img_id,
 							&img_buf.iova_u_size);
 				img_buf.iova_uaddr += img_buf.uaddr;
 			}
+			sprd_ion_put(held);
+			held = NULL;
 			img_buf.buf_size = p_img_info->out_size;
 
 			if (_isp_img_buf_queue_write(&p_img_info->in_buff_queue,
@@ -2409,8 +2430,8 @@ int32_t sprd_isp_path_set(enum isp_dev_id isp_id, enum isp_img_id img_id,
 			ISP_DRV_TRACE("p_img_buf->img_y_fd=0x%x\n",
 				p_img_buf->img_y_fd);
 
-			ret = sprd_ion_get_sg_table(p_img_buf->img_y_fd, NULL,
-				&table, &size);
+			ret = sprd_ion_get_sg_table_ref(p_img_buf->img_y_fd, NULL,
+				&table, &size, &held);
 			if (ret) {
 				ret = -EFAULT;
 				pr_err("sprd_ion_get_sg_table error\n");
@@ -2468,8 +2489,10 @@ int32_t sprd_isp_path_set(enum isp_dev_id isp_id, enum isp_img_id img_id,
 						       &p_img_buf->iova_y_size);
 				p_img_buf->iova_yaddr += p_img_buf->yaddr;
 			}
-			ret = sprd_ion_get_sg_table(p_img_buf->img_u_fd, NULL,
-						    &table, &size);
+			sprd_ion_put(held);
+			held = NULL;
+			ret = sprd_ion_get_sg_table_ref(p_img_buf->img_u_fd, NULL,
+						    &table, &size, &held);
 			if (ret) {
 				ret = -EFAULT;
 				pr_err("sprd_ion_get_sg_table error\n");
@@ -2511,6 +2534,8 @@ int32_t sprd_isp_path_set(enum isp_dev_id isp_id, enum isp_img_id img_id,
 						       &p_img_buf->iova_u_size);
 				p_img_buf->iova_uaddr += p_img_buf->uaddr;
 			}
+			sprd_ion_put(held);
+			held = NULL;
 			count = p_img_info->reserved_buf_count;
 			if (count < RESERVED_BUFFER_COUNT_MAX) {
 				memcpy(&p_img_info->reserved_buf[count],
@@ -2574,6 +2599,7 @@ int32_t sprd_isp_path_set(enum isp_dev_id isp_id, enum isp_img_id img_id,
 		break;
 	}
 exit:
+	sprd_ion_put(held);
 	return ret;
 }
 
@@ -3163,9 +3189,11 @@ static int32_t isp_cfg_img_ion_param(struct file *file,
 	ret = isp_get_sg_table(buf->pfinfo, 3);
 	if (ret) {
 		pr_err("isp_get_sg_table failed\n");
+		isp_put_sg_table(buf->pfinfo, 3);
 		goto exit;
 	}
 	ret = isp_get_addr(buf->pfinfo, 3);
+	isp_put_sg_table(buf->pfinfo, 3);
 	if (ret) {
 		pr_err("isp_get_addr failed\n");
 		goto exit;
@@ -3186,6 +3214,7 @@ static int32_t isp_set_hiso(struct isp_pipe_dev *isp_pipeline,
 {
 	int32_t ret = 0;
 	struct sg_table *table;
+	struct dma_buf *held;
 	size_t size = 0;
 	struct sprd_iommu_map_data iommu_data;
 	struct isp_group *group;
@@ -3199,8 +3228,8 @@ static int32_t isp_set_hiso(struct isp_pipe_dev *isp_pipeline,
 	isp_pipeline->high_iso_mem.virt_addr = hiso_data->virt_addr;
 	isp_pipeline->high_iso_mem.size = hiso_data->size;
 
-	ret = sprd_ion_get_sg_table(isp_pipeline->high_iso_mem.fd, NULL,
-				    &table, &size);
+	ret = sprd_ion_get_sg_table_ref(isp_pipeline->high_iso_mem.fd, NULL,
+					&table, &size, &held);
 	if (ret) {
 		ret = -EFAULT;
 		pr_err("isp_ioctl: sprd_ion_get_sg_table\n");
@@ -3214,6 +3243,7 @@ static int32_t isp_set_hiso(struct isp_pipe_dev *isp_pipeline,
 		iommu_data.iova_size = size;
 		ret = sprd_iommu_get_kaddr(&device->dev, &iommu_data);
 		if (ret) {
+			sprd_ion_put(held);
 			ret = -EFAULT;
 			pr_err("isp_ioctl: fail to get user info n");
 			return ret;
@@ -3226,12 +3256,14 @@ static int32_t isp_set_hiso(struct isp_pipe_dev *isp_pipeline,
 				       &isp_pipeline->high_iso_mem.iova_addr,
 				       &isp_pipeline->high_iso_mem.iova_size);
 		if (ret) {
+			sprd_ion_put(held);
 			ret = -EFAULT;
 			pr_err("isp_ioctl: fail to get iova_addr\n");
 			return ret;
 		}
 
 	}
+	sprd_ion_put(held);
 
 	ISP_DRV_TRACE("high_iso_iova_addr 0x%lx\n",
 		isp_pipeline->high_iso_mem.iova_addr);
@@ -3303,6 +3335,7 @@ static int32_t isp_set_raw(struct isp_pipe_dev *isp_pipeline,
 	struct isp_group *group;
 	struct platform_device *device = NULL;
 	struct sg_table *table;
+	struct dma_buf *held;
 	size_t size = 0;
 	struct sprd_iommu_map_data iommu_data;
 	struct isp_raw_buf_info *raw_buf = NULL;
@@ -3338,8 +3371,8 @@ static int32_t isp_set_raw(struct isp_pipe_dev *isp_pipeline,
 		}
 		if (0/*0 == sprd_iommu_attach_device(pfinfo->dev)*/) {
 
-			ret = sprd_ion_get_sg_table(raw_buf->fd, NULL,
-						&table, &size);
+			ret = sprd_ion_get_sg_table_ref(raw_buf->fd, NULL,
+						&table, &size, &held);
 			if (ret) {
 				if (i != 0)
 					break;
@@ -3355,6 +3388,7 @@ static int32_t isp_set_raw(struct isp_pipe_dev *isp_pipeline,
 			iommu_data.ch_type = SPRD_IOMMU_PF_CH_WRITE;
 			iommu_data.iova_size = size;
 			ret = sprd_iommu_get_kaddr(&device->dev, &iommu_data);
+			sprd_ion_put(held);
 			if (ret) {
 				if (i != 0)
 					break;
@@ -3561,6 +3595,7 @@ static long isp_ioctl(struct file *file, unsigned int cmd, unsigned long param)
 	/*struct isp_img_buf img_buf;*/
 	struct isp_cfg_img_buf cfg_img_buf;
 	struct sg_table *table;
+	struct dma_buf *held;
 	struct sprd_iommu_map_data iommu_data;
 	struct isp_group *group;
 	struct platform_device *device = NULL;
@@ -4047,9 +4082,9 @@ get_irq_end:
 		ISP_DRV_TRACE("sns_raw fd 0x%x yaddr 0x%lx yaddr_vir 0x%lx\n",
 				img_frm.img_y_fd, img_frm.yaddr,
 				img_frm.yaddr_vir);
-		ret = sprd_ion_get_sg_table(
+		ret = sprd_ion_get_sg_table_ref(
 			isp_pipeline->isp_src_sns_raw.img_y_fd,
-			NULL, &table, &size);
+			NULL, &table, &size, &held);
 		if (ret) {
 			mutex_unlock(&group->ioctl_mutex[isp_pipeline->isp_id]);
 			ret = -EFAULT;
@@ -4066,6 +4101,7 @@ get_irq_end:
 			iommu_data.iova_size = size;
 			ret = sprd_iommu_get_kaddr(&device->dev, &iommu_data);
 			if (ret) {
+				sprd_ion_put(held);
 				mutex_unlock(&group->
 					     ioctl_mutex[isp_pipeline->isp_id]);
 				ret = -EFAULT;
@@ -4087,6 +4123,7 @@ get_irq_end:
 			isp_pipeline->isp_src_sns_raw.iova_yaddr +=
 				isp_pipeline->isp_src_sns_raw.yaddr;
 		}
+		sprd_ion_put(held);
 
 		ISP_DRV_TRACE("sns_raw_iova_addr 0x%lx\n",
 				isp_pipeline->isp_src_sns_raw.iova_yaddr);
@@ -4744,7 +4781,7 @@ static int isp_release(struct inode *node, struct file *file)
 
 		sprd_ion_client_put(cam_ion_client);
 		cam_ion_client = NULL;
-		dma_buf_put(dmabuf_p);
+		sprd_ion_put(dmabuf_p);
 		dmabuf_p = NULL;
 	}
 	group->ispif[isp_pipeline->isp_id] = NULL;
