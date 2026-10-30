@@ -3267,6 +3267,22 @@ static int sprdbat_probe(struct platform_device *pdev)
 
 err_usb_reg_notify:
 err_usb_find_name:
+	/*
+	 * ic_init() has published the data to the charger driver. Stop every
+	 * source that can run work (timer irq, plug/charge/battery works, which
+	 * may call ic_init again), then detach the charger before the data is
+	 * freed.
+	 */
+	if (sprdchg_timer_op && sprdchg_timer_op->timer_disable)
+		sprdchg_timer_op->timer_disable();
+	cancel_work_sync(&data->plug_work);
+	cancel_work_sync(&data->vbat_detect_irq_work);
+	cancel_delayed_work_sync(&data->sprdbat_charge_work);
+	cancel_delayed_work_sync(&data->battery_work);
+	cancel_delayed_work_sync(&data->battery_sleep_work);
+	flush_workqueue(data->monitor_wqueue);
+	if (sprd_ext_ic_op && sprd_ext_ic_op->battery_gone)
+		sprd_ext_ic_op->battery_gone();
 #ifdef CONFIG_LEDS_TRIGGERS
 	led_classdev_unregister(&data->charging_led);
 err_led_reg:
@@ -3300,8 +3316,6 @@ static int sprdbat_remove(struct platform_device *pdev)
 {
 	struct sprdbat_drivier_data *data = platform_get_drvdata(pdev);
 
-	if (sprd_ext_ic_op && sprd_ext_ic_op->battery_gone)
-		sprd_ext_ic_op->battery_gone();
 	sysfs_remove_group(&data->battery->dev.kobj,
 		&sprd_bat_group);
 	if (sprdbat_data->usb_charger)
@@ -3346,6 +3360,7 @@ static struct platform_driver sprdbat_driver = {
 	.driver = {
 		   .name = "sprd-battery",
 		   .of_match_table = of_match_ptr(battery_of_match),
+		   .suppress_bind_attrs = true,
 		   }
 };
 

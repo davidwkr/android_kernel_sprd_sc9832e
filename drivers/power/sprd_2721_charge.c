@@ -234,6 +234,8 @@ static uint32_t sprdchg_cccv_cal(uint32_t chg_end_vol_pure)
 static DEFINE_MUTEX(cv_lock);	/* serialises END_V + CV_V register writes */
 static unsigned int cv_override_mv;	/* 0 = off */
 static unsigned int cv_last_req_mv;	/* last CV requested by sprdbat */
+/* bumped under cv_lock on every change of cv_last_req_mv / cv_override_mv */
+static unsigned int cv_gen;
 
 static unsigned int sprdchg_cv_effective(unsigned int req)
 {
@@ -402,6 +404,8 @@ static void sprdchg_program_cccv(unsigned int req)
 static void sprdchg_set_cccvpoint(unsigned int cvpoint)
 {
 	mutex_lock(&cv_lock);
+	if (cv_last_req_mv != cvpoint)
+		cv_gen++;
 	cv_last_req_mv = cvpoint;
 	sprdchg_program_cccv(cvpoint);
 	mutex_unlock(&cv_lock);
@@ -423,6 +427,8 @@ static int sprdchg_cv_override_apply(unsigned int mv)
 			return -EINVAL;
 		}
 	}
+	if (cv_override_mv != mv)
+		cv_gen++;
 	cv_override_mv = mv;
 	/* reprogram now if a charge has already requested a CV */
 	if (cv_last_req_mv && reg_map) {
@@ -531,7 +537,7 @@ static unsigned int gr_pct = 5;
 static unsigned int gr_gap_s = GR_GAP_FLOOR_S;
 
 /* state, under gr_lock */
-static unsigned int gr_relaxed_s, gr_last_hold_mv, gr_count;
+static unsigned int gr_relaxed_s, gr_last_hold_mv, gr_count, gr_last_gen;
 static s64 gr_rest_start_ms;		/* boottime of the first qualifying sample, 0 = none */
 static unsigned long gr_last_j;
 static bool gr_done_once;
@@ -618,8 +624,10 @@ static void gr_step(void)
 	ocv = (int)sprdfgu_read_vbat_ocv();
 	gr_ocv = ocv;
 	gr_cur = cur;
-	if (hold != gr_last_hold_mv) {
+	/* any CV/override change since the last poll restarts the rest, even A->B->A */
+	if (hold != gr_last_hold_mv || READ_ONCE(cv_gen) != gr_last_gen) {
 		gr_last_hold_mv = hold;
+		gr_last_gen = READ_ONCE(cv_gen);
 		gr_relaxed_s = 0;
 		gr_rest_start_ms = 0;
 	}
@@ -745,14 +753,21 @@ static void gr_shutdown(void)
 }
 
 /*
- * Battery driver unbind (ext op battery_gone): drop the cached pointer before
- * its devm data goes away. gr_step() holds gr_lock for a whole evaluation,
- * so none is running on the old data once this returns.
+ * Lifetime of bat_drv_data (the battery driver's devm data). Both drivers are
+ * built in and set .suppress_bind_attrs, so they are never unbound at run
+ * time. The only way the data goes away is a failed sprdbat_probe() after
+ * ic_init() published it; that path calls this op (battery_gone) before
+ * freeing. Readers use the pointer only under gr_lock (gr_step) or cv_lock
+ * (CV paths), and this takes both (gr_lock, then cv_lock, the usual order)
+ * to clear it, so no reader holds it afterwards. gr_step() holds gr_lock
+ * for a whole evaluation, so none is running on the old data either.
  */
 static void sprdchg_battery_gone(void)
 {
 	mutex_lock(&gr_lock);
+	mutex_lock(&cv_lock);
 	WRITE_ONCE(bat_drv_data, NULL);
+	mutex_unlock(&cv_lock);
 	gr_idle("no_battery");
 	gr_last_poll_ms = 0;
 	mutex_unlock(&gr_lock);
@@ -914,7 +929,9 @@ static void sprdchg_chip_init(struct sprdbat_drivier_data *bdata)
 {
 	if (bdata == NULL)
 		return;
-	bat_drv_data = bdata;
+	mutex_lock(&cv_lock);
+	WRITE_ONCE(bat_drv_data, bdata);
+	mutex_unlock(&cv_lock);
 	glb_adi_write(ANA_REG_GLB_CHGR_CTRL0,
 		BIT_CHGR_CC_EN, BIT_CHGR_CC_EN);
 	chg_adi_write(ANA_REG_GLB_CHGR_CTRL0,
@@ -1158,9 +1175,10 @@ static struct platform_driver sprdchg_2721_driver = {
 	.driver = {
 		   .name = "sc2721-charger",
 		   .of_match_table = of_match_ptr(sprdchg_2721_of_match),
+		   .suppress_bind_attrs = true,
 		   },
 	.probe = sprdchg_2721_probe,
-	.remove = sprdchg_2721_remove
+	.remove = sprdchg_2721_remove,
 };
 
 static int __init sprdchg_2721_driver_init(void)
