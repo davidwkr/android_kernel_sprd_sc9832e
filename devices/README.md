@@ -56,6 +56,19 @@ python3 -I tools/sprd_bootimg.py unpack boot.img dir/
 python3 -I tools/sprd_bootimg.py pack dir/ new.img --kernel Image [--ramdisk FILE] [--dt FILE]
 ```
 
+Module swap step: `tools/sprd_ramdisk.py` (python3, stdlib only) works on the `ramdisk` file from `unpack`.
+
+```
+python3 -I tools/sprd_ramdisk.py list dir/ramdisk
+python3 -I tools/sprd_ramdisk.py replace-modules dir/ramdisk new.gz --kernel Image --module mali.ko --module sprdwl_ng.ko --module sprdbt_tty.ko --module sprd_fm.ko
+python3 -I tools/sprd_bootimg.py pack dir/ new.img --kernel Image --ramdisk new.gz
+```
+
+- It replaces only `lib/modules/<basename>` entries; every other cpio entry, its header fields, the order and the trailer stay byte-identical. It refuses a module with no counterpart, a hard link, and a ramdisk with non-zero data after the compressed member or the cpio trailer (a concatenated archive could override the swap). Decompressed size is capped at 256 MiB.
+- Vermagic is compared like the kernel's `same_magic()` with `CONFIG_MODVERSIONS`: the whole string must match exactly. The expected string is the stock module's vermagic with only the release token replaced by the release in the `--kernel` Image banner; each differing field is reported. `--symvers Module.symvers` also compares the `module_layout` CRC in `__versions`. Without `--kernel` the release is not checked.
+- The stock ramdisks are gzip (no lz4). The silver Magisk-patched one recompresses to the identical stream (zlib level 9); the others were made with GNU gzip and recompress to different bytes with the same decompressed cpio. The module set is loaded by `init.common.rc` (`mali.ko`) and the `init.sl8541e_1h10.rc` (`sprdbt_tty.ko`, then `sprd_fm.ko`); `sprdwl_ng.ko` has no `insmod` line (Wi-Fi HAL).
+- Strip debug info from the built modules with the toolchain's strip (`aarch64-linux-gnu-strip --strip-debug`, not `--strip-all`, which removes the symbols and relocations `insmod` needs) or build with `INSTALL_MOD_STRIP=1`. Do it before any module signing. Unstripped, the four modules are about 22 MB and the ramdisk grows from 1.4 MB to 8 MB compressed.
+
 - Layout: header page, kernel, ramdisk, DT table (each padded to 2048), zero fill, then the AVB vbmeta blob at the next 4096 boundary and the 64-byte AVB footer at the end of the partition (36700160 bytes for `boot`). `dt_size` is the header word after `page_size`, and the id includes the DT table: both follow the vendor (CAF-style) `mkbootimg` v0.
 - The header id is SHA-1 over kernel, ramdisk, second (each followed by its size) and the DT table with its size. `info` checks it; `pack` recomputes it.
 - Byte-for-byte check: unpack then pack with no substitutions reproduces all 6 stock dumps: DM63, DW100U silver (Magisk-patched ramdisk), DW100U (second stock dump, `sfd_tool/dw100u/boot.img`, older kernel build, unpatched ramdisk), MT107, MT108, DM82.
