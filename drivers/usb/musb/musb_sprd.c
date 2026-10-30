@@ -1023,7 +1023,8 @@ static int sprd_musb_role_set(struct sprd_glue *glue, bool host)
 	spin_lock_irqsave(&glue->lock, flags);
 	if (host) {
 		if (glue->vbus_active && glue->dr_mode == USB_DR_MODE_HOST &&
-		    glue->wq_mode == USB_DR_MODE_HOST)
+		    glue->wq_mode == USB_DR_MODE_HOST &&
+		    wake_lock_active(&glue->wake_lock))
 			ret = 0;		/* already host */
 		else if (glue->vbus_active)
 			ret = -EBUSY;		/* cable attached or switching */
@@ -1034,6 +1035,9 @@ static int sprd_musb_role_set(struct sprd_glue *glue, bool host)
 		else {
 			glue->vbus_active = true;
 			glue->wq_mode = USB_DR_MODE_HOST;
+			/* stale after a charge-only unplug: would make the
+			 * teardown work skip its shutdown */
+			glue->charging_mode = false;
 			queue = true;
 		}
 	} else if (glue->dr_mode == USB_DR_MODE_HOST ||
@@ -1053,7 +1057,9 @@ static int sprd_musb_role_set(struct sprd_glue *glue, bool host)
 
 	if (host) {
 		spin_lock_irqsave(&glue->lock, flags);
+		/* only the work item's host success path takes the lock */
 		ret = (glue->dr_mode == USB_DR_MODE_HOST &&
+		       wake_lock_active(&glue->wake_lock) &&
 		       !pm_runtime_suspended(glue->dev)) ? 0 : -EIO;
 		spin_unlock_irqrestore(&glue->lock, flags);
 		if (ret) {
@@ -1077,27 +1083,41 @@ static int sprd_musb_role_set(struct sprd_glue *glue, bool host)
 	/* the work item skips these on some of its early-exit paths */
 	musb_sprd_set_otg_en(glue, 0);
 	if (glue->dr_mode == USB_DR_MODE_HOST) {
-		ret = -EIO;
-		goto out;
+		if (!pm_runtime_suspended(glue->dev)) {
+			ret = -EIO;
+			goto out;
+		}
+		/* already suspended: nothing left to shut down */
+		spin_lock_irqsave(&glue->lock, flags);
+		glue->dr_mode = USB_DR_MODE_UNKNOWN;
+		spin_unlock_irqrestore(&glue->lock, flags);
 	}
 	if (wake_lock_active(&glue->wake_lock))
 		wake_unlock(&glue->wake_lock);
 
 	/*
 	 * A charger or PC plugged in during host mode was ignored by the
-	 * vbus handler (vbus_active was set).  Let VBUS settle after the
-	 * boost went off, then pick device mode up as the handler would.
+	 * vbus handler (vbus_active was set).  Wait for VBUS to fall after
+	 * the boost went off; if it stays high something else drives it, so
+	 * pick device mode up as the handler would.  The level irq is kept
+	 * off meanwhile and handles a late drop once re-enabled.
 	 */
-	msleep(100);
-	if (gpio_is_valid(glue->gpio_device) &&
-	    gpio_get_value(glue->gpio_device)) {
-		spin_lock_irqsave(&glue->lock, flags);
-		glue->vbus_active = true;
-		glue->wq_mode = USB_DR_MODE_PERIPHERAL;
-		spin_unlock_irqrestore(&glue->lock, flags);
-		MUSB_DEV_MODE(musb);
-		schedule_work(&glue->work);
-		flush_work(&glue->work);
+	if (gpio_is_valid(glue->gpio_device) && glue->vbus_irq > 0) {
+		int i;
+
+		disable_irq(glue->vbus_irq);
+		for (i = 0; i < 100 && gpio_get_value(glue->gpio_device); i++)
+			msleep(10);
+		if (gpio_get_value(glue->gpio_device)) {
+			spin_lock_irqsave(&glue->lock, flags);
+			glue->vbus_active = true;
+			glue->wq_mode = USB_DR_MODE_PERIPHERAL;
+			spin_unlock_irqrestore(&glue->lock, flags);
+			MUSB_DEV_MODE(musb);
+			schedule_work(&glue->work);
+			flush_work(&glue->work);
+		}
+		enable_irq(glue->vbus_irq);
 	}
 out:
 	mutex_unlock(&glue->role_lock);
