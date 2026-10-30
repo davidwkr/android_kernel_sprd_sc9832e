@@ -58,7 +58,7 @@ Each work item went through: implementation, a first code review, fixes, then an
 
 - **GNSS** (`drivers/misc/sprdwcn_bsp/sc23xx/`, the driver actually built): the engine stop powers the GNSS core, rail and WCN domain down when Wi-Fi and BT are off (no change needed). New read-only `/sys/class/misc/gnss_common_ctl/gnss_engine_state` (`off`, `transition`, `assert`, `error`, `sleep`, `on`, `unknown`; `off` is the driver's control state). Failure-path bugs documented, not fixed (failed start leaves the rail on; states stuck until reboot).
 - **DM63 charge CV override** (`drivers/power/sprd_2721_charge.c`): replaces `batt_idle.ko`. Off by default; `echo 4100 > /sys/module/sprd_2721_charge/parameters/cv_override_mv` (or cmdline / DT `sprd,cv-override-microvolt`). With the override on, the driver models the CV register exactly and programs the highest representable CV at or below min(request, `chg-end-vol`, override); unreachable values are rejected at set time. Override off: stock path unchanged. Not ported: `batt_idle`'s fuel-gauge resync (capacity can drift while holding). The safety timer still stops charging briefly every 90 min after the first 6 h (same as `batt_idle`).
-- **DM63 `aod_idle`** (`drivers/video/adf/sprd/drv/sprd_aod_idle.c`, `CONFIG_SPRD_AOD_IDLE`, `dm63_aod.fragment`): same sysfs and `aod_dtap` interface as the stock module, real structs instead of offsets. Idle-mode commands are DCS writes (as stock); `idle_state` is cleared only when the panel is re-initialised at unblank. As a module it is `sprd_aod_idle.ko`: the DM63 `aod_idle.rc` needs the new name, or build it in.
+- **DM63 `aod_idle`** (`drivers/video/adf/sprd/drv/sprd_aod_idle.c`, `CONFIG_SPRD_AOD_IDLE`, `dm63_aod.fragment`): same sysfs and `aod_dtap` interface as the stock module, real structs instead of offsets. Idle-mode commands are DCS writes (as stock); `idle_state` is cleared only when the panel is re-initialised at unblank. As a module it is `sprd_aod_idle.ko`: the DM63 `aod_idle.rc` needs the new name, or build it in. On the DW100U the same driver also matches `hyn_ts` (`dw100u_aod.fragment`; CO5300 command set equal to the DM63's per the stock DTs); untested, userspace helper/overlay to be written.
 
 ## Build
 
@@ -80,7 +80,7 @@ make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=../out_sc9832e \
 # same for .../sipc_modules/fm/driver; then `git clean -fq . && git clean -fqX .` in each module dir
 ```
 
-The BT/FM `M=` path must be absolute. Fragments: `watch_hardening`, `watch_release` (not ready), `dm63_touch`, `dw100u_touch`, `watch_hrs`, `dm63_aod`.
+The BT/FM `M=` path must be absolute. Fragments: `watch_hardening`, `watch_release` (not ready), `dm63_touch`, `dw100u_touch`, `watch_hrs`, `dm63_aod`, `dw100u_aod`.
 
 Last full build of `security-backports` with the hardening fragment and `SPRD_AOD_IDLE=m`: 0 errors; `mali.ko`, `sprdbt_tty.ko`, `sprd_fm.ko` build.
 

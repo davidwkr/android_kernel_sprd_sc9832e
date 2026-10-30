@@ -54,3 +54,7 @@ Ramdisk `/lib/modules`: `mali.ko`, `sprdbt_tty.ko`, `sprd_fm.ko`, `sprdwl_ng.ko`
 ## Bring-up order
 
 After the silver unit: same kernel, this unit's own `stock.dts`.
+
+## AOD
+
+`CONFIG_SPRD_AOD_IDLE` (`arch/arm64/configs/dw100u_aod.fragment`, with `dw100u_touch.fragment`) puts the CO5300 in idle mode and gives double-tap wake from `hyn_ts`; details and test steps in `KERNEL_TWEAKS.md` (Display/AOD). It is meant to replace the userspace Magisk module `wearit_aod`; the helper script, `.rc` and the overlay `config_powerDecoupleAutoSuspendModeFromDisplay=true` (userspace) still have to be provided. Untested on hardware. This unit's `lcd_id` and touch controller are unconfirmed (see above); its `stock.dts` has the same `aod-in`/`aod-out` as the silver unit.
