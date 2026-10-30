@@ -51,7 +51,7 @@ if [ "$1" = all ]; then
   rc=0
   # one process per device so errexit stays active inside each run
   for d in dm63 dw100u mt107 mt108 dm82; do
-    "$0" $([ "$CHECK" -eq 1 ] && echo --check) "$d" || rc=1
+    "$SRC/scripts/watch_defconfig.sh" $([ "$CHECK" -eq 1 ] && echo --check) "$d" || rc=1
   done
   exit $rc
 fi

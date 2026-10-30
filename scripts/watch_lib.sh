@@ -29,7 +29,8 @@ watch_assemble() {
   MK sprd_sharkle_defconfig
   files=()
   for f in $FRAGS; do files+=("$CFG/$f.fragment"); done
-  ./scripts/kconfig/merge_config.sh -m -O "$O" "$O/.config" "${files[@]}" >/dev/null
+  # cwd = $O: merge_config.sh drops its ./.tmp.config.* temp file in cwd
+  (cd "$O" && "$SRC/scripts/kconfig/merge_config.sh" -m -O "$O" "$O/.config" "${files[@]}" >/dev/null)
   MK olddefconfig
 }
 
