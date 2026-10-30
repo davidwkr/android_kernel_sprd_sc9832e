@@ -12,7 +12,7 @@ Where the kernel work stands, what was reviewed, what is open. Details live in t
 
 ## Branches
 
-All finished work is merged into **`security-backports`** (head `3ae1686a4`). The topic branches are kept for history:
+All finished work is merged into **`security-backports`** (head `49bfec080`). The topic branches are kept for history:
 
 | Branch | Content | Merged |
 |---|---|---|
@@ -36,11 +36,17 @@ All finished work is merged into **`security-backports`** (head `3ae1686a4`). Th
 | `tweaks/gauge-resync` | `batt_idle` fuel-gauge resync during the CV hold | yes |
 | `devices/dts-in-tree` | per-watch DTS in tree, `tools/dtcompare.py`, `tools/dts_label.py` | yes |
 | `security/ion-lifetime` | ION buffer lifetime (probable CVE-2023-49672), all in-tree callers | yes |
+| `fixes/bt-tty-flip` | `tty_schedule_flip` (removed by the 4.4.302 stable merge) replaced by `tty_flip_buffer_push`: the ramdisk `sprdbt_tty.ko` had an unresolved symbol and would not load | yes |
+| `devices/defconfigs` | `scripts/watch_lib.sh`, `scripts/watch_defconfig.sh` (`--check` fails on drift), `<device>_defconfig` | yes |
+| `tools/ramdisk-initrc` | `tools/sprd_ramdisk.py add-rc`: `init.watch_tweaks.rc` (dirty expire/writeback 3000) | yes |
+| `userspace/dw100u-aod` | `userspace/dw100u_aod/`: `aod_idled` service, rc, SELinux policy (untested), overlay source | yes |
+| `devices/dt-bindings` | `devices/DT_BINDINGS.md`, `tools/dt_driver_check.py`; Hynitron touch also built on the DM63 | yes |
+| `fixes/otg-gpio-cable` | NULL Type-C notifier fixed; manual `host` refused without a VBUS supplier (`host_without_vbus`); no watch has one | yes |
 | `tools/first-boot` | `scripts/first_boot.sh` (backup, recovery-only flash, verify, restore) and a fake-adb test suite | **no**: latest fixes uncommitted, test suite not run yet |
 | `drivers/goodix-fp` | Goodix fingerprint | **no**: empty, needs the vendor GPL source |
 | `backup/security-backports-pre-trailer-strip` | backup ref from before the commit-trailer cleanup | – |
 
-**Push state:** `origin/security-backports` is at `18f4c2ac8` (4.4.302 stable merge docs). 1467 commits since then are local only. The fork is public: check before pushing that no device data is in the tree. A few CIP commits carry `Assisted-by:` trailers written by their upstream authors; they are kept as upstream wrote them. Commits made for this project carry no tool attribution.
+**Push state:** `origin/security-backports` is at `73dda0c26` (pushed 2026-10-30); 26 commits since then are local only. The fork is public: check before pushing that no device data is in the tree. A few CIP commits carry `Assisted-by:` trailers written by their upstream authors; they are kept as upstream wrote them. Commits made for this project carry no tool attribution.
 
 ## Review process
 
@@ -75,7 +81,7 @@ Each work item went through: implementation, a first code review, fixes, then an
 - **GNSS** (`drivers/misc/sprdwcn_bsp/sc23xx/`, the driver actually built): the engine stop powers the GNSS core, rail and WCN domain down when Wi-Fi and BT are off (no change needed). New read-only `/sys/class/misc/gnss_common_ctl/gnss_engine_state` (`off`, `transition`, `assert`, `error`, `sleep`, `on`, `unknown`; `off` is the driver's control state). Failure paths fixed (`fixes/gnss-failpaths`): a failed start unwinds exactly what it acquired, restarts are rate limited (30 s, burst 3, up to 600 s, boottime), `gnss_engine_state` reports `error` after a failed start.
 - **DM63 charge CV override** (`drivers/power/sprd_2721_charge.c`): replaces `batt_idle.ko`. Off by default; `echo 4100 > /sys/module/sprd_2721_charge/parameters/cv_override_mv` (or cmdline / DT `sprd,cv-override-microvolt`). With the override on, the driver models the CV register exactly and programs the highest representable CV at or below min(request, `chg-end-vol`, override); unreachable values are rejected at set time. Override off: stock path unchanged. Fuel-gauge resync ported (`gauge_resync`, off by default; KERNEL_TWEAKS.md section 4). The safety timer still stops charging briefly every 90 min after the first 6 h (same as `batt_idle`).
 - **DM63 `aod_idle`** (`drivers/video/adf/sprd/drv/sprd_aod_idle.c`, `CONFIG_SPRD_AOD_IDLE`, `dm63_aod.fragment`): same sysfs and `aod_dtap` interface as the stock module, real structs instead of offsets. Idle-mode commands are DCS writes (as stock); `idle_state` is cleared only when the panel is re-initialised at unblank. As a module it is `sprd_aod_idle.ko`: the DM63 `aod_idle.rc` needs the new name, or build it in. On the DW100U the same driver also matches `hyn_ts` (`dw100u_aod.fragment`; CO5300 command set equal to the DM63's per the stock DTs); untested, userspace helper/overlay to be written.
-- **USB host mode** (`drivers/usb/musb/musb_sprd.c`, `CONFIG_USB_MUSB_SPRD_ROLE_SYSFS`, `watch_otg.fragment`): `/sys/kernel/otg_role/role` (`host`/`device`) as the stock `otg_role.ko`, but in the glue with real structs; same glue on DM63 and both DW100U. VBUS comes from the FAN54015 boost via `sprd_extic_otg_power()` (not verified on hardware); host mode holds `musb-sprd` so the watch does not suspend. Off by default; never plug a charger while in host mode. Idle timeout added (`host_idle_timeout`, default 300 s: back to device mode when nothing is enumerated). Hardware test pending (KERNEL_TWEAKS.md section 5); suspend in host mode is still open (TODO.md).
+- **USB host mode** (`drivers/usb/musb/musb_sprd.c`, `CONFIG_USB_MUSB_SPRD_ROLE_SYSFS`, `watch_otg.fragment`): `/sys/kernel/otg_role/role` (`host`/`device`) as the stock `otg_role.ko`, but in the glue with real structs; same glue on DM63 and both DW100U. No watch has a kernel-controlled VBUS source (the FAN54015 sits on an I2C bus disabled in every DT, and the SC2721 ops have no OTG hook), so host mode needs an externally powered OTG adapter or self-powered hub; a manual `host` write is refused unless `host_without_vbus=1` (KERNEL_TWEAKS.md section 5); host mode holds `musb-sprd` so the watch does not suspend. Off by default; never plug a charger while in host mode. Idle timeout added (`host_idle_timeout`, default 300 s: back to device mode when nothing is enumerated). Hardware test pending (KERNEL_TWEAKS.md section 5); suspend in host mode is still open (TODO.md).
 - **OCH1970** (`drivers/input/misc/och1970.c`, MT107/MT108/DM82 fragments): new driver from the public datasheet; build-checked only.
 - **Device trees:** `sp9832e-1h10-<device>.dts` for all six watches, byte-identical to the stock DTBs (`tools/dtcompare.py --strict-order`).
 
@@ -91,7 +97,7 @@ The script runs `sprd_sharkle_defconfig`, merges `watch_base`, `watch_stock_pari
 
 Standalone defconfigs: `arch/arm64/configs/{dm63,dw100u,mt107,mt108,dm82}_defconfig` (`dw100u` covers silver and V13M) are generated from the same fragments by `scripts/watch_defconfig.sh DEVICE|all`; `scripts/watch_defconfig.sh --check all` fails if one drifted from the fragments. The assembly and fragment verification live in `scripts/watch_lib.sh`, shared with `watch_build.sh`.
 
-Last full build of `security-backports` (head `3ae1686a4`, 2026-10-30): all six devices rc=0; the four modules are stripped with `--strip-debug`. One older warning remains (implicit `tty_schedule_flip` in the BT `tty-sipc` driver).
+Last full build of `security-backports` (head `49bfec080`, 2026-10-30): all six devices rc=0, every ramdisk module symbol resolves against `Module.symvers`, no implicit declarations; the four modules are stripped with `--strip-debug`.
 
 ## Open
 
