@@ -169,8 +169,6 @@ static void hyn_process_report(struct hyn_ts *ts)
 		const u8 *p = hyn_point(buf, i);
 		unsigned int id = p[0] >> 4;
 		unsigned int event = (p[0] & 0x0f) >> 1;
-		unsigned int x = (p[1] << 4) | (p[3] >> 4);
-		unsigned int y = (p[2] << 4) | (p[3] & 0x0f);
 
 		if (id >= HYN_MAX_POINTS || test_bit(id, &seen) ||
 		    (event && event != (HYN_STAT_DOWN >> 1)))
