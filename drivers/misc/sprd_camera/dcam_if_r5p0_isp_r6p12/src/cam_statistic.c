@@ -112,7 +112,8 @@ int sprd_cam_statistic_queue_init(struct cam_statis_module *module,
 	module->idx = idx;
 	module->module_flag = module_flag;
 	module->statis_valid = 0;
-	module->isp_statis_dmabuf = NULL;
+	/* drop a reference left from a previous init without deinit */
+	sprd_cam_statistic_isp_buf_put(module);
 
 	if (module_flag == DCAM_DEV_STATIS && idx == DCAM_ID_2)
 		return ret;

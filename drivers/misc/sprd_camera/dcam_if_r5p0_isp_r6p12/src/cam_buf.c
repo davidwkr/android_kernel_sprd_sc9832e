@@ -213,16 +213,10 @@ static int sprd_cambuf_buffer_list_add(int fd, struct dma_buf *buf,
 				       uint32_t idx)
 {
 	struct fd_map_dma *fd_dma = NULL;
+	struct fd_map_dma *entry = NULL;
 	struct list_head *g_dma_buffer_list = NULL;
 
 	g_dma_buffer_list = &dma_buffer_list[idx];
-
-	list_for_each_entry(fd_dma, g_dma_buffer_list, list) {
-		if (fd_dma->type == CAM_BUF_USER_TYPE
-			&& fd == fd_dma->user_type.fd
-			&& buf == fd_dma->user_type.dma_buf)
-			return 0;
-	}
 
 	fd_dma = kzalloc(sizeof(struct fd_map_dma), GFP_KERNEL);
 	if (!fd_dma)
@@ -231,11 +225,22 @@ static int sprd_cambuf_buffer_list_add(int fd, struct dma_buf *buf,
 	fd_dma->type = CAM_BUF_USER_TYPE;
 	fd_dma->user_type.fd = fd;
 	fd_dma->user_type.dma_buf = buf;
+
+	/* duplicate search, insertion and reference under one lock */
 	mutex_lock(&dma_buffer_lock);
-	list_add_tail(&fd_dma->list, g_dma_buffer_list);
-	mutex_unlock(&dma_buffer_lock);
+	list_for_each_entry(entry, g_dma_buffer_list, list) {
+		if (entry->type == CAM_BUF_USER_TYPE
+			&& fd == entry->user_type.fd
+			&& buf == entry->user_type.dma_buf) {
+			mutex_unlock(&dma_buffer_lock);
+			kfree(fd_dma);
+			return 0;
+		}
+	}
 	/* the list entry owns its own reference, dropped in sg_table_put */
 	get_dma_buf(buf);
+	list_add_tail(&fd_dma->list, g_dma_buffer_list);
+	mutex_unlock(&dma_buffer_lock);
 	pr_debug("add 0x%x 0x%p\n", fd_dma->user_type.fd,
 		((struct dma_buf *)fd_dma->user_type.dma_buf));
 
