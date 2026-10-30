@@ -94,6 +94,9 @@ struct isp_group {
 	struct s_iq_info_2 iqinfo2;
 	uint32_t af_stats_independence;
 	uint32_t on;
+	/* dma-bufs programmed into the hardware, see isp_pin_dmabuf() */
+	struct list_head pinned_dmabufs;
+	spinlock_t pinned_lock;
 };
 
 static struct isp_if_context *s_isp_pipeline[ISP_DEV_NUM];
@@ -163,9 +166,9 @@ struct isp_pinned_dmabuf {
 };
 
 /*
- * Buffers handed to the ISP stay programmed in hardware until the pipeline
- * is released, so the dma-buf reference is kept on a per-pipeline list and
- * dropped by isp_unpin_all(). Takes over the caller's reference @held.
+ * Buffers handed to the ISP stay programmed in hardware (the firmware is
+ * shared by all pipelines) until the last user closes, so the dma-buf
+ * reference is kept on a per-group list and dropped by isp_unpin_all(). Takes over the caller's reference @held.
  * If no list node can be allocated the reference is deliberately leaked,
  * which is safe (the buffer stays alive) unlike dropping it.
  */
@@ -173,6 +176,7 @@ static void isp_pin_dmabuf(struct isp_pipe_dev *isp_pipeline,
 			   struct dma_buf *held)
 {
 	struct isp_pinned_dmabuf *node, *entry;
+	struct isp_group *group = isp_pipeline->private_data;
 	bool dup = false;
 
 	if (!held)
@@ -185,16 +189,16 @@ static void isp_pin_dmabuf(struct isp_pipe_dev *isp_pipeline,
 	}
 	node->dmabuf = held;
 
-	spin_lock(&isp_pipeline->pinned_lock);
-	list_for_each_entry(entry, &isp_pipeline->pinned_dmabufs, list) {
+	spin_lock(&group->pinned_lock);
+	list_for_each_entry(entry, &group->pinned_dmabufs, list) {
 		if (entry->dmabuf == held) {
 			dup = true;
 			break;
 		}
 	}
 	if (!dup)
-		list_add_tail(&node->list, &isp_pipeline->pinned_dmabufs);
-	spin_unlock(&isp_pipeline->pinned_lock);
+		list_add_tail(&node->list, &group->pinned_dmabufs);
+	spin_unlock(&group->pinned_lock);
 
 	if (dup) {
 		kfree(node);
@@ -202,17 +206,17 @@ static void isp_pin_dmabuf(struct isp_pipe_dev *isp_pipeline,
 	}
 }
 
-static void isp_unpin_all(struct isp_pipe_dev *isp_pipeline)
+static void isp_unpin_all(struct isp_group *group)
 {
 	struct isp_pinned_dmabuf *node;
 
 	for (;;) {
-		spin_lock(&isp_pipeline->pinned_lock);
-		node = list_first_entry_or_null(&isp_pipeline->pinned_dmabufs,
+		spin_lock(&group->pinned_lock);
+		node = list_first_entry_or_null(&group->pinned_dmabufs,
 				struct isp_pinned_dmabuf, list);
 		if (node)
 			list_del(&node->list);
-		spin_unlock(&isp_pipeline->pinned_lock);
+		spin_unlock(&group->pinned_lock);
 		if (!node)
 			break;
 		sprd_ion_put(node->dmabuf);
@@ -3848,8 +3852,6 @@ static int isp_open(struct inode *node, struct file *file)
 	}
 
 	atomic_set(&isp_pipeline->users, 0);
-	INIT_LIST_HEAD(&isp_pipeline->pinned_dmabufs);
-	spin_lock_init(&isp_pipeline->pinned_lock);
 	isp_pipeline->dn = pdev->dev.of_node;
 	isp_pipeline->clock = NULL;
 
@@ -3969,13 +3971,14 @@ static int isp_release(struct inode *node, struct file *file)
 		cam_ion_client = NULL;
 		sprd_ion_put(dmabuf_p);
 		dmabuf_p = NULL;
+		/* the firmware is stopped: nothing uses the buffers anymore */
+		isp_unpin_all(group);
 	}
 	s_isp_pipeline[isp_pipeline->isp_id] = NULL;
 	group->ispif[isp_pipeline->isp_id] = NULL;
 
 exit:
 	if (isp_pipeline) {
-		isp_unpin_all(isp_pipeline);
 		vfree(isp_pipeline);
 		isp_pipeline = NULL;
 	}
@@ -4039,6 +4042,8 @@ static int isp_probe(struct platform_device *pdev)
 	group = devm_kzalloc(&pdev->dev, sizeof(struct isp_group), GFP_KERNEL);
 	if (group == NULL)
 		return -ENOMEM;
+	INIT_LIST_HEAD(&group->pinned_dmabufs);
+	spin_lock_init(&group->pinned_lock);
 
 	isp_hwdev = devm_kzalloc(&pdev->dev, sizeof(*isp_hwdev), GFP_KERNEL);
 	if (!isp_hwdev)
