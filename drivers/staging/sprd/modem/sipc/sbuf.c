@@ -670,6 +670,11 @@ int sbuf_write(u8 dst, u8 channel, u32 bufid,
 	sbuf = sbufs[dst][ch_index];
 	if (!sbuf)
 		return -ENODEV;
+	if (bufid >= sbuf->ringnr)
+		return -EINVAL;
+	/* left/rxsize/txsize below are int */
+	if (len > INT_MAX)
+		len = INT_MAX;
 	ring = &sbuf->rings[bufid];
 	ringhd = ring->header;
 	if (sbuf->state != SBUF_STATE_READY) {
@@ -749,7 +754,12 @@ int sbuf_write(u8 dst, u8 channel, u32 bufid,
 		}
 	}
 
-	while (left && (int)(ringhd->txbuf_wrptr - ringhd->txbuf_rdptr) <
+	/*
+	 * rdptr is written by the peer: a value ahead of wrptr would make
+	 * the free-space computation below exceed the ring size.
+	 */
+	while (left && (int)(ringhd->txbuf_wrptr - ringhd->txbuf_rdptr) >= 0 &&
+	       (int)(ringhd->txbuf_wrptr - ringhd->txbuf_rdptr) <
 	       ringhd->txbuf_size && sbuf->state == SBUF_STATE_READY) {
 		/* calc txpos & txsize */
 		txpos = ring->txbuf_virt +
@@ -851,6 +861,11 @@ int sbuf_read(u8 dst, u8 channel, u32 bufid,
 	sbuf = sbufs[dst][ch_index];
 	if (!sbuf)
 		return -ENODEV;
+	if (bufid >= sbuf->ringnr)
+		return -EINVAL;
+	/* left/rxsize/txsize below are int */
+	if (len > INT_MAX)
+		len = INT_MAX;
 	ring = &sbuf->rings[bufid];
 	ringhd = ring->header;
 
@@ -929,14 +944,21 @@ int sbuf_read(u8 dst, u8 channel, u32 bufid,
 		rxpos = ring->rxbuf_virt +
 			ringhd->rxbuf_rdptr % ringhd->rxbuf_size;
 		rxsize = (int)(ringhd->rxbuf_wrptr - ringhd->rxbuf_rdptr);
-		/* check overrun */
-		if (rxsize > ringhd->rxbuf_size)
+		/* check overrun: wrptr is written by the peer */
+		if (rxsize < 0 || rxsize > ringhd->rxbuf_size) {
 			pr_err("sbuf_read: bufid = %d, channel= %d rxsize=0x%x, rdptr=%d, wrptr=%d",
 			       bufid,
 			       channel,
 			       rxsize,
 			       ringhd->rxbuf_wrptr,
 			       ringhd->rxbuf_rdptr);
+			if (rxsize < 0) {
+				rval = -EIO;
+				break;
+			}
+			/* never copy more than the ring holds */
+			rxsize = ringhd->rxbuf_size;
+		}
 
 		rxsize = min(rxsize, left);
 
@@ -1030,7 +1052,7 @@ int sbuf_poll_wait(u8 dst, u8 channel, u32 bufid,
 		return mask;
 	}
 	sbuf = sbufs[dst][ch_index];
-	if (!sbuf)
+	if (!sbuf || bufid >= sbuf->ringnr)
 		return mask;
 	ring = &sbuf->rings[bufid];
 	ringhd = ring->header;
@@ -1088,6 +1110,8 @@ int sbuf_register_notifier(u8 dst, u8 channel, u32 bufid,
 	sbuf = sbufs[dst][ch_index];
 	if (!sbuf)
 		return -ENODEV;
+	if (bufid >= sbuf->ringnr)
+		return -EINVAL;
 	ring = &sbuf->rings[bufid];
 	ring->handler = handler;
 	ring->data = data;
