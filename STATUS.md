@@ -89,6 +89,8 @@ scripts/watch_build.sh DEVICE [OUTDIR]   # DEVICE: dm63 dw100u-silver dw100u-v13
 
 The script runs `sprd_sharkle_defconfig`, merges `watch_base`, `watch_stock_parity` (stock-config options we were missing, see [`devices/CONFIG_PARITY.md`](devices/CONFIG_PARITY.md)), `watch_hardening` and the device fragments (dm63: `dm63_touch watch_hrs watch_sc7a22 dm63_aod`; dw100u-*: `dw100u_touch watch_hrs watch_sc7a22 dw100u_aod`; mt107, mt108, dm82: their own fragment), runs `olddefconfig`, checks that every fragment line took effect (fails listing mismatches), builds `Image` and modules, then builds the ramdisk modules `mali`, `sprdbt_tty`, `sprd_fm` against the same `O=` (`sprdwl_ng` is in-tree `=m`; never mix configs), cleans the module source dirs and copies `Image` + the four `.ko` + `sha256sum.txt` to `OUTDIR/DEVICE/`. `ARCH`, `CROSS_COMPILE`, `JOBS` are overridable by environment. `watch_release` (not ready) and `watch_otg` (off by default) are never merged.
 
+Standalone defconfigs: `arch/arm64/configs/{dm63,dw100u,mt107,mt108,dm82}_defconfig` (`dw100u` covers silver and V13M) are generated from the same fragments by `scripts/watch_defconfig.sh DEVICE|all`; `scripts/watch_defconfig.sh --check all` fails if one drifted from the fragments. The assembly and fragment verification live in `scripts/watch_lib.sh`, shared with `watch_build.sh`.
+
 Last full build of `security-backports` (head `3ae1686a4`, 2026-10-30): all six devices rc=0; the four modules are stripped with `--strip-debug`. One older warning remains (implicit `tty_schedule_flip` in the BT `tty-sipc` driver).
 
 ## Open
