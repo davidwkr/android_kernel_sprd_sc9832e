@@ -121,6 +121,7 @@ unsigned char step_count_delay = 0;
 #endif
 
 // macro define
+#define QMAX981_MIN_DELAY	10	/* ms, lower bound of the poll period */
 #define delay_to_jiffies(d) ((d)?msecs_to_jiffies(d):1)
 #define actual_delay(d)     (jiffies_to_msecs(delay_to_jiffies(d)))
 
@@ -172,6 +173,7 @@ struct qmax981_data {
 	struct delayed_work work;
 	unsigned char product_code;
 	unsigned char resolution;
+	bool dt_pdata;			/* platform_data allocated by this driver */
 };
 
 /******************************
@@ -559,7 +561,7 @@ static void qmax981_work_func(struct work_struct *work)
 {
 	static struct qmax981acc acc = { 0 };
 	struct qmax981_data *qmax981 = container_of((struct delayed_work *)work, struct qmax981_data, work);
-	unsigned long delay = msecs_to_jiffies(atomic_read(&qmax981->delay));
+	unsigned long delay = msecs_to_jiffies(max_t(int, atomic_read(&qmax981->delay), QMAX981_MIN_DELAY));
 
 	int pre_enable_acc = atomic_read(&qmax981->enable);
 
@@ -593,7 +595,7 @@ static void qmax981_work_func(struct work_struct *work)
 	mutex_unlock(&qmax981->value_mutex);
 #ifdef QMAX981_ACC_STEP_COUNT
 	if (pre_enable_acc == 0)
-		delay = msecs_to_jiffies(atomic_read(&qmax981->delay)/10);  // step counter use slow mode
+		delay = msecs_to_jiffies(max_t(int, atomic_read(&qmax981->delay) / 10, QMAX981_MIN_DELAY));  // step counter use slow mode
 #endif
 	schedule_delayed_work(&qmax981->work, delay);
 }
@@ -665,7 +667,8 @@ static ssize_t qmax981_register_store(struct device *dev,
 	LOG_INFO("%s called\n", __func__);
 #endif
 
-	sscanf(buf, "%d %d", &address, &value);
+	if (sscanf(buf, "%d %d", &address, &value) != 2)
+		return -EINVAL;
 	if (0 != qmax981_smbus_write_byte(qmax981->client, (unsigned char)address,
 				(unsigned char *)&value))
 		return -EINVAL;
@@ -1049,6 +1052,8 @@ static void qmax981_set_delay(struct device *dev, int delay)
 
 	LOG_INFO("delay=%d\n", delay);
 
+	if (delay < QMAX981_MIN_DELAY)
+		delay = QMAX981_MIN_DELAY;
 	atomic_set(&qmax981->delay, delay);
 	mutex_lock(&qmax981->enable_mutex);
 
@@ -1070,6 +1075,8 @@ static ssize_t qmax981_delay_store(struct device *dev,
 	LOG_INFO("delay=%ld\n", delay);
 	if (delay > QMAX981_MAX_DELAY)
 		delay = QMAX981_MAX_DELAY;
+	if (delay < QMAX981_MIN_DELAY)
+		delay = QMAX981_MIN_DELAY;
 	atomic_set(&qmax981->delay, delay);
 
 	return count;
@@ -1288,6 +1295,9 @@ static int qmax981_open(struct inode *inode, struct file *file)
 		return err;
 	}
 
+	if (!qmax981_client || !i2c_get_clientdata(qmax981_client))
+		return -ENODEV;
+
 	file->private_data = i2c_get_clientdata(qmax981_client);
 
 	return 0;
@@ -1334,15 +1344,16 @@ static int qmax981_remove(struct i2c_client *client)
 	LOG_INFO("%s called\n", __func__);
 #endif
 
-	qmax981_set_enable(&client->dev, 0);
-
+	/* remove every entry point first, then stop the self-rearming work */
 	qmax981_destroy_gsensor_dev();
 	misc_deregister(&qmax981_device);
 	sysfs_remove_group(&qmax981->input->dev.kobj, &qmax981_attribute_group);
+	qmax981_set_enable(&client->dev, 0);
+	cancel_delayed_work_sync(&qmax981->work);
 	qmax981_input_deinit(qmax981);
 	g_qmax981_data = NULL;
 	qmax981_client = NULL;
-	if (client->dev.of_node) {
+	if (qmax981->dt_pdata) {
 		kfree(client->dev.platform_data);	/* allocated by the DT parser */
 		client->dev.platform_data = NULL;
 	}
@@ -1423,6 +1434,7 @@ static int qmax981_i2c_probe(struct i2c_client *client,
 	}
 
 	qmax981->product_code = 0;
+	qmax981->dt_pdata = dt_pdata;
 
 	mutex_init(&qmax981->enable_mutex);
 	mutex_init(&qmax981->value_mutex);
@@ -1529,6 +1541,10 @@ exit_misc_deregister:
 	misc_deregister(&qmax981_device);
 exit_remove_group:
 	sysfs_remove_group(&qmax981->input->dev.kobj, &qmax981_attribute_group);
+	/* interfaces are gone: standby and make sure no work stays queued */
+	qmax981_set_mode(client, QMAX981_MODE_STANDBY);
+	atomic_set(&qmax981->enable, 0);
+	cancel_delayed_work_sync(&qmax981->work);
 exit_input_deinit:
 	qmax981_input_deinit(qmax981);
 exit_clear_globals:
