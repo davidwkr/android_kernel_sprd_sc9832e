@@ -15,6 +15,7 @@ For every enabled DT node with a compatible it reports:
 Output is plain text on stdout.  Bounded: skips files > 2 MiB, DTS > 16 MiB.
 """
 import os
+import stat
 import re
 import sys
 
@@ -22,7 +23,7 @@ MAXF = 2 << 20
 
 
 def read(p, lim=MAXF):
-    if os.path.getsize(p) > lim:
+    if not stat.S_ISREG(os.stat(p).st_mode) or os.path.getsize(p) > lim:
         return ""
     with open(p, "r", errors="replace") as f:
         return f.read()
@@ -78,12 +79,16 @@ def parse_dts(text):
 
 def walk(n):
     yield n
+    st = n.props.get("status", ("", 0))[0]
+    if st and "okay" not in st and "ok" not in st:
+        return  # disabled parent: children are not probed either
     for k in n.kids:
         yield from walk(k)
 
 
 def strs(v):
-    return re.findall(r'"([^"]*)"', v)
+    return [re.sub(r"[^\x20-\x7e]", lambda m: "\\x%02x" % ord(m.group()), s)
+            for s in re.findall(r'"([^"]*)"', v)]
 
 
 def cells(v):
@@ -224,6 +229,9 @@ def main():
     src = "."
     if "--src" in argv:
         i = argv.index("--src")
+        if i + 1 >= len(argv):
+            print(__doc__)
+            return 2
         src = argv[i + 1]
         del argv[i:i + 2]
     if len(argv) != 2:

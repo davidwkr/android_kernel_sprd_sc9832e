@@ -105,7 +105,7 @@ Present in this tree and used: ADF display (`drivers/video/adf/sprd`, matches st
 ### 3. Device trees
 
 - [ ] Use each device's own DTB from its stock boot image (silver, V13M, DM63), not this tree's `sp9832e-1h10-*.dts`, for the first boot. That keeps panel timing, pinmux, battery and keys unchanged.
-- [ ] Decompile each DTB and compare it with `sp9832e-1h10-native.dts` / `sc9832e.dtsi` for bindings that changed between the 4.4.83 BSP and 4.4.147 (display, WCN, GNSS, charger, thermal). Fix the device DTS where a driver expects a different binding.
+- [x] Done: stock DTs vs this tree's drivers compared, see `devices/DT_BINDINGS.md` (`tools/dt_driver_check.py`). No boot-blocking mismatch. `dm63_touch.fragment` now also builds `TOUCHSCREEN_CST9217` (insurance for a DM63 revision with the Hynitron chip; `dm63_defconfig` regenerated). Open there: panel `lcd_id` must exist in each DT, AOD on non-CO5300 panels is unverified.
 - [x] Done: `sp9832e-1h10-{dw100u-silver,dw100u-v13m,dm63,mt107,mt108,dm82}.dts` are in `arch/arm64/boot/dts/sprd/` (labelled copies of the stock DTs, built by `make dtbs`, byte-identical to the stock DTBs when compiled with the tree's dtc; see `devices/README.md`, `tools/dtcompare.py`). The first boot still uses the stock DT table from the boot image; the next step is the binding comparison in the item above.
 
 ### 4. Missing drivers
