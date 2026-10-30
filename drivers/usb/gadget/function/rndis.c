@@ -1130,8 +1130,11 @@ int rndis_rm_hdr(struct gether *port,
 		data_offset = le32_to_cpu(hdr->DataOffset);
 		data_len = le32_to_cpu(hdr->DataLength);
 
-		if (skb->len < msg_len ||
-				((data_offset + data_len + 8) > msg_len)) {
+		/* msg_len >= header size makes every loop pull at least that;
+		 * sum in u64 so data_offset/data_len cannot wrap the check
+		 */
+		if (skb->len < msg_len || msg_len < sizeof *hdr ||
+				((u64)data_offset + data_len + 8 > msg_len)) {
 			pr_err("invalid rndis message: %d/%d/%d/%d, len:%d\n",
 					le32_to_cpu(hdr->MessageType),
 					msg_len, data_offset, data_len, skb->len);
