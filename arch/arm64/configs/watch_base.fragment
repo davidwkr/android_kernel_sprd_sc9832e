@@ -1,0 +1,8 @@
+# Base for all UNISOC SL8541E watches (DM63, DW100Ultra, MT107, MT108, DM82).
+# Order: sprd_sharkle_defconfig, this file, watch_hardening, then device fragments.
+# Use scripts/watch_build.sh, which does this and verifies the result.
+# Only options that sprd_sharkle_defconfig lacks and every device needs belong here.
+
+# Wi-Fi (UNISOC WCN SC2355) in-tree driver. It must be a module: the ramdisk
+# loads sprdwl_ng.ko at boot after the WCN firmware is up.
+CONFIG_SPRDWL_NG=m
