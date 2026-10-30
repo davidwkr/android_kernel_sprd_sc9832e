@@ -66,11 +66,11 @@ Issues found, not changed (documented only, failure paths, cannot be tested with
 
 #### New sysfs attribute `gnss_engine_state`
 
-`/sys/class/misc/gnss_common_ctl/gnss_engine_state`, mode 0444, read-only, added in `gnss_common_ctl.c` (`gnss_engine_state_show()`). Lock-free and does not access the GNSS core: it reads the driver state word and one status word from the AP-side DDR carve-out, which is mapped per read (vmap/vunmap in `wcn_read_data_from_phy_addr()`, so it may sleep; a mapping failure logs rate limited and gives `unknown`). The result is a snapshot and may be stale by one transition. Existing attributes are unchanged.
+`/sys/class/misc/gnss_common_ctl/gnss_engine_state`, mode 0444, read-only, added in `gnss_common_ctl.c` (`gnss_engine_state_show()`). Lock-free and does not access the GNSS core: it reads the driver state word and one status word from the AP-side DDR carve-out, which is mapped per read (vmap/vunmap in `wcn_read_data_from_phy_addr()`, so it may sleep; a mapping failure gives `unknown`; its three error prints, in `wcn_mem_ram_vmap_nocache()` and `wcn_read_data_from_phy_addr()`, are rate limited). The result is a snapshot and may be stale by one transition. Existing attributes are unchanged.
 
 | Value | Meaning | Source |
 |---|---|---|
-| `off` | Core powered down, or never started | `gnss_common_ctl_dev.gnss_status == POWEROFF` |
+| `off` | Software control state only: never started, or stopped through `gnss_power_enable`. Not proof the core is unpowered: on the first Wi-Fi/BT start `start_integrate_wcn()` (`boot/wcn_integrate_boot.c`, `first_time` block) runs a GNSS calibration independent of this attribute, and if it fails the stop is skipped (`!ret`) and the core stays powered while this reads `off` | `gnss_common_ctl_dev.gnss_status == POWEROFF` |
 | `transition` | A start or stop is in progress. Persisting more than about 10 s means a stuck failed start (see Issues) | `POWERON_GOING` / `POWEROFF_GOING`, and boot status is not ERR_BOOT |
 | `assert` | Firmware asserted, memory dump taken | `ASSERT` (set by the dump path) |
 | `error` | Start requested but calibration/boot failed; the core is not usable | `gnss_get_boot_status() == WCN_BOOT_CP2_ERR_BOOT` while the state is `POWERON`, `POWERON_GOING` or `POWEROFF_GOING` |
@@ -83,7 +83,7 @@ Issues found, not changed (documented only, failure paths, cannot be tested with
 #### Hardware test steps (all read-only on the device)
 
 1. Boot the new kernel; `cat /sys/class/misc/gnss_common_ctl/gnss_engine_state` -> `off`; `cat .../gnss_status` -> 0.
-2. Start a GPS session (tracking app). Poll once per second for the whole session: `while true; do date +%T; cat /sys/class/misc/gnss_common_ctl/gnss_engine_state; sleep 1; done`. Expect `transition` for a few seconds (firmware download and calibration), then `on`, and `sleep` between fixes if the firmware sleeps at 1 Hz. If it never reads `sleep` with SLEEP-ENABLE=TRUE, the firmware is not sleeping (a chip/firmware question, not the kernel).
+2. Start a GPS session (tracking app). Poll once per second for the whole session: `while true; do date +%T; cat /sys/class/misc/gnss_common_ctl/gnss_engine_state; sleep 1; done`. Expect `transition` for a few seconds (firmware download and calibration), then `on`, and `sleep` between fixes if the firmware sleeps at 1 Hz. Not seeing `sleep` at 1 Hz polling is inconclusive: short sleeps or phase alignment with the poll can hide it. Proving the firmware never sleeps needs firmware tracing or sleep residency counters, which this attribute does not provide.
 3. Stop the session: expect `transition` then `off` within about 1 s (up to 640 ms deep-sleep wait). If it stays `on`/`sleep` after the app stops, the HAL did not write `gnss_power_enable=0` (userspace). Check `dmesg | grep -E "gnss_ctl|wcn"` for `do stop`, `enable=0,en_count=`, `set WCN SYS TOP PD`.
 4. With Wi-Fi and BT off and the engine `off`: the WCN rail should be off. `cat /sys/kernel/debug/regulator/regulator_summary` (root, debugfs): the `vddwcn` consumer count 0 and use count 0. `dmesg` shows `vddwcn_en_count=0`.
 5. Suspend stats: `cat /sys/kernel/debug/wakeup_sources` (sbuf-4-4-0-rx `total_time`, `active_count`) and `cat /sys/power/suspend_stats` (success/fail counters) before and after a 10 minute screen-off session, once with the engine running and once after it stops. After the stop, WCN wakeup sources should stop growing and suspends should succeed.
