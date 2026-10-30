@@ -6,15 +6,20 @@
  *
  * The controller raises a falling edge on its interrupt line when a new
  * report is available. A report is read with a single I2C transfer from
- * register 0 and holds up to five points. The controller is put to sleep
- * and woken up from the framebuffer blank notifications.
+ * register 0 and holds up to five points. The controller is never put to
+ * sleep, like in the stock driver: touch must keep working with the screen
+ * in AOD and wake the system from suspend. While the system is suspended
+ * the I2C bus is not usable, so a report that arrives then is only noted
+ * and read on resume.
+ *
+ * The register layout and the reset timing were derived from the stock
+ * kernel binary for interoperability.
  *
  * Device tree (compatible "cst0xx,cst0xx_ts"):
  *   gpios    : <reset-gpio>, <irq-gpio>, in this order
  *   vdd_name : name of the supply regulator
  *   TP_MAX_X, TP_MAX_Y : size of the reported coordinate range
  *
- * Copyright (C) Hynitron Microelectronics
  * Copyright (C) Urbetrack
  *
  * This program is free software; you can redistribute it and/or modify
@@ -24,14 +29,15 @@
 
 #include <linux/delay.h>
 #include <linux/err.h>
-#include <linux/fb.h>
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/input.h>
 #include <linux/input/mt.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
+#include <linux/pm_wakeup.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
 
@@ -42,8 +48,6 @@
 #define CST0XX_REG_GESTURE	1
 #define CST0XX_REG_COUNT	2
 #define CST0XX_REG_POINTS	3
-#define CST0XX_REG_SLEEP	0xe5
-#define CST0XX_SLEEP_DEEP	0x03
 
 #define CST0XX_GESTURE_MARK	0xaa
 #define CST0XX_MAX_POINTS	5
@@ -71,6 +75,7 @@
 
 #define CST0XX_SUPPLY_MIN_UV	2800000
 #define CST0XX_SUPPLY_MAX_UV	3000000
+#define CST0XX_WAKEUP_MS	200
 
 struct cst0xx_ts {
 	struct i2c_client *client;
@@ -78,12 +83,13 @@ struct cst0xx_ts {
 	struct regulator *vdd;
 	struct gpio_desc *reset_gpio;
 	struct gpio_desc *irq_gpio;
-	struct notifier_block fb_notifier;
 	u32 max_x;
 	u32 max_y;
 	int irq;
-	bool asleep;
-	u8 report[CST0XX_REPORT_LEN];	/* DMA safe: part of the allocation */
+	struct mutex lock;	/* protects suspended, pending and the report */
+	bool suspended;
+	bool pending;		/* a report arrived while suspended */
+	u8 report[CST0XX_REPORT_LEN] ____cacheline_aligned;
 };
 
 static int cst0xx_read(struct cst0xx_ts *ts, u8 reg, u8 *buf, u16 len)
@@ -109,6 +115,7 @@ static int cst0xx_read(struct cst0xx_ts *ts, u8 reg, u8 *buf, u16 len)
 	return ret == ARRAY_SIZE(msgs) ? 0 : -EIO;
 }
 
+/* The reset line is held high (1) while the controller runs. */
 static void cst0xx_hw_reset(struct cst0xx_ts *ts)
 {
 	gpiod_set_value_cansleep(ts->reset_gpio, 1);
@@ -120,9 +127,9 @@ static void cst0xx_hw_reset(struct cst0xx_ts *ts)
 	msleep(200);
 }
 
-static irqreturn_t cst0xx_irq_thread(int irq, void *dev_id)
+/* Called with ts->lock held and the controller awake. */
+static void cst0xx_process_report(struct cst0xx_ts *ts)
 {
-	struct cst0xx_ts *ts = dev_id;
 	struct input_dev *input = ts->input;
 	const u8 *report = ts->report;
 	unsigned long seen = 0;
@@ -136,16 +143,16 @@ static irqreturn_t cst0xx_irq_thread(int irq, void *dev_id)
 	if (ret) {
 		dev_err_ratelimited(&ts->client->dev,
 				    "failed to read report: %d\n", ret);
-		return IRQ_HANDLED;
+		return;
 	}
 
 	/* a gesture report has no point data */
 	if (report[CST0XX_REG_GESTURE] == CST0XX_GESTURE_MARK)
-		return IRQ_HANDLED;
+		return;
 
 	count = report[CST0XX_REG_COUNT] & 0x07;
 	if (count > CST0XX_MAX_POINTS)
-		return IRQ_HANDLED;
+		return;
 
 	/* validate the whole frame before reporting any slot */
 	for (i = 0; i < count; i++) {
@@ -156,9 +163,8 @@ static irqreturn_t cst0xx_irq_thread(int irq, void *dev_id)
 		x[i] = ((p[CST0XX_PT_XH] & 0x0f) << 8) | p[CST0XX_PT_XL];
 		y[i] = ((p[CST0XX_PT_YH] & 0x0f) << 8) | p[CST0XX_PT_YL];
 
-		if (id[i] >= CST0XX_NUM_SLOTS || test_bit(id[i], &seen) ||
-		    x[i] > ts->max_x || y[i] > ts->max_y)
-			return IRQ_HANDLED;
+		if (id[i] >= CST0XX_NUM_SLOTS || test_bit(id[i], &seen))
+			return;
 
 		__set_bit(id[i], &seen);
 	}
@@ -181,68 +187,70 @@ static irqreturn_t cst0xx_irq_thread(int irq, void *dev_id)
 
 		input_mt_slot(input, id[i]);
 		input_mt_report_slot_state(input, MT_TOOL_FINGER, true);
-		input_report_abs(input, ABS_MT_POSITION_X, x[i]);
-		input_report_abs(input, ABS_MT_POSITION_Y, y[i]);
+		input_report_abs(input, ABS_MT_POSITION_X,
+				 min_t(u32, x[i], ts->max_x));
+		input_report_abs(input, ABS_MT_POSITION_Y,
+				 min_t(u32, y[i], ts->max_y));
 		input_report_abs(input, ABS_MT_PRESSURE, pressure);
 		input_report_abs(input, ABS_MT_TOUCH_MAJOR, area);
 	}
 
 	input_mt_sync_frame(input);
 	input_sync(input);
+}
+
+static irqreturn_t cst0xx_irq_thread(int irq, void *dev_id)
+{
+	struct cst0xx_ts *ts = dev_id;
+
+	mutex_lock(&ts->lock);
+	if (ts->suspended) {
+		/* the I2C bus is down: read the report on resume */
+		ts->pending = true;
+		pm_wakeup_event(&ts->client->dev, CST0XX_WAKEUP_MS);
+	} else {
+		cst0xx_process_report(ts);
+	}
+	mutex_unlock(&ts->lock);
 
 	return IRQ_HANDLED;
 }
 
-static void cst0xx_suspend(struct cst0xx_ts *ts)
+static int cst0xx_suspend(struct device *dev)
 {
-	u8 cmd[] = { CST0XX_REG_SLEEP, CST0XX_SLEEP_DEEP };
-	int ret;
+	struct cst0xx_ts *ts = dev_get_drvdata(dev);
 
-	if (ts->asleep)
-		return;
+	/* waits for a handler that is reading from the controller */
+	mutex_lock(&ts->lock);
+	ts->suspended = true;
+	mutex_unlock(&ts->lock);
 
-	/*
-	 * Waits for a running handler, so don't hold any lock the handler
-	 * could need.
-	 */
-	disable_irq(ts->irq);
+	if (device_may_wakeup(dev))
+		enable_irq_wake(ts->irq);
 
-	ret = i2c_master_send(ts->client, cmd, sizeof(cmd));
-	if (ret != sizeof(cmd))
-		dev_err(&ts->client->dev, "failed to enter sleep: %d\n", ret);
-
-	ts->asleep = true;
+	return 0;
 }
 
-static void cst0xx_resume(struct cst0xx_ts *ts)
+static int cst0xx_resume(struct device *dev)
 {
-	if (!ts->asleep)
-		return;
+	struct cst0xx_ts *ts = dev_get_drvdata(dev);
 
-	/* the controller only leaves deep sleep through a hardware reset */
-	cst0xx_hw_reset(ts);
-	ts->asleep = false;
-	enable_irq(ts->irq);
+	if (device_may_wakeup(dev))
+		disable_irq_wake(ts->irq);
+
+	/* the I2C adapter, our parent, is already resumed */
+	mutex_lock(&ts->lock);
+	ts->suspended = false;
+	if (ts->pending) {
+		ts->pending = false;
+		cst0xx_process_report(ts);
+	}
+	mutex_unlock(&ts->lock);
+
+	return 0;
 }
 
-static int cst0xx_fb_notifier_call(struct notifier_block *nb,
-				   unsigned long event, void *data)
-{
-	struct cst0xx_ts *ts = container_of(nb, struct cst0xx_ts, fb_notifier);
-	struct fb_event *fb_event = data;
-	int *blank;
-
-	if (event != FB_EVENT_BLANK || !fb_event || !fb_event->data)
-		return NOTIFY_DONE;
-
-	blank = fb_event->data;
-	if (*blank == FB_BLANK_UNBLANK)
-		cst0xx_resume(ts);
-	else if (*blank == FB_BLANK_POWERDOWN)
-		cst0xx_suspend(ts);
-
-	return NOTIFY_OK;
-}
+static SIMPLE_DEV_PM_OPS(cst0xx_pm_ops, cst0xx_suspend, cst0xx_resume);
 
 static void cst0xx_disable_regulator(void *data)
 {
@@ -251,11 +259,11 @@ static void cst0xx_disable_regulator(void *data)
 	regulator_disable(ts->vdd);
 }
 
-static void cst0xx_unregister_fb(void *data)
+static void cst0xx_disable_wakeup(void *data)
 {
 	struct cst0xx_ts *ts = data;
 
-	fb_unregister_client(&ts->fb_notifier);
+	device_init_wakeup(&ts->client->dev, false);
 }
 
 static int cst0xx_power_on(struct cst0xx_ts *ts)
@@ -316,7 +324,7 @@ static int cst0xx_parse_dt(struct cst0xx_ts *ts)
 		return -EINVAL;
 	}
 
-	ts->reset_gpio = devm_gpiod_get_index(dev, NULL, 0, GPIOD_OUT_HIGH);
+	ts->reset_gpio = devm_gpiod_get_index(dev, NULL, 0, GPIOD_OUT_LOW);
 	if (IS_ERR(ts->reset_gpio)) {
 		dev_err(dev, "failed to get reset gpio: %ld\n",
 			PTR_ERR(ts->reset_gpio));
@@ -351,7 +359,6 @@ static int cst0xx_register_input(struct cst0xx_ts *ts)
 
 	input->name = CST0XX_NAME;
 	input->id.bustype = BUS_I2C;
-	input->dev.parent = dev;
 
 	input_set_abs_params(input, ABS_MT_POSITION_X, 0, ts->max_x, 0, 0);
 	input_set_abs_params(input, ABS_MT_POSITION_Y, 0, ts->max_y, 0, 0);
@@ -394,6 +401,7 @@ static int cst0xx_probe(struct i2c_client *client,
 		return -ENOMEM;
 
 	ts->client = client;
+	mutex_init(&ts->lock);
 	i2c_set_clientdata(client, ts);
 
 	ret = cst0xx_parse_dt(ts);
@@ -419,24 +427,18 @@ static int cst0xx_probe(struct i2c_client *client,
 		return ret;
 	}
 
+	device_init_wakeup(dev, true);
+	ret = devm_add_action(dev, cst0xx_disable_wakeup, ts);
+	if (ret) {
+		cst0xx_disable_wakeup(ts);
+		return ret;
+	}
+
 	ret = devm_request_threaded_irq(dev, ts->irq, NULL, cst0xx_irq_thread,
 					IRQF_TRIGGER_FALLING | IRQF_ONESHOT |
 					IRQF_NO_SUSPEND, CST0XX_NAME, ts);
 	if (ret) {
 		dev_err(dev, "failed to request irq %d: %d\n", ts->irq, ret);
-		return ret;
-	}
-
-	ts->fb_notifier.notifier_call = cst0xx_fb_notifier_call;
-	ret = fb_register_client(&ts->fb_notifier);
-	if (ret) {
-		dev_err(dev, "failed to register fb notifier: %d\n", ret);
-		return ret;
-	}
-
-	ret = devm_add_action(dev, cst0xx_unregister_fb, ts);
-	if (ret) {
-		cst0xx_unregister_fb(ts);
 		return ret;
 	}
 
@@ -459,6 +461,7 @@ static struct i2c_driver cst0xx_driver = {
 	.driver = {
 		.name = CST0XX_NAME,
 		.of_match_table = cst0xx_of_match,
+		.pm = &cst0xx_pm_ops,
 	},
 	.probe = cst0xx_probe,
 	.id_table = cst0xx_id,

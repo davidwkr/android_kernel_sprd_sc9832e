@@ -162,7 +162,7 @@ config TOUCHSCREEN_CST9217
 
 config TOUCHSCREEN_CST0XX
 	tristate "Hynitron CST0xx touchscreen controllers"
-	depends on I2C && OF && FB
+	depends on I2C && OF
 	depends on GPIOLIB
 	help
 	  Say Y here if you have a Hynitron CST0xx (CST816 style) touch
