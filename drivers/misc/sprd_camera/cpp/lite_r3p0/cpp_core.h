@@ -42,6 +42,8 @@ struct cpp_addr {
 
 void cpp_print_reg(void *);
 int cpp_get_sg_table(struct cpp_iommu_info *pfinfo);
+int cpp_check_extent(struct cpp_iommu_info *pfinfo, int i,
+		unsigned long long len);
 int cpp_get_addr(struct cpp_iommu_info *pfinfo);
 int cpp_free_addr(struct cpp_iommu_info *pfinfo);
 #endif

@@ -160,6 +160,13 @@ static int cpp_dma_cfg_parm(struct sprd_cpp_dma_cfg_parm *parm,
 		pr_err("fail to get src addr\n");
 		return -EFAULT;
 	}
+	ret = cpp_check_extent(&p->iommu_src, 0,
+			       (unsigned long long)parm->input_size.h *
+			       p->src_pitch);
+	if (ret) {
+		pr_err("invalid dma src buffer\n");
+		return ret;
+	}
 	p->dma_src_addr = p->iommu_src.iova[0];
 
 	ret = cpp_get_sg_table(&p->iommu_dst);
@@ -173,6 +180,13 @@ static int cpp_dma_cfg_parm(struct sprd_cpp_dma_cfg_parm *parm,
 	if (ret) {
 		pr_err("fail to get src addr\n");
 		return -EFAULT;
+	}
+	ret = cpp_check_extent(&p->iommu_dst, 0,
+			       (unsigned long long)parm->input_size.h *
+			       p->dst_pitch);
+	if (ret) {
+		pr_err("invalid dma dst buffer\n");
+		return ret;
 	}
 	p->dma_dst_addr = p->iommu_dst.iova[0];
 

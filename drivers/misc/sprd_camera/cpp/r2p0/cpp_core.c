@@ -902,6 +902,13 @@ int cpp_get_addr(struct cpp_iommu_info *pfinfo, enum sprd_iommu_chtype ch_type)
 			continue;
 		}
 
+		if (pfinfo->offset[i] >= pfinfo->size[i]) {
+			pr_err("offset 0x%x outside buffer 0x%zx plane %d\n",
+			       pfinfo->offset[i], pfinfo->size[i], i);
+			pfinfo->err = -EINVAL;
+			return -EINVAL;
+		}
+
 		if (sprd_iommu_attach_device(pfinfo->dev) == 0) {
 			memset(&iommu_data, 0,
 				sizeof(struct sprd_iommu_map_data));
@@ -923,15 +930,31 @@ int cpp_get_addr(struct cpp_iommu_info *pfinfo, enum sprd_iommu_chtype ch_type)
 			else
 				pfinfo->iova[i] = iommu_data.iova_addr;
 		} else {
-			sprd_ion_get_phys_addr(pfinfo->mfd[i],
-					NULL,
+			ret = sprd_ion_get_phys_addr(-1,
+					pfinfo->dmabuf_p[i],
 					&pfinfo->iova[i],
 					&pfinfo->size[i]);
+			if (ret) {
+				pr_err("fail to get phy addr %d\n", i);
+				pfinfo->err = -EFAULT;
+				return -EFAULT;
+			}
 			pfinfo->iova[i] += pfinfo->offset[i];
 			pr_debug("cpp not use iommu,addr[%d]=0x%lx\n",
 				i, pfinfo->iova[i]);
 		}
 	}
+
+	/* the address registers are 32 bit wide */
+	for (i = 0; i < 2; i++) {
+		if (pfinfo->iova[i] > 0xffffffffUL) {
+			pr_err("iova 0x%lx does not fit the 32 bit register\n",
+			       pfinfo->iova[i]);
+			pfinfo->err = -EINVAL;
+			return -EINVAL;
+		}
+	}
+
 	return 0;
 }
 

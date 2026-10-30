@@ -43,6 +43,8 @@ struct cpp_addr {
 
 int sprd_cpp_core_get_sg_table(
 	struct cpp_iommu_info *pfinfo);
+int sprd_cpp_core_check_extent(struct cpp_iommu_info *pfinfo, int i,
+		unsigned long long len);
 int sprd_cpp_core_get_addr(
 	struct cpp_iommu_info *pfinfo);
 int sprd_cpp_core_free_addr(
