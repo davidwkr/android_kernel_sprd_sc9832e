@@ -344,10 +344,23 @@ static int cv_model_v10;	/* modelled programmed voltage, 0.1 mV */
  * Program the CV for a sprdbat request. Override off: the stock path,
  * unchanged. Override on: the highest representable CV not above
  * min(request, chg-end-vol, override). If that is not possible (calibration
- * unknown, or even the lowest CV is above it) the stock request is used and
- * cv_status shows override_unreachable; the CV is never programmed above
- * the override by choice of this code, only left at stock.
+ * unknown, or even the lowest CV is above it) cv_status shows
+ * override_unreachable: with the calibration unknown the stock request is
+ * kept, otherwise the lowest representable CV is programmed (or the stock
+ * request if that is lower still).
  */
+static void sprdchg_program_end_cv(unsigned int e, unsigned int c)
+{
+	/* never leave a higher END_V range with an old, larger code */
+	if (e > ((chg_adi_read(ANA_REG_GLB_CHGR_CTRL0) >> 3) & 0x3))
+		chg_adi_write(ANA_REG_GLB_CHGR_CTRL0,
+			      BITS_CHGR_CV_V(0U), BITS_CHGR_CV_V(~0U));
+	chg_adi_write(ANA_REG_GLB_CHGR_CTRL0,
+		      BITS_CHGR_END_V(e), BITS_CHGR_END_V(~0U));
+	chg_adi_write(ANA_REG_GLB_CHGR_CTRL0,
+		      BITS_CHGR_CV_V(c), BITS_CHGR_CV_V(~0U));
+}
+
 static void sprdchg_program_cccv(unsigned int req)
 {
 	unsigned int e, c;
@@ -359,19 +372,30 @@ static void sprdchg_program_cccv(unsigned int req)
 		sprdchg_write_cccv(req);
 		return;
 	}
-	if (!cv_cal_known ||
-	    !sprdchg_cv_floor(sprdchg_cv_effective(req), g_pdata->cccv_cal,
-			      &e, &c, &v10)) {
+	if (!cv_cal_known) {
 		cv_unreachable = true;
 		sprdchg_write_cccv(req);
 		return;
 	}
+	if (!sprdchg_cv_floor(sprdchg_cv_effective(req), g_pdata->cccv_cal,
+			      &e, &c, &v10)) {
+		/* program the lowest representable CV unless stock is lower */
+		int lowest = sprdchg_cv_v10(0, 0, g_pdata->cccv_cal);
+
+		cv_unreachable = true;
+		if (sprdchg_cv_model(req, g_pdata->cccv_cal, &e, &c) &&
+		    sprdchg_cv_v10(e, c, g_pdata->cccv_cal) <= lowest) {
+			cv_model_v10 = sprdchg_cv_v10(e, c, g_pdata->cccv_cal);
+			sprdchg_write_cccv(req);
+		} else {
+			cv_model_v10 = lowest;
+			sprdchg_program_end_cv(0, 0);
+		}
+		return;
+	}
 	cv_unreachable = false;
 	cv_model_v10 = v10;
-	chg_adi_write(ANA_REG_GLB_CHGR_CTRL0,
-		      BITS_CHGR_END_V(e), BITS_CHGR_END_V(~0U));
-	chg_adi_write(ANA_REG_GLB_CHGR_CTRL0,
-		      BITS_CHGR_CV_V(c), BITS_CHGR_CV_V(~0U));
+	sprdchg_program_end_cv(e, c);
 }
 
 static void sprdchg_set_cccvpoint(unsigned int cvpoint)
@@ -682,6 +706,18 @@ static int sprdchg_2721_probe(struct platform_device *pdev)
 	}
 	sprdchg_cccv_cal_get();
 	cv_cal_known = true;
+	if (cv_override_mv) {
+		/* set before the calibration was known (cmdline): re-check */
+		unsigned int e, c;
+		int v10;
+
+		if (!sprdchg_cv_floor(cv_override_mv, g_pdata->cccv_cal,
+				      &e, &c, &v10))
+			dev_warn(&pdev->dev,
+				 "CV override %u mV unreachable, lowest CV is %d mV; state override_unreachable\n",
+				 cv_override_mv,
+				 sprdchg_cv_v10(0, 0, g_pdata->cccv_cal) / 10);
+	}
 	{
 		u32 uv;
 
