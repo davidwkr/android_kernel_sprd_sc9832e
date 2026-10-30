@@ -499,7 +499,7 @@ int wcn_power_enable_sys_domain(bool enable)
 			wcn_xtl_auto_sel(true);
 		sys_domain = true;
 		WCN_INFO("clear WCN SYS TOP PD\n");
-	} else if ((!btwf_open) && (!gnss_open) && sys_domain) {
+	} else if (!enable && (!btwf_open) && (!gnss_open) && sys_domain) {
 		if (wcn_platform_chip_type() ==
 				WCN_PLATFORM_TYPE_PIKE2)
 			wcn_xtl_auto_sel(false);
@@ -706,6 +706,11 @@ int wcn_power_enable_vddcon(bool enable)
 	if (s_wcn_device.vddwcn != NULL) {
 		if (enable) {
 			ret = regulator_enable(s_wcn_device.vddwcn);
+			if (ret) {
+				WCN_ERR("vddcon enable failed ret=%d\n", ret);
+				mutex_unlock(&(s_wcn_device.vddwcn_lock));
+				return ret;
+			}
 			s_wcn_device.vddwcn_en_count++;
 			if (wcn_platform_chip_type() ==
 				WCN_PLATFORM_TYPE_SHARKLE)
