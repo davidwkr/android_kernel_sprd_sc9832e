@@ -422,20 +422,21 @@ static ssize_t sprd_wdt_write(struct file *file, const char __user *buf,
 	int ret;
 	int irq_time, reset_time, feed_time, chip_time, en;
 
-	if (count == 0)
-		return -1;
+	if (count == 0 || count >= sizeof(cmd_buf))
+		return -EINVAL;
 
-	if (count > 255)
-		count = 255;
-
-	ret = copy_from_user(cmd_buf, buf, count);
-	if (ret < 0)
-		return -1;
+	if (copy_from_user(cmd_buf, buf, count))
+		return -EFAULT;
 
 	cmd_buf[count] = '\0';
 	ret =
 	    sscanf(cmd_buf, "%d %d %d %d %d", &irq_time, &reset_time,
 		   &feed_time, &chip_time, &en);
+	if (ret != 5)
+		return -EINVAL;
+
+	if (feed_time <= 0 || en < 0 || en > 1)
+		return -EINVAL;
 
 	if (reset_time > chip_time)
 		return -1;
