@@ -85,11 +85,14 @@ static struct ion_buffer *get_ion_buffer(int fd, struct dma_buf *dmabuf)
 			       dmabuf);
 			return ERR_PTR(-EBADF);
 		}
-		buffer = dmabuf->priv;
+		buffer = ion_dma_buf_to_buffer(dmabuf);
 		dma_buf_put(dmabuf);
 	} else {
-		buffer = dmabuf->priv;
+		buffer = ion_dma_buf_to_buffer(dmabuf);
 	}
+
+	if (!buffer)
+		return ERR_PTR(-EINVAL);
 
 	return buffer;
 }
@@ -238,8 +241,8 @@ int sprd_ion_check_phys_addr(struct dma_buf *dmabuf)
 	struct sg_table *table = NULL;
 	struct scatterlist *sgl = NULL;
 
-	if (dmabuf && dmabuf->priv)
-		table = ((struct ion_buffer *)(dmabuf->priv))->priv_virt;
+	if (dmabuf && ion_dma_buf_to_buffer(dmabuf))
+		table = ion_dma_buf_to_buffer(dmabuf)->priv_virt;
 	else {
 		if (!dmabuf)
 			pr_err("invalid dmabuf\n");
@@ -280,7 +283,11 @@ int sprd_ion_get_phys_addr_bydmabuf(int fd_buffer, struct dma_buf *dmabuf,
 		return -1;
 	}
 
-	buffer = dmabuf->priv;
+	buffer = ion_dma_buf_to_buffer(dmabuf);
+	if (!buffer || !buffer->heap) {
+		pr_err("%s, dmabuf is not an ion buffer\n", __func__);
+		return -EINVAL;
+	}
 	if (buffer->heap->type == ION_HEAP_TYPE_CARVEOUT) {
 		if (!buffer->heap->ops->phys) {
 			pr_err("%s: ion_phys is not implemented by this heap\n",
