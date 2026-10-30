@@ -367,11 +367,12 @@ int jpg_get_iova(struct jpg_dev_t *jpg_hw_dev,
 	int ret = 0;
 	/*struct jpg_iommu_map_data mapdata; */
 	struct sprd_iommu_map_data iommu_map_data;
+	struct dma_buf *held;
 
 	if (sprd_iommu_attach_device(jpg_hw_dev->jpg_dev) == 0) {
-		ret = sprd_ion_get_buffer(mapdata->fd, NULL,
+		ret = sprd_ion_get_buffer_ref(mapdata->fd, NULL,
 					    &(iommu_map_data.buf),
-					    &iommu_map_data.iova_size);
+					    &iommu_map_data.iova_size, &held);
 		if (ret) {
 			pr_err("get_sg_table failed, ret %d\n", ret);
 			return ret;
@@ -380,6 +381,7 @@ int jpg_get_iova(struct jpg_dev_t *jpg_hw_dev,
 		iommu_map_data.ch_type = SPRD_IOMMU_FM_CH_RW;
 		ret =
 		    sprd_iommu_map(jpg_hw_dev->jpg_dev, &iommu_map_data);
+		sprd_ion_put(held);
 		if (!ret) {
 			mapdata->iova_addr = iommu_map_data.iova_addr;
 			mapdata->size = iommu_map_data.iova_size;

@@ -174,12 +174,13 @@ int vsp_get_iova(struct vsp_dev_t *vsp_hw_dev,
 {
 	int ret = 0;
 	struct sprd_iommu_map_data iommu_map_data;
+	struct dma_buf *held;
 
 	vsp_clk_enable(vsp_hw_dev);
 	sprd_iommu_resume(vsp_hw_dev->vsp_dev);
-	ret = sprd_ion_get_buffer(mapdata->fd, NULL,
+	ret = sprd_ion_get_buffer_ref(mapdata->fd, NULL,
 					&(iommu_map_data.buf),
-					&iommu_map_data.iova_size);
+					&iommu_map_data.iova_size, &held);
 	if (ret) {
 		pr_err("get_sg_table failed, ret %d\n", ret);
 		sprd_iommu_suspend(vsp_hw_dev->vsp_dev);
@@ -189,6 +190,7 @@ int vsp_get_iova(struct vsp_dev_t *vsp_hw_dev,
 
 	iommu_map_data.ch_type = SPRD_IOMMU_FM_CH_RW;
 	ret = sprd_iommu_map(vsp_hw_dev->vsp_dev, &iommu_map_data);
+	sprd_ion_put(held);
 	if (!ret) {
 		mapdata->iova_addr = iommu_map_data.iova_addr;
 		mapdata->size = iommu_map_data.iova_size;

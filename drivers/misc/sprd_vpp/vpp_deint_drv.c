@@ -298,10 +298,11 @@ static int vpp_get_iova(struct deint_dev_t *deint_hw_dev,
 {
 	int ret = 0;
 	struct sprd_iommu_map_data iommu_map_data;
+	struct dma_buf *held;
 
-	ret = sprd_ion_get_buffer(mapdata->fd, NULL,
+	ret = sprd_ion_get_buffer_ref(mapdata->fd, NULL,
 				    &(iommu_map_data.buf),
-				    &iommu_map_data.iova_size);
+				    &iommu_map_data.iova_size, &held);
 	if (0 != ret) {
 		pr_err("get_sg_table failed, ret %d\n", ret);
 		return ret;
@@ -309,6 +310,7 @@ static int vpp_get_iova(struct deint_dev_t *deint_hw_dev,
 
 	iommu_map_data.ch_type = SPRD_IOMMU_FM_CH_RW;
 	ret = sprd_iommu_map(deint_hw_dev->deint_dev, &iommu_map_data);
+	sprd_ion_put(held);
 	if (!ret) {
 		mapdata->iova_addr = iommu_map_data.iova_addr;
 		mapdata->size = iommu_map_data.iova_size;
