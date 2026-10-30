@@ -196,7 +196,9 @@ static int sprd_musb_init(struct musb *musb)
 {
 	struct sprd_glue *glue = dev_get_drvdata(musb->controller->parent);
 
-	register_ext_notifier(&glue->hot_plug_nb);
+	/* only the type-C method sets a callback; the chain calls it blindly */
+	if (glue->hot_plug_nb.notifier_call)
+		register_ext_notifier(&glue->hot_plug_nb);
 
 	musb->phy = glue->phy;
 	musb->xceiv = glue->xceiv;
@@ -1040,6 +1042,19 @@ module_param(host_idle_timeout, uint, 0644);
 MODULE_PARM_DESC(host_idle_timeout,
 		 "Seconds in host mode with no USB device before returning to device mode (0 = off)");
 
+/*
+ * Boards with "gpios" cable detection (MT108, DM82) have no usb-id and, in
+ * the tree, no VBUS boost: their FAN54015 sits on a disabled i2c bus and
+ * the SC2721 charger ops have no otg_charge_ext, so the work item would
+ * start host mode with VBUS at 0 V.  Whether another source supplies VBUS
+ * is not known from the tree: "host" is refused there unless this is set
+ * (then only for a self-powered hub or OTG adapter with its own supply).
+ */
+static bool host_on_gpios_cable;
+module_param(host_on_gpios_cable, bool, 0644);
+MODULE_PARM_DESC(host_on_gpios_cable,
+		 "Allow the role switch to enter host mode on boards with gpios cable detection (no known VBUS boost, untested)");
+
 static void sprd_musb_idle_arm(struct sprd_glue *glue)
 {
 	unsigned int t = READ_ONCE(host_idle_timeout);
@@ -1194,6 +1209,13 @@ done:
 static int sprd_musb_role_set(struct sprd_glue *glue, bool host)
 {
 	int ret;
+
+	if (host && strcmp(glue->cable_detect, "typec") &&
+	    !READ_ONCE(host_on_gpios_cable)) {
+		dev_warn(glue->dev, "host mode not supported with '%s' cable detection (see host_on_gpios_cable)\n",
+			 glue->cable_detect);
+		return -EOPNOTSUPP;
+	}
 
 	/* before role_lock: idle_work takes it */
 	if (!host)

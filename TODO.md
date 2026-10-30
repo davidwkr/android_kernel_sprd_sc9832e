@@ -186,7 +186,7 @@ Specs from the stock boot dumps only (no unit examined): [`devices/mt107/SPEC.md
 - [ ] Fingerprint (Goodix, `goodix,fingerprintree`): branch `drivers/goodix-fp` is empty; needs the vendor GPL source (request draft kept outside this repo).
 - [ ] `bd1xxx_hr` heart rate and `msp891` sensors: no driver in this tree; port only if fitted and wanted.
 - [x] `sprd_aod_idle`: MT107 / DM82 only (in their fragments); the match table covers `cst0xx_ts` and `hyn_ts`, so either fitted chip works.
-- [ ] USB role switch on `gpios` cable-detect boards (MT108, DM82): not reviewed for that path (the glue's Type-C notifier is not used there); test before enabling `watch_otg.fragment`.
+- [~] USB role switch on `gpios` cable-detect boards (MT108, DM82): reviewed (KERNEL_TWEAKS.md section 5): same vbus handler and locking as Type-C, no charger misread, idle timeout unchanged; fixed a NULL notifier_call registered for non-typec methods. `host` is refused (`-EOPNOTSUPP`) unless `musb_sprd.host_on_gpios_cable=1`, because the FAN54015 sits on a disabled i2c bus and no VBUS source is known. Open (hardware): what supplies VBUS on these boards (and on the DM63, same disabled-bus FAN54015); not run on a unit.
 - [ ] Charge CV override: the driver already caps at each unit's `chg-end-vol` (4395 mV on MT107/MT108).
 - [ ] MT107 camera: no ACK on i2c-0 (hardware, see the sfd_tool notes); nothing to do in the kernel.
 
