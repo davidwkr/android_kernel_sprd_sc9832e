@@ -310,7 +310,7 @@ static int cst9217_probe(struct i2c_client *client, const struct i2c_device_id *
     ts->input_dev = devm_input_allocate_device(&client->dev);
     if (!ts->input_dev) return -ENOMEM;
     
-    ts->input_dev->name = "Hynitron cst9217 Touchscreen";
+    ts->input_dev->name = "hyn_ts";
     ts->input_dev->id.bustype = BUS_I2C;
     
     input_set_abs_params(ts->input_dev, ABS_MT_POSITION_X, 0, ts->abs_x_max, 0, 0);
@@ -364,7 +364,7 @@ MODULE_DEVICE_TABLE(of, cst9217_match);
 
 static struct i2c_driver cst9217_driver = {
     .driver = { 
-        .name = "hynitron_ts", 
+        .name = "hyn_ts",
         .of_match_table = cst9217_match,
     },
     .probe = cst9217_probe,
