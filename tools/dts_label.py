@@ -9,6 +9,7 @@ that cannot be resolved with confidence stay raw numbers.
 
 usage: dts_label.py stock.dts out.dts
 """
+import os
 import re
 import sys
 
@@ -31,8 +32,21 @@ ANY_PROP = re.compile(r'^(\t*)([\w,.#+-]+)(?: = (.*))?;$')
 NODE_OPEN = re.compile(r'^(\t*)([\w,.@+-]*|/) \{$')
 
 
+MAX_INPUT = 64 << 20
+MAX_DEPTH = 64
+MAX_SUFFIX = 10000
+
+
 class InputError(Exception):
     pass
+
+
+def path_depth(n):
+    d = []
+    while n is not None:
+        d.append(n)
+        n = n['parent']
+    return d
 
 
 def build(lines):
@@ -42,6 +56,8 @@ def build(lines):
     for i, ln in enumerate(lines):
         m = NODE_OPEN.match(ln)
         if m:
+            if len(path_depth(cur)) >= MAX_DEPTH:
+                raise InputError('line %d: nesting deeper than %d' % (i + 1, MAX_DEPTH))
             n = {'name': m.group(2), 'parent': cur, 'props': {}, 'all': {}, 'line': i}
             nodes.append(n)
             cur = n
@@ -177,6 +193,8 @@ def convert(cells, name, byph):
 
 
 def main(src, dst):
+    if os.path.getsize(src) > MAX_INPUT:
+        raise InputError('input larger than %d bytes' % MAX_INPUT)
     lines = open(src).read().split('\n')
     nodes = build(lines)
     byph = {}
@@ -215,8 +233,13 @@ def main(src, dst):
             if lab not in taken or k >= len(parts):
                 break
             k += 1
-        while lab in taken:
-            lab += '_'
+        if lab in taken:
+            i = 2
+            while '%s_%d' % (lab, i) in taken:
+                i += 1
+                if i > MAX_SUFFIX:
+                    raise InputError('too many colliding labels for %s' % lab)
+            lab = '%s_%d' % (lab, i)
         taken.add(lab)
         labels[id(n)] = lab
     it = iter(nodes)

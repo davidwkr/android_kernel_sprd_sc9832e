@@ -56,13 +56,29 @@ def load_dtb(path, dtc, tmp):
     if data[:4] == b'\xd0\x0d\xfe\xed':
         return data
     out = os.path.join(tmp, 'c.dtb')
+    if os.path.getsize(path) > MAX_INPUT:
+        raise ParseError('input larger than %d bytes' % MAX_INPUT)
     subprocess.run([dtc, '-q', '-I', 'dts', '-O', 'dtb', '-b', '0', '-o', out,
-                    path], check=True, stderr=subprocess.DEVNULL)
+                    path], check=True, stdin=subprocess.DEVNULL,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                   timeout=60, preexec_fn=_limits)
+    if os.path.getsize(out) > MAX_INPUT:
+        raise ParseError('compiled DTB too large')
     return open(out, 'rb').read()
 
 
 MAX_DEPTH = 64
 MAX_PATH = 4096
+MAX_NAME = 256
+MAX_PROPS = 500000
+MAX_INPUT = 64 << 20
+
+
+def _limits():
+    import resource
+    resource.setrlimit(resource.RLIMIT_CPU, (60, 60))
+    resource.setrlimit(resource.RLIMIT_AS, (2 << 30, 2 << 30))
+    resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_INPUT, MAX_INPUT))
 
 
 def parse_fdt(b):
@@ -102,6 +118,7 @@ def parse_fdt(b):
     end = off_st + sz_st if sz_st is not None else total
     nodes, stack, o = [], [], off_st
     plen, roots, done = [0], 0, False
+    names, nprops = {}, 0
     cur, haskid = [], []   # active node entries, 'had a subnode' flags
     while True:
         if o + 4 > end:
@@ -151,9 +168,17 @@ def parse_fdt(b):
             o += 8
             if o + ln > end or nameoff >= len(strs):
                 raise ParseError('property outside the blob')
-            z = strs.index(b'\0', nameoff)
-            cur[-1][1].append((strs[nameoff:z].decode('utf-8', 'surrogateescape'),
-                                 b[o:o + ln]))
+            pname = names.get(nameoff)
+            if pname is None:
+                z = strs.index(b'\0', nameoff)
+                if z - nameoff > MAX_NAME:
+                    raise ParseError('property name longer than %d' % MAX_NAME)
+                pname = names[nameoff] = strs[nameoff:z].decode(
+                    'utf-8', 'surrogateescape')
+            nprops += 1
+            if nprops > MAX_PROPS:
+                raise ParseError('more than %d properties' % MAX_PROPS)
+            cur[-1][1].append((pname, b[o:o + ln]))
             o = (o + ln + 3) & ~3
         elif tag == NOP:
             pass
@@ -163,7 +188,7 @@ def parse_fdt(b):
             st_end = o
             if st_end > end:
                 raise ParseError('structure block longer than declared')
-            ranges = sorted([(off_rsv, rsv_end), (off_st, end),
+            ranges = sorted([(off_rsv, rsv_end), (off_st, end if sz_st is not None else st_end),
                              (off_str, off_str + sz_str)])
             if any(ranges[i][1] > ranges[i + 1][0]
                    for i in range(len(ranges) - 1)):
@@ -195,7 +220,7 @@ def main():
             sd, nd = (load_dtb(f, a.dtc, tmp) for f in (a.stock, a.new))
             smeta, srs, sn = parse_fdt(sd)
             nmeta, nrs, nn = parse_fdt(nd)
-        except (subprocess.CalledProcessError, OSError, sb.Error, ParseError,
+        except (subprocess.SubprocessError, OSError, sb.Error, ParseError,
                 ValueError, IndexError, struct.error) as e:
             print('error: %s: %s' % (type(e).__name__, e), file=sys.stderr)
             return 2
