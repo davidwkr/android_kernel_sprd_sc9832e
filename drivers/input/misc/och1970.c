@@ -158,6 +158,9 @@ static int och1970_set_enabled(struct och1970_data *data, bool enable)
 	mutex_lock(&data->lock);
 	if (data->enabled == enable) {
 		mutex_unlock(&data->lock);
+		/* a failed power-down is retried by the next disable */
+		if (!enable)
+			ret = och1970_power_down(data);
 		goto out;
 	}
 	data->enabled = enable;
@@ -249,23 +252,48 @@ static const struct attribute_group och1970_attr_group = {
 	.attrs = och1970_attrs,
 };
 
-static void och1970_hw_reset(struct i2c_client *client)
+static int och1970_hw_reset(struct i2c_client *client)
 {
 	int gpio = of_get_named_gpio(client->dev.of_node, "rst-gpio", 0);
+	int ret;
 
-	if (!gpio_is_valid(gpio)) {
-		dev_dbg(&client->dev, "no rst-gpio (%d), soft reset only\n",
-			gpio);
-		return;
+	if (gpio == -ENOENT) {
+		dev_dbg(&client->dev, "no rst-gpio, soft reset only\n");
+		return 0;
 	}
-	if (!devm_gpio_request_one(&client->dev, gpio, GPIOF_OUT_INIT_HIGH,
-				   "och1970-rstn")) {
-		/* RSTN is active low: >= 5 us low pulse, then >= 5 us wait */
-		gpio_set_value_cansleep(gpio, 0);
-		usleep_range(20, 50);
-		gpio_set_value_cansleep(gpio, 1);
-		usleep_range(100, 200);
+	if (!gpio_is_valid(gpio))
+		return gpio < 0 ? gpio : -EINVAL;
+
+	ret = devm_gpio_request_one(&client->dev, gpio, GPIOF_OUT_INIT_HIGH,
+				    "och1970-rstn");
+	if (ret)
+		return ret;
+
+	/* RSTN is active low: >= 5 us low pulse, then >= 5 us wait */
+	gpio_set_value_cansleep(gpio, 0);
+	usleep_range(20, 50);
+	gpio_set_value_cansleep(gpio, 1);
+	usleep_range(100, 200);
+
+	return 0;
+}
+
+/* read-only identity check, safe on a chip that may not be ours */
+static int och1970_check_id(struct i2c_client *client)
+{
+	u8 id[2];
+	int ret;
+
+	ret = och1970_read(client, OCH1970_REG_WIA, id, sizeof(id));
+	if (ret)
+		return ret;
+	if (id[0] != OCH1970_WIA_COMPANY || id[1] != OCH1970_WIA_DEVICE) {
+		dev_err(&client->dev, "unexpected chip id %02x%02x\n",
+			id[0], id[1]);
+		return -ENODEV;
 	}
+
+	return 0;
 }
 
 static int och1970_detect(struct och1970_data *data)
@@ -317,7 +345,14 @@ static int och1970_probe(struct i2c_client *client,
 	INIT_DELAYED_WORK(&data->work, och1970_work);
 	i2c_set_clientdata(client, data);
 
-	och1970_hw_reset(client);
+	/* validate the chip before touching rst-gpio or writing anything */
+	ret = och1970_check_id(client);
+	if (ret)
+		return ret;
+
+	ret = och1970_hw_reset(client);
+	if (ret)
+		return ret;
 
 	ret = och1970_detect(data);
 	if (ret)
@@ -378,15 +413,19 @@ static void och1970_shutdown(struct i2c_client *client)
 static int och1970_suspend(struct device *dev)
 {
 	struct och1970_data *data = dev_get_drvdata(dev);
+	int ret = 0;
 
 	mutex_lock(&data->lock);
 	data->resume_enabled = data->enabled;
 	mutex_unlock(&data->lock);
 
-	if (data->resume_enabled && och1970_set_enabled(data, false))
-		dev_warn(dev, "power-down failed on suspend\n");
+	if (data->resume_enabled) {
+		ret = och1970_set_enabled(data, false);
+		if (ret)
+			dev_warn(dev, "power-down failed on suspend\n");
+	}
 
-	return 0;
+	return ret;
 }
 
 static int och1970_resume(struct device *dev)
