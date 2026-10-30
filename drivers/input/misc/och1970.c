@@ -9,9 +9,13 @@
  * delayed work. The DRDY/irq pin and the hall "open/close" thresholds of
  * the stock firmware are not used.
  *
- * sysfs (on the i2c device):
+ * Output: input device "och1970", ABS_X/Y/Z as raw signed 16 bit counts,
+ * 1.1 uT/LSB (high sensitivity, SMR=0; range about +-36 mT).
+ *
+ * sysfs ABI (on the i2c device):
  *   enable  0/1   start/stop periodic measurement
- *   delay   ms    sample period, minimum 10
+ *   delay   ms    sample period; values below 10 are clamped to 10 (and
+ *                 above 10000 to 10000), applied from the next sample
  */
 
 #include <linux/delay.h>
@@ -58,6 +62,7 @@ struct och1970_data {
 	struct i2c_client *client;
 	struct input_dev *input;
 	struct delayed_work work;
+	struct mutex enable_lock;	/* serialises set_enabled(); not taken by the work */
 	struct mutex lock;		/* enabled, delay_ms, chip mode */
 	unsigned int delay_ms;
 	bool enabled;
@@ -149,10 +154,11 @@ static int och1970_set_enabled(struct och1970_data *data, bool enable)
 {
 	int ret = 0;
 
+	mutex_lock(&data->enable_lock);
 	mutex_lock(&data->lock);
 	if (data->enabled == enable) {
 		mutex_unlock(&data->lock);
-		return 0;
+		goto out;
 	}
 	data->enabled = enable;
 	if (enable)
@@ -164,7 +170,8 @@ static int och1970_set_enabled(struct och1970_data *data, bool enable)
 		cancel_delayed_work_sync(&data->work);
 		ret = och1970_power_down(data);
 	}
-
+out:
+	mutex_unlock(&data->enable_lock);
 	return ret;
 }
 
@@ -246,8 +253,12 @@ static void och1970_hw_reset(struct i2c_client *client)
 {
 	int gpio = of_get_named_gpio(client->dev.of_node, "rst-gpio", 0);
 
-	if (gpio_is_valid(gpio) &&
-	    !devm_gpio_request_one(&client->dev, gpio, GPIOF_OUT_INIT_HIGH,
+	if (!gpio_is_valid(gpio)) {
+		dev_dbg(&client->dev, "no rst-gpio (%d), soft reset only\n",
+			gpio);
+		return;
+	}
+	if (!devm_gpio_request_one(&client->dev, gpio, GPIOF_OUT_INIT_HIGH,
 				   "och1970-rstn")) {
 		/* RSTN is active low: >= 5 us low pulse, then >= 5 us wait */
 		gpio_set_value_cansleep(gpio, 0);
@@ -260,20 +271,27 @@ static void och1970_hw_reset(struct i2c_client *client)
 static int och1970_detect(struct och1970_data *data)
 {
 	u8 id[2];
-	int ret;
+	int ret, pass;
 
-	ret = och1970_write(data->client, OCH1970_REG_SRST, OCH1970_SRST);
-	if (ret)
-		return ret;
-	usleep_range(1000, 2000);
-
-	ret = och1970_read(data->client, OCH1970_REG_WIA, id, sizeof(id));
-	if (ret)
-		return ret;
-	if (id[0] != OCH1970_WIA_COMPANY || id[1] != OCH1970_WIA_DEVICE) {
-		dev_err(&data->client->dev,
-			"unexpected chip id %02x%02x\n", id[0], id[1]);
-		return -ENODEV;
+	/* check the id before any write, so a foreign chip is never touched */
+	for (pass = 0; pass < 2; pass++) {
+		ret = och1970_read(data->client, OCH1970_REG_WIA, id,
+				   sizeof(id));
+		if (ret)
+			return ret;
+		if (id[0] != OCH1970_WIA_COMPANY ||
+		    id[1] != OCH1970_WIA_DEVICE) {
+			dev_err(&data->client->dev,
+				"unexpected chip id %02x%02x\n", id[0], id[1]);
+			return -ENODEV;
+		}
+		if (pass)
+			break;
+		ret = och1970_write(data->client, OCH1970_REG_SRST,
+				    OCH1970_SRST);
+		if (ret)
+			return ret;
+		usleep_range(1000, 2000);
 	}
 
 	return och1970_power_down(data);
@@ -295,6 +313,7 @@ static int och1970_probe(struct i2c_client *client,
 	data->client = client;
 	data->delay_ms = OCH1970_DEFAULT_DELAY_MS;
 	mutex_init(&data->lock);
+	mutex_init(&data->enable_lock);
 	INIT_DELAYED_WORK(&data->work, och1970_work);
 	i2c_set_clientdata(client, data);
 
@@ -364,7 +383,10 @@ static int och1970_suspend(struct device *dev)
 	data->resume_enabled = data->enabled;
 	mutex_unlock(&data->lock);
 
-	return data->resume_enabled ? och1970_set_enabled(data, false) : 0;
+	if (data->resume_enabled && och1970_set_enabled(data, false))
+		dev_warn(dev, "power-down failed on suspend\n");
+
+	return 0;
 }
 
 static int och1970_resume(struct device *dev)

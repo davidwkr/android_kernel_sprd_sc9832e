@@ -868,6 +868,7 @@ config SENSORS_SC7A22
 	  by the Spreadtrum sensor HAL.
 
 	  To compile this driver as a module, choose M here.
+
 config SENSORS_OCH1970
 	tristate "Orient-Chip OCH1970 3-axis Hall magnetic sensor with I2C bus"
 	depends on I2C
