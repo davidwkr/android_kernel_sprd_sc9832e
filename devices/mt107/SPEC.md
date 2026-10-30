@@ -190,4 +190,4 @@ Enabled in `stock.config` but missing from this source (`kgap.py`): `INPUT_FINGE
 
 ## Config fragment
 
-`arch/arm64/configs/.fragment`: . The DT compatibles (`cst0xx,cst0xx_ts`, `hynitron,hyn_ts`, `QST,qmax981`, `sprd,sc7a22`, `tyhx,hrs3xxx`) all match the tree drivers. `watch_otg.fragment` is not included. Build-checked only, not run on a unit.
+`arch/arm64/configs/mt107.fragment`: both touch drivers (`TOUCHSCREEN_CST0XX`, `TOUCHSCREEN_CST9217`, whichever chip is fitted probes), `hrs3xxx` (HRS3918), `SPRD_AOD_IDLE` (CO5300 panel), `sc7a22`, `QMA6981_I2C` (for `qmax981`). The DT compatibles (`cst0xx,cst0xx_ts`, `hynitron,hyn_ts`, `QST,qmax981`, `sprd,sc7a22`, `tyhx,hrs3xxx`) all match the tree drivers. `watch_otg.fragment` is not included. Build-checked only, not run on a unit.
