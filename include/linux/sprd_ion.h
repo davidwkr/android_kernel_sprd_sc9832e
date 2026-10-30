@@ -29,6 +29,21 @@ int sprd_ion_get_sg_table(int fd, struct dma_buf *dmabuf,
 int sprd_ion_get_buffer(int fd, struct dma_buf *dmabuf,
 			  void **buf, size_t *size);
 
+/*
+ * _ref variants return the dma-buf reference in *held (NULL when a
+ * caller-supplied dmabuf is used); release it with sprd_ion_put() when the
+ * buffer/sg_table is no longer used.
+ */
+int sprd_ion_get_sg_table_ref(int fd, struct dma_buf *dmabuf,
+			      struct sg_table **table, size_t *size,
+			      struct dma_buf **held);
+
+int sprd_ion_get_buffer_ref(int fd, struct dma_buf *dmabuf,
+			    void **buf, size_t *size,
+			    struct dma_buf **held);
+
+void sprd_ion_put(struct dma_buf *held);
+
 int sprd_ion_get_sg(void *buf, struct sg_table **table);
 
 void sprd_ion_set_dma(void *buf, int id);
