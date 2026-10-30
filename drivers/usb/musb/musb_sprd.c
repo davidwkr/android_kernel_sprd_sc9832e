@@ -88,6 +88,8 @@ struct sprd_glue {
 	int		musb_work_running;
 #ifdef CONFIG_USB_MUSB_SPRD_ROLE_SYSFS
 	struct mutex		role_lock;
+	bool			role_busy;	/* role transition running */
+	bool			role_stopping;	/* glue is being removed */
 #endif
 };
 
@@ -326,6 +328,11 @@ static int sprd_musb_recover(struct musb *musb)
 {
 	struct sprd_glue *glue = dev_get_drvdata(musb->controller->parent);
 
+#ifdef CONFIG_USB_MUSB_SPRD_ROLE_SYSFS
+	/* recover_work restarts host mode: not while a role change runs */
+	if (READ_ONCE(glue->role_busy))
+		return 0;
+#endif
 	if (is_host_active(musb))
 		schedule_delayed_work(&glue->recover_work, msecs_to_jiffies(MUSB_RECOVER_TIMEOUT));
 	return 0;
@@ -477,6 +484,8 @@ static int musb_sprd_resume_child(struct device *dev, void *data)
 	ret = pm_runtime_get_sync(dev);
 	if (ret) {
 		dev_err(dev, "musb child device enters resume failed!!!\n");
+		/* get_sync() took a reference even though it failed */
+		pm_runtime_put_noidle(dev);
 		return ret;
 	}
 
@@ -638,6 +647,8 @@ static void sprd_musb_work(struct work_struct *work)
 			glue->dr_mode = USB_DR_MODE_UNKNOWN;
 			spin_unlock_irqrestore(&glue->lock, flags);
 			dev_err(glue->dev, "Resume sprd_musb device failed!\n");
+			/* get_sync() took a reference even though it failed */
+			pm_runtime_put_noidle(glue->dev);
 			goto end;
 		}
 
@@ -1003,7 +1014,8 @@ static struct kobject *role_kobj;
  * cannot tell an external charger from our own 5 V.  Do not plug a charger
  * while in host mode; write "device" first.
  */
-static int sprd_musb_role_set(struct sprd_glue *glue, bool host)
+/* caller holds glue->role_lock; "final" = removal: no cable re-detection */
+static int __sprd_musb_role_set(struct sprd_glue *glue, bool host, bool final)
 {
 	struct musb *musb = platform_get_drvdata(glue->musb);
 	unsigned long flags;
@@ -1013,8 +1025,6 @@ static int sprd_musb_role_set(struct sprd_glue *glue, bool host)
 
 	if (!musb)
 		return -ENODEV;
-
-	mutex_lock(&glue->role_lock);
 
 	/* may sleep, so read it before taking the spinlock */
 	vbus = gpio_is_valid(glue->gpio_device) ?
@@ -1049,7 +1059,11 @@ static int sprd_musb_role_set(struct sprd_glue *glue, bool host)
 	spin_unlock_irqrestore(&glue->lock, flags);
 
 	if (!queue)
-		goto out;
+		return ret;
+
+	/* keep recover_work from restarting host behind our back */
+	WRITE_ONCE(glue->role_busy, true);
+	cancel_delayed_work_sync(&glue->recover_work);
 
 	schedule_work(&glue->work);
 	/* return when the switch is done, so "device; adb" works */
@@ -1077,7 +1091,7 @@ static int sprd_musb_role_set(struct sprd_glue *glue, bool host)
 			if (wake_lock_active(&glue->wake_lock))
 				wake_unlock(&glue->wake_lock);
 		}
-		goto out;
+		goto done;
 	}
 
 	/* the work item skips these on some of its early-exit paths */
@@ -1085,7 +1099,7 @@ static int sprd_musb_role_set(struct sprd_glue *glue, bool host)
 	if (glue->dr_mode == USB_DR_MODE_HOST) {
 		if (!pm_runtime_suspended(glue->dev)) {
 			ret = -EIO;
-			goto out;
+			goto done;
 		}
 		/* already suspended: nothing left to shut down */
 		spin_lock_irqsave(&glue->lock, flags);
@@ -1102,7 +1116,8 @@ static int sprd_musb_role_set(struct sprd_glue *glue, bool host)
 	 * pick device mode up as the handler would.  The level irq is kept
 	 * off meanwhile and handles a late drop once re-enabled.
 	 */
-	if (gpio_is_valid(glue->gpio_device) && glue->vbus_irq > 0) {
+	if (!final && !glue->role_stopping && gpio_is_valid(glue->gpio_device) &&
+	    glue->vbus_irq > 0) {
 		int i;
 
 		disable_irq(glue->vbus_irq);
@@ -1119,7 +1134,20 @@ static int sprd_musb_role_set(struct sprd_glue *glue, bool host)
 		}
 		enable_irq(glue->vbus_irq);
 	}
-out:
+done:
+	/* a recover_work armed meanwhile would restart host */
+	cancel_delayed_work_sync(&glue->recover_work);
+	WRITE_ONCE(glue->role_busy, false);
+	return ret;
+}
+
+static int sprd_musb_role_set(struct sprd_glue *glue, bool host)
+{
+	int ret;
+
+	mutex_lock(&glue->role_lock);
+	ret = glue->role_stopping ? -ENODEV :
+	      __sprd_musb_role_set(glue, host, false);
 	mutex_unlock(&glue->role_lock);
 	return ret;
 }
@@ -1206,7 +1234,11 @@ static struct kobj_attribute otg_role_attr =
 
 static void sprd_musb_role_init(struct sprd_glue *glue)
 {
+	/* all state first: the attributes may be used the moment they exist */
 	mutex_init(&glue->role_lock);
+	glue->role_busy = false;
+	glue->role_stopping = false;
+	role_glue = glue;
 
 	if (device_create_file(glue->dev, &dev_attr_role))
 		dev_warn(glue->dev, "failed to create role attribute\n");
@@ -1217,22 +1249,34 @@ static void sprd_musb_role_init(struct sprd_glue *glue)
 	if (sysfs_create_file(role_kobj, &otg_role_attr.attr)) {
 		kobject_put(role_kobj);
 		role_kobj = NULL;
-		return;
 	}
-	role_glue = glue;
 }
 
 static void sprd_musb_role_exit(struct sprd_glue *glue)
 {
+	if (role_glue != glue)
+		return;
+
+	/* refuse new changes, wait for the running one */
+	mutex_lock(&glue->role_lock);
+	glue->role_stopping = true;
+	mutex_unlock(&glue->role_lock);
+
 	device_remove_file(glue->dev, &dev_attr_role);
-	if (role_glue == glue) {
+	if (role_kobj) {
 		sysfs_remove_file(role_kobj, &otg_role_attr.attr);
 		kobject_put(role_kobj);
 		role_kobj = NULL;
-		role_glue = NULL;
 	}
-	/* leave host mode so VBUS is switched off */
-	sprd_musb_role_set(glue, false);
+	role_glue = NULL;
+
+	/* leave host mode (boost off), then drain everything that can still
+	 * touch the glue before the child is destroyed */
+	mutex_lock(&glue->role_lock);
+	__sprd_musb_role_set(glue, false, true);
+	cancel_delayed_work_sync(&glue->recover_work);
+	cancel_work_sync(&glue->work);
+	mutex_unlock(&glue->role_lock);
 }
 #else
 static inline void sprd_musb_role_init(struct sprd_glue *glue) {}
@@ -1385,10 +1429,10 @@ static int musb_sprd_probe(struct platform_device *pdev)
 	if (ret)
 		dev_warn(glue->dev, "failed to create musb attributes\n");
 
-	sprd_musb_role_init(glue);
-
 	pm_runtime_set_active(dev);
 	pm_runtime_enable(dev);
+
+	sprd_musb_role_init(glue);
 
 	return 0;
 
