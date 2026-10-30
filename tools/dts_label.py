@@ -27,6 +27,7 @@ CELLS = {'clocks': '#clock-cells', 'assigned-clocks': '#clock-cells',
 SINGLE_RE = re.compile('^(%s)$' % '|'.join(SINGLE))
 GPIO_RE = re.compile(r'^(.*-)?gpios?$')
 CELL_PROP = re.compile(r'^(\t*)([\w,.#+-]+) = <([^<>]*)>;$')
+ANY_PROP = re.compile(r'^(\t*)([\w,.#+-]+)(?: = (.*))?;$')
 NODE_OPEN = re.compile(r'^(\t*)([\w,.@+-]*|/) \{$')
 
 
@@ -37,13 +38,16 @@ def build(lines):
     for i, ln in enumerate(lines):
         m = NODE_OPEN.match(ln)
         if m:
-            n = {'name': m.group(2), 'parent': cur, 'props': {}, 'line': i}
+            n = {'name': m.group(2), 'parent': cur, 'props': {}, 'all': {}, 'line': i}
             nodes.append(n)
             cur = n
             continue
         if ln.strip() == '};':
             cur = cur['parent']
             continue
+        m = ANY_PROP.match(ln)
+        if m and cur is not None:
+            cur['all'][m.group(2)] = m.group(3) or ''
         m = CELL_PROP.match(ln)
         if m and cur is not None:
             cur['props'][m.group(2)] = [int(x, 16) for x in m.group(3).split()]
@@ -62,10 +66,71 @@ def sane(s):
     return re.sub(r'[^A-Za-z0-9_]', '_', s)
 
 
+def pname(n):
+    return n['name'].split('@')[0] if n else ''
+
+
+def has(t, k):
+    return k in t['all']
+
+
+def compat(t):
+    return t['all'].get('compatible', '')
+
+
+def is_regulator(t):
+    return has(t, 'regulator-name') or 'regulator' in compat(t)
+
+
+def is_syscon(t):
+    return 'syscon' in compat(t) or pname(t).startswith('syscon')
+
+
+# property regex -> check that the target node is a valid provider for it
+VALID = [
+    (r'interrupt-parent', lambda t: has(t, 'interrupt-controller')),
+    (r'.*-supply', is_regulator),
+    (r'cpu', lambda t: t['all'].get('device_type', '') == '"cpu"'),
+    (r'trip', lambda t: pname(t['parent']) == 'trips'),
+    (r'remote-end?point|remote-enpoint', lambda t: pname(t).startswith('endpoint')),
+    (r'memory[-_]region(-re)?', lambda t: pname(t['parent']) == 'reserved-memory'),
+    (r'pinctrl-\d+', lambda t: any(pname(a).startswith('pinctrl')
+                                    for a in ancestors(t))),
+    (r'cpu-idle-states', lambda t: pname(t['parent']) == 'idle-states'),
+    (r'panel-drivers', lambda t: pname(t['parent']) == 'lcds'),
+    (r'sprd,syscon-.*|sprd,sys-.*|sprd,.*-syscon|sprd,aon-glb|'
+     r'sprd,anlg_phy_g7_controller', is_syscon),
+    (r'sprd,dispc', lambda t: pname(t).startswith('dispc')),
+    (r'sprd,isp|ref-node', lambda t: pname(t).startswith('isp')),
+    (r'sprd,csi', lambda t: pname(t).startswith('csi')),
+    (r'digital-codec', lambda t: pname(t).startswith('audio-codec')),
+    (r'usb-phy', lambda t: 'phy' in compat(t) or 'phy' in pname(t)),
+    (r'clocks|assigned-clocks|assigned-clock-parents',
+     lambda t: has(t, '#clock-cells')),
+    (r'cooling-device', lambda t: has(t, '#cooling-cells')),
+    (r'(.*-)?gpios?', lambda t: has(t, 'gpio-controller')),
+]
+
+
+def ancestors(t):
+    t = t['parent']
+    while t is not None:
+        yield t
+        t = t['parent']
+
+
+def valid(name, t):
+    for rx, fn in VALID:
+        if re.match('^(%s)$' % rx, name):
+            return bool(fn(t))
+    # remaining #cells based bindings: the provider's #<x>-cells is the test
+    return name in CELLS
+
+
 def convert(cells, name, byph):
     """Return list of tokens (str, or node for a phandle) or None."""
     if SINGLE_RE.match(name):
-        if all(c in byph for c in cells):
+        if all(c in byph and valid(name, byph[c]) for c in cells):
             return [byph[c] for c in cells]
         return None
     if name in CELLS or GPIO_RE.match(name):
@@ -73,7 +138,8 @@ def convert(cells, name, byph):
         out, i = [], 0
         while i < len(cells):
             t = byph.get(cells[i])
-            if t is None or cn not in t['props'] or not t['props'][cn]:
+            if (t is None or cn not in t['props'] or not t['props'][cn]
+                    or not valid(name, t)):
                 return None
             k = t['props'][cn][0]
             if i + 1 + k > len(cells):
@@ -84,7 +150,9 @@ def convert(cells, name, byph):
             i += 1 + k
         return out
     if name == 'cooling-device':
-        if len(cells) % 3 or not all(cells[i] in byph for i in range(0, len(cells), 3)):
+        if len(cells) % 3 or not all(
+                cells[i] in byph and valid(name, byph[cells[i]])
+                for i in range(0, len(cells), 3)):
             return None
         out = []
         for i in range(0, len(cells), 3):

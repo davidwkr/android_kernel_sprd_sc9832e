@@ -944,7 +944,7 @@
 				interrupts = <0x00 0x7c 0x04>;
 				clock-names = "enable", "rtc_enable";
 				sprd,wdt-enable = <0x2a>;
-				sprd,wdt-phandle = <&watchdog_40>;
+				sprd,wdt-phandle = <0x46>;
 				clocks = <&clk_402e0004 0x08 &clk_402e0010 0x09>;
 			};
 
@@ -976,7 +976,7 @@
 						interrupts = <0x07 0x04>;
 					};
 
-					watchdog_40: watchdog@40 {
+					watchdog@40 {
 						compatible = "sprd,sc2721-wdt";
 						reg = <0x40>;
 						linux,phandle = <0x46>;
@@ -3885,7 +3885,7 @@
 		io-channel-names = "adc_temp", "adc1_boardres", "adc2_boardres", "adc3_boardres", "adc4_boardres", "adc_vbat", "adc_vchg", "adc_isense";
 	};
 
-	sprd_headset: sprd-headset {
+	sprd-headset {
 		compatible = "sprd,sc2721-headset", "sprd,sc2731-headset";
 		status = "okay";
 		jack-type = <0x00>;
@@ -3928,7 +3928,7 @@
 		sprd-audio-card,name = "sprdphone";
 		sprd-audio-card,widgets = "Headphone", "inter HP PA", "Speaker", "inter Spk PA", "Speaker", "inter Ear PA";
 		sprd-audio-card,routing = "HPMIC", "HP Mic Jack", "MIC", "Mic Jack", "AUXMIC", "Aux Mic Jack", "inter HP PA", "HP PA", "inter Spk PA", "Spk PA", "inter Ear PA", "EAR", "DMIC", "DMic Jack", "DMIC1", "DMic1 Jack", "Aud input", "AD Clk", "Aud input1", "AD Clk", "Aud input", "Digital ADCL Switch", "Aud input", "Digital ADCR Switch", "Aud input1", "Digital ADC1L Switch", "Aud input1", "Digital ADC1R Switch";
-		sprd-audio-card,headset = <&sprd_headset>;
+		sprd-audio-card,headset = <0xb3>;
 		sprd-audio-card,fm-open-src = <0x01>;
 		sprd-audio-card,fm-hw-rate = <0x7d00>;
 		sprd-audio-card,codec-replace-adc-rate = <0xbb80>;
@@ -5305,7 +5305,7 @@
 		default-brightness-level = <0x19>;
 	};
 
-	memory_80000000: memory@80000000 {
+	memory@80000000 {
 		device_type = "memory";
 		reg = <0x00 0x80000000 0x00 0x80000000>;
 		linux,phandle = <0xe3>;
@@ -5350,7 +5350,7 @@
 	};
 
 	sprd-sysdump {
-		memory-region = <&memory_80000000>;
+		memory-region = <0xe3>;
 		memory-region-re = <&cp_modem_89600000 &wcn_mem_88000000 &sipc_mem_87800000 &gnss_mem_88300000>;
 	};
 
