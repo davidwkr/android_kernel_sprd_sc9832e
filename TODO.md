@@ -152,7 +152,7 @@ Details, measurements and code pointers in [`KERNEL_TWEAKS.md`](KERNEL_TWEAKS.md
 - [ ] GNSS: short per-channel sbuf rx wakelock for the GNSS channel (stock holds 500 ms per burst: about 88 % awake during a GPS session); wake-enabled receive interrupt; GNSS core sleep/power-down when the engine stops.
 - [ ] Flash writes: `dirty_expire_centisecs` / `dirty_writeback_centisecs` 3000 in the ramdisk `init.rc` (replaces the userspace workarounds); test without f2fs online `discard`; check f2fs background GC; no periodic kernel writes.
 - [ ] Battery: find the suspend failures (about 40 % of attempts fail on stock), audit wakeup sources (BT 5 s, FM 1 s holds), CPU governor and hotplug limits with the screen off, `cluster_pd` residency.
-- [ ] Charging: DM63 `batt_idle` CV override into the charger driver; per-unit battery profiles stay in each unit's DT.
+- [~] Charging: DM63 `batt_idle` CV override into the charger driver (done on `tweaks/charge-cv`: `cv_override_mv` module parameter / `sprd,cv-override-microvolt`, off by default; not tested on hardware; gauge resync not ported); per-unit battery profiles stay in each unit's DT.
 
 ### 9. Security backports
 
