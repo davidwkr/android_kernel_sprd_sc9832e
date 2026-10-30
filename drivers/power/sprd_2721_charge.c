@@ -26,6 +26,8 @@
 #include <linux/of_device.h>
 #include <linux/of_gpio.h>
 #include <linux/of_irq.h>
+#include <linux/mutex.h>
+#include <linux/moduleparam.h>
 #include <linux/mfd/sprd/pmic_glb_reg.h>
 #include "sprd_charge_helper.h"
 #include "sprd_2721_charge.h"
@@ -212,7 +214,40 @@ static uint32_t sprdchg_cccv_cal(uint32_t chg_end_vol_pure)
 	return ret;
 }
 
-static void sprdchg_set_cccvpoint(unsigned int cvpoint)
+/*
+ * Optional CV override ("battery hold"): when cv_override_mv is non-zero the
+ * charger CV is never programmed above it, so the battery is held below the
+ * stock end voltage while USB powers the load. Off (0) by default. The
+ * override only ever lowers what sprdbat requests (JEITA / chg-end-vol), and
+ * never exceeds the battery profile's chg-end-vol.
+ *
+ * Enable with the DT property "sprd,cv-override-microvolt" in the charger
+ * node, or at runtime (root) through the module parameter:
+ *   echo 4100 > /sys/module/sprd_2721_charge/parameters/cv_override_mv
+ *   echo 0    > /sys/module/sprd_2721_charge/parameters/cv_override_mv
+ * or on the kernel command line: sprd_2721_charge.cv_override_mv=4100
+ */
+#define CV_OVERRIDE_MIN_MV	4000
+#define CV_OVERRIDE_MAX_MV	4400
+
+static DEFINE_MUTEX(cv_lock);	/* serialises END_V + CV_V register writes */
+static unsigned int cv_override_mv;	/* 0 = off */
+static unsigned int cv_last_req_mv;	/* last CV requested by sprdbat */
+
+static unsigned int sprdchg_cv_effective(unsigned int req)
+{
+	unsigned int ov = READ_ONCE(cv_override_mv);
+
+	if (!ov)
+		return req;
+	if (bat_drv_data && bat_drv_data->pdata &&
+	    bat_drv_data->pdata->chg_end_vol_pure &&
+	    ov > bat_drv_data->pdata->chg_end_vol_pure)
+		ov = bat_drv_data->pdata->chg_end_vol_pure;
+	return min(req, ov);
+}
+
+static void sprdchg_write_cccv(unsigned int cvpoint)
 {
 	int new_cvpoint;
 
@@ -222,6 +257,69 @@ static void sprdchg_set_cccvpoint(unsigned int cvpoint)
 		BITS_CHGR_CV_V(new_cvpoint),
 		BITS_CHGR_CV_V(~0U));
 }
+
+static void sprdchg_set_cccvpoint(unsigned int cvpoint)
+{
+	mutex_lock(&cv_lock);
+	cv_last_req_mv = cvpoint;
+	sprdchg_write_cccv(sprdchg_cv_effective(cvpoint));
+	mutex_unlock(&cv_lock);
+}
+
+static int sprdchg_cv_override_apply(unsigned int mv)
+{
+	if (mv && (mv < CV_OVERRIDE_MIN_MV || mv > CV_OVERRIDE_MAX_MV))
+		return -EINVAL;
+	mutex_lock(&cv_lock);
+	cv_override_mv = mv;
+	/* reprogram now if a charge has already requested a CV */
+	if (cv_last_req_mv && reg_map)
+		sprdchg_write_cccv(sprdchg_cv_effective(cv_last_req_mv));
+	mutex_unlock(&cv_lock);
+	return 0;
+}
+
+static int cv_override_set(const char *val, const struct kernel_param *kp)
+{
+	unsigned int mv;
+	int ret = kstrtouint(val, 0, &mv);
+
+	return ret ? ret : sprdchg_cv_override_apply(mv);
+}
+
+static const struct kernel_param_ops cv_override_ops = {
+	.set = cv_override_set,
+	.get = param_get_uint,
+};
+module_param_cb(cv_override_mv, &cv_override_ops, &cv_override_mv, 0644);
+MODULE_PARM_DESC(cv_override_mv,
+	"Cap the SC2721 charger CV at this many mV (4000..4400, 0 = off)");
+
+/* read-only: what sprdbat last requested and what the PMIC holds */
+static int cv_status_get(char *buf, const struct kernel_param *kp)
+{
+	unsigned int val;
+	int ret;
+
+	mutex_lock(&cv_lock);
+	if (!reg_map) {
+		mutex_unlock(&cv_lock);
+		return scnprintf(buf, PAGE_SIZE, "not probed\n");
+	}
+	val = chg_adi_read(ANA_REG_GLB_CHGR_CTRL0);
+	ret = scnprintf(buf, PAGE_SIZE,
+		"override_mv=%u requested_mv=%u programmed_mv=%u hw_cv_code=%u hw_end_v=%u\n",
+		cv_override_mv, cv_last_req_mv,
+		cv_last_req_mv ? sprdchg_cv_effective(cv_last_req_mv) : 0,
+		(val >> 5) & 0x3f, (val >> 3) & 0x3);
+	mutex_unlock(&cv_lock);
+	return ret;
+}
+
+static const struct kernel_param_ops cv_status_ops = {
+	.get = cv_status_get,
+};
+module_param_cb(cv_status, &cv_status_ops, NULL, 0444);
 
 int sprdchg_bc1p2_disable(int disable)
 {
@@ -448,6 +546,22 @@ static int sprdchg_2721_probe(struct platform_device *pdev)
 		}
 	}
 	sprdchg_cccv_cal_get();
+	{
+		u32 uv;
+
+		/* DT default; a value already set via the module parameter wins */
+		if (!cv_override_mv &&
+		    !of_property_read_u32(pdev->dev.of_node,
+					  "sprd,cv-override-microvolt", &uv)) {
+			if (sprdchg_cv_override_apply(uv / 1000))
+				dev_warn(&pdev->dev,
+					 "sprd,cv-override-microvolt %u out of range, ignored\n",
+					 uv);
+			else
+				dev_info(&pdev->dev, "CV override %u mV\n",
+					 cv_override_mv);
+		}
+	}
 	sprdbat_register_ext_ops(&sprd_2721_op);
 	charger_desc = devm_kzalloc(&pdev->dev,
 		sizeof(*charger_desc), GFP_KERNEL);
