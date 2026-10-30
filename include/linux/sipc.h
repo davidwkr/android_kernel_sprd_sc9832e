@@ -427,10 +427,16 @@ void sbuf_set_no_need_wake_lock(u8 dst, u8 channel, u32 bufnum);
  * @dst: dest processor ID
  * @channel: channel ID
  * @bufnum: which buffer to be set
- * @msecs: hold time in milliseconds
+ * @msecs: hold time in milliseconds, must be non-zero (rounded up to at
+ *	least one jiffy)
+ * @release_on_read: if true, sbuf_read() drops the hold and re-arms it
+ *	for 20 ms, so the lock ends shortly after userspace read the data
+ *	instead of running to @msecs. Do not use for rings whose reader is
+ *	the sbuf notifier itself (the notifier runs before the hold is armed).
+ * @return: 0, -EINVAL (bad argument), -ENODEV (no such ring)
  */
-void sbuf_set_rx_wakelock_timeout(u8 dst, u8 channel, u32 bufnum,
-				  unsigned int msecs);
+int sbuf_set_rx_wakelock_timeout(u8 dst, u8 channel, u32 bufnum,
+				 unsigned int msecs, bool release_on_read);
 
 /**
  * sbuf_create -- create pipe ring buffers on a channel

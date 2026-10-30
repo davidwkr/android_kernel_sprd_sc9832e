@@ -40,20 +40,25 @@
 
 /* *
  * sbuf_update_wakelock - according sbuf state, update sbuf wake lock
- * @state: the wake lock state, 1: means have got a long wake lock,
- * only state is 1 ,we can do below function,
- * ortherwise system can't enter to sleep, 0: do nothing
- * @ need:  whether need wake lock, 1: update wake lock time to 20ms,
- * 0: unlock it immediately
+ * @state: the wake lock state, 1: means a notification armed the lock
+ * since the last read, only then we do the below, 0: do nothing
+ * @need: whether a wake lock is needed after the read, 1: hold it for
+ * another 20 ms, 0: unlock it immediately
+ * @release: only used when @need is 1. 1: drop the hold armed by the
+ * notification first, so the lock really ends 20 ms after the read.
+ * Without it the 20 ms is useless: wake_lock_timeout() only ever extends
+ * a running timeout (__pm_wakeup_event()), it never shortens it.
  * @lock: wake lock point
  * @name: wake lock name
  */
-#define sbuf_update_wakelock(state, need, lock, name)	\
+#define sbuf_update_wakelock(state, need, release, lock, name)	\
 ({	\
 	if (state) {	\
 		state = 0;	\
 		if (need) {	\
 			pr_debug("sbuf %s : wake_lock hz/50!\n", name);	\
+			if (release)	\
+				wake_unlock(lock);	\
 			wake_lock_timeout(lock, HZ / 50);	\
 		} else {	\
 			pr_debug("sbuf %s : wake_unlock!\n", name);	\
@@ -467,6 +472,7 @@ int sbuf_create(u8 dst, u8 channel, u32 bufnum, u32 txbufsize, u32 rxbufsize)
 		mutex_init(&ring->rxlock);
 		ring->need_wake_lock = 1;
 		ring->rx_wake_timeout = HZ / 2;
+		ring->rx_release_on_read = 0;
 		ring->tx_wakelock_state = 0;
 		ring->rx_wakelock_state = 0;
 
@@ -525,26 +531,32 @@ void sbuf_set_no_need_wake_lock(u8 dst, u8 channel, u32 bufnum)
 }
 EXPORT_SYMBOL(sbuf_set_no_need_wake_lock);
 
-void sbuf_set_rx_wakelock_timeout(u8 dst, u8 channel, u32 bufnum,
-				  unsigned int msecs)
+int sbuf_set_rx_wakelock_timeout(u8 dst, u8 channel, u32 bufnum,
+				 unsigned int msecs, bool release_on_read)
 {
 	u8 ch_index;
 	struct sbuf_mgr *sbuf;
+	struct sbuf_ring *ring;
 
-	if (dst >= SIPC_ID_NR)
-		return;
+	if (!msecs || dst >= SIPC_ID_NR)
+		return -EINVAL;
 
 	ch_index = sipc_channel2index(channel);
 	if (ch_index == INVALID_CHANEL_INDEX) {
 		pr_err("%s:channel %d invalid!\n", __func__, channel);
-		return;
+		return -EINVAL;
 	}
 
 	sbuf = sbufs[dst][ch_index];
 	if (!sbuf || sbuf->ringnr <= bufnum)
-		return;
+		return -ENODEV;
 
-	sbuf->rings[bufnum].rx_wake_timeout = msecs_to_jiffies(msecs);
+	ring = &sbuf->rings[bufnum];
+	ring->rx_wake_timeout = max_t(unsigned long, 1,
+				      msecs_to_jiffies(msecs));
+	ring->rx_release_on_read = release_on_read;
+
+	return 0;
 }
 EXPORT_SYMBOL(sbuf_set_rx_wakelock_timeout);
 
@@ -760,6 +772,7 @@ int sbuf_write(u8 dst, u8 channel, u32 bufid,
 
 	sbuf_update_wakelock(ring->tx_wakelock_state,
 			     ring->need_wake_lock,
+			     0,
 			     &ring->tx_wake_lock,
 			     ring->tx_wakelock_name
 			    );
@@ -942,6 +955,7 @@ int sbuf_read(u8 dst, u8 channel, u32 bufid,
 
 	sbuf_update_wakelock(ring->rx_wakelock_state,
 			     ring->need_wake_lock,
+			     ring->rx_release_on_read,
 			     &ring->rx_wake_lock,
 			     ring->rx_wakelock_name
 			    );

@@ -79,6 +79,8 @@ struct sbuf_ring {
 	u16			need_wake_lock;
 	/* hold time (jiffies) of rx_wake_lock per receive notification */
 	unsigned long		rx_wake_timeout;
+	/* sbuf_read() ends the rx hold ~20 ms after the read */
+	bool			rx_release_on_read;
 
 	void			(*handler)(int event, void *data);
 	void			*data;
