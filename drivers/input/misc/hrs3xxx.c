@@ -129,7 +129,11 @@ static void hrs3xxx_report(struct hrs3xxx_data *data)
 {
 	struct input_dev *input = data->input;
 
-	/* No measurement back end yet: report "no valid sample". */
+	/*
+	 * No measurement back end yet: report "no valid sample". The input
+	 * core drops EV_REL events with value 0, so userspace sees only
+	 * HWHEEL = -1, MISC = -1 and SYN (same as stock).
+	 */
 	input_report_rel(input, REL_X, 0);	/* bpm */
 	input_report_rel(input, REL_Y, 0);
 	input_report_rel(input, REL_Z, 0);
@@ -348,6 +352,8 @@ static int hrs3xxx_probe(struct i2c_client *client,
 	ret = input_register_device(input);
 	if (ret) {
 		dev_err(dev, "cannot register input device: %d\n", ret);
+		/* An early "enable" write may already have queued the work. */
+		cancel_delayed_work_sync(&data->work);
 		input_free_device(input);
 		goto err_off;
 	}
@@ -364,7 +370,13 @@ static int hrs3xxx_remove(struct i2c_client *client)
 {
 	struct hrs3xxx_data *data = i2c_get_clientdata(client);
 
-	/* Removes the attributes and waits for in-flight stores. */
+	/* Keep the input device alive until the work item is stopped. */
+	input_get_device(data->input);
+
+	/*
+	 * Removes the attributes and waits for in-flight stores, so nothing
+	 * can queue the work again once this returns.
+	 */
 	input_unregister_device(data->input);
 	cancel_delayed_work_sync(&data->work);
 
@@ -373,6 +385,7 @@ static int hrs3xxx_remove(struct i2c_client *client)
 	hrs3xxx_power_off(data);
 	mutex_unlock(&data->lock);
 
+	input_put_device(data->input);
 	return 0;
 }
 

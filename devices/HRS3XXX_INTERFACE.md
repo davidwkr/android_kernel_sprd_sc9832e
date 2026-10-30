@@ -88,3 +88,8 @@ Probe (power GPIO, ID check, power off), input device and capabilities, `enable`
 suspended, mode kept). Not implemented: chip measurement and the heart-rate/SpO2
 algorithms; while enabled the driver reports "no valid sample" (0 for bpm/SpO2/wear,
 -1 for REL_HWHEEL/REL_MISC) once per second.
+
+Note: the input core in this tree drops EV_REL events whose value is 0
+(`input_get_disposition`), so an all-zero frame reaches userspace as
+REL_HWHEEL = -1, REL_MISC = -1, SYN. The stock driver goes through the same core;
+the HAL emits its sensor event on SYN, so behaviour is identical.
