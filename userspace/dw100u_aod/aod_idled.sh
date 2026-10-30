@@ -28,40 +28,49 @@ cleanup() {
 }
 trap cleanup TERM INT HUP
 
-[ -w "$D/idle" ] || { loge "$D/idle missing or not writable (kernel/chown/SELinux?)"; exit 1; }
+# oneshot service: log once and stop, no restart loop
+[ -w "$D/idle" ] || { loge "$D/idle missing or not writable (kernel/chown/SELinux?), exiting"; exit 0; }
 
 wakefulness() {
 	dumpsys power 2>/dev/null | grep -m1 'mWakefulness=' | sed 's/.*mWakefulness=//' | tr -d '\r \t'
 }
 
-set_idle() {	# $1 = 0|1 ; the driver refuses (EIO) while the panel is powered down
-	[ "$(cat $D/idle 2>/dev/null)" = "$1" ] && return 0
-	if [ "$1" = 1 ]; then
-		b=$(getprop persist.sys.aod_brightness)
-		case "$b" in
-		''|*[!0-9]*) ;;
-		*) [ "$b" -le 255 ] && echo "$b" > "$D/idle_brightness" 2>/dev/null ;;
-		esac
-	fi
-	echo "$1" > "$D/idle" 2>/dev/null && { logi "idle=$1"; return 0; }
-	return 1
+apply_brightness() {
+	b=$(getprop persist.sys.aod_brightness)
+	case "$b" in
+	''|*[!0-9]*) ;;
+	*) [ "$b" -le 255 ] && echo "$b" > "$D/idle_brightness" 2>/dev/null ;;
+	esac
 }
 
-# Re-read the state and act. Awake acts at once (wake latency); Dozing and
-# transient states get up to 4 tries 1 s apart (doze entry and DSI power-up
-# lag the event).
+set_idle() {	# $1 = 0|1 ; the driver refuses (EIO) while the panel is powered down
+	if [ "$(cat $D/idle 2>/dev/null)" != "$1" ]; then
+		echo "$1" > "$D/idle" 2>/dev/null || return 1
+		logi "idle=$1"
+	fi
+	return 0
+}
+
+# Debounce 1 s (2-3 events per transition), then re-read the state and act.
+# Dozing: the framework's own doze brightness (DCS 0x51) lands about 1 s after
+# doze starts and would overwrite idle_brightness, so write idle_brightness
+# after that settle, every time (also when idle is already 1). If the panel/DSI
+# is runtime-suspended the driver returns EIO: retry 4x 1 s, then once more
+# after 15 s; the next event re-arms everything.
 reconcile() {
+	sleep 1
 	n=0
-	while [ $n -lt 4 ]; do
+	while [ $n -lt 6 ]; do
 		case "$(wakefulness)" in
 		Awake) set_idle 0; return 0 ;;
-		Dozing) set_idle 1 && return 0 ;;
+		Dozing)
+			if set_idle 1; then apply_brightness; return 0; fi ;;
 		Asleep) return 0 ;;	# screen off: driver keeps idle state, only a double tap wakes
 		esac
 		n=$((n + 1))
-		sleep 1
+		if [ $n -eq 4 ]; then sleep 15; else sleep 1; fi
 	done
-	loge "no settled wakefulness"
+	loge "gave up (panel powered down? see status panel_powered), waiting for next event"
 	return 1
 }
 

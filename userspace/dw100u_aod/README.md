@@ -8,6 +8,7 @@ Kernel side: `CONFIG_SPRD_AOD_IDLE` (`sprd_aod_idle.c`, `dw100u_aod.fragment`). 
 |---|---|
 | `aod_idled.sh` | Sets `/sys/kernel/aod_idle/idle` 1 when wakefulness is Dozing, 0 when Awake; optional `idle_brightness` from `persist.sys.aod_brightness` |
 | `aod_idled.rc` | init service (starts at `sys.boot_completed=1`, user `system`, group `system log`) plus the sysfs chown |
+| `sepolicy/` | SELinux domain and labels (untested) |
 | `overlay/` | framework-res RRO, `config_powerDecoupleAutoSuspendModeFromDisplay=true`; build in `overlay/BUILD.md` |
 
 ## Design and battery cost
@@ -15,21 +16,21 @@ Kernel side: `CONFIG_SPRD_AOD_IDLE` (`sprd_aod_idle.c`, `dw100u_aod.fragment`). 
 - Signal: a blocking `logcat -b events` read of `power_screen_state` and `screen_toggled`. No polling, no wakeups while the screen state is stable; the process sleeps in the kernel and does not hold a wakelock. Cost per transition: one `dumpsys power` (about 0.1 to 0.3 s CPU, estimate, not measured) plus 1 s sleeps only while the state is unsettled. Resident: one sh and one logcat process.
 - Fallback if those event tags do not fire in doze on this ROM (unverified): `setprop persist.sys.aod_idled.poll 10` polls `dumpsys power` every 10 s. Each poll is the same 0.1 to 0.3 s CPU; sleeps do not wake a suspended CPU, so polls only run when it is awake anyway.
 - Double tap wake needs no code here: the driver emits `KEY_WAKEUP`, the framework wakes, the Awake event writes `idle=0` (the driver also drops idle on display RUN). Asleep (screen off after AOD) leaves idle as is, like stock.
-- The script writes `idle=0` on SIGTERM so a stopped service never leaves the touch screen swallowed.
-- Writes are refused with EIO while the panel is powered down; Dozing is retried 4 times 1 s apart.
+- `stop` kills the process group with SIGKILL on 8.1, so the trap does not run; the rc clears idle from init on `init.svc.aod_idled=stopped`. The trap only covers plain SIGTERM (Magisk route).
+- The service is `oneshot`: if the sysfs node is missing it logs once and exits, no restart loop.
+- Events are debounced 1 s (2 to 3 per transition); Dozing waits that second so idle_brightness is written after the framework's doze brightness.
+- Writes are refused with EIO while the panel is powered down; Dozing is retried 4 times 1 s apart, once more after 15 s, and the next event re-arms it. If it gave up, check `status` for `panel_powered=0` (DOZE_SUSPEND runtime-suspended the DSI) during the hardware test.
 
 ## SELinux (Android 8.1, enforcing)
 
-Not tested; we do not know how `wearit_aod` was labelled and did not inspect it. Options:
-1. Permissive/userdebug test: leave `seclabel` out (runs in `init`, no policy change, too broad for production).
-2. Magisk: use the module `service.sh` below; it runs in the Magisk root context.
-3. Proper: a domain `aod_idled` (type + `init_daemon_domain`) needing at least: `allow aod_idled sysfs:file rw_file_perms` (or a dedicated label for `/sys/kernel/aod_idle` via `genfscon`), `shell_exec` exec for `sh`/toybox, `logd` read (`logd_socket`/`logdr_socket`), `service_manager` find for `power_service` and binder call to `system_server` (for `dumpsys`), `getprop` read of the two properties. Collect exact denials with `dmesg | grep avc` and refine; do not hand-write more than the denials show.
+Not tested. init refuses a service without a domain, so the rc sets `seclabel u:r:aod_idled:s0` and the policy source is in `sepolicy/` (`aod_idled.te`, `file_contexts`, `genfscon`, `property_contexts`). Add them to the device sepolicy (vendor/BOARD_SEPOLICY_DIRS); a Magisk-only setup cannot add them, use the Magisk route (service.sh, Magisk root context) instead. We do not know how `wearit_aod` was labelled and did not inspect it. Refine with `dmesg | grep avc`; the rules are a starting point, not verified.
 
 ## Install
 
 ### A. System files (needs rw /system and /vendor)
     /system/bin/aod_idled.sh              0755 root:shell  u:object_r:system_file:s0
     /system/etc/init/aod_idled.rc         0644 root:root   u:object_r:system_file:s0
+    (+ sepolicy/ built into the policy, see above)
     /vendor/overlay/AodSleepOverlay.apk   0644 root:root   u:object_r:vendor_overlay_file:s0
 Reboot. For `sprd_aod_idle` as a module add `insmod /vendor/lib/modules/sprd_aod_idle.ko` to a `on early-boot` line in the rc (the stock name was `aod_idle.ko`).
 

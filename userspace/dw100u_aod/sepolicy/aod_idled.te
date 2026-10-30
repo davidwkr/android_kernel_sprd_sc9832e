@@ -1,0 +1,30 @@
+# UNTESTED starting point for Android 8.1. Refine from avc denials.
+type aod_idled, domain;
+type aod_idled_exec, exec_type, file_type;
+init_daemon_domain(aod_idled)
+
+# service is /system/bin/sh running the script (rc sets seclabel): entrypoint
+allow aod_idled shell_exec:file { rx_file_perms entrypoint };
+allow aod_idled system_file:file r_file_perms;
+allow aod_idled toolbox_exec:file rx_file_perms;     # date cat grep sed tr sleep log getprop
+
+# the two sysfs nodes (label in genfscon)
+type sysfs_aod_idle, fs_type, sysfs_type;
+allow aod_idled sysfs_aod_idle:dir search;
+allow aod_idled sysfs_aod_idle:file rw_file_perms;
+allow init sysfs_aod_idle:file { getattr setattr write open };  # on boot chown/chmod, stop hook write
+
+# logcat -b events
+read_logd(aod_idled)
+
+# dumpsys power
+allow aod_idled dumpsys_exec:file rx_file_perms;
+binder_use(aod_idled)
+allow aod_idled power_service:service_manager find;
+allow aod_idled system_server:binder call;
+allow system_server aod_idled:fd use;
+allow system_server aod_idled:fifo_file { read write getattr };
+
+# persist.sys.aod_brightness / persist.sys.aod_idled.poll
+type aod_idled_prop, property_type;
+get_prop(aod_idled, aod_idled_prop)
