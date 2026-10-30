@@ -6,6 +6,7 @@ Where the kernel work stands, what was reviewed, what is open. Details live in t
 - [`KERNEL_TWEAKS.md`](KERNEL_TWEAKS.md): battery, flash-write, GNSS, charging and AOD changes, with hardware test steps.
 - [`SECURITY_BACKPORTS.md`](SECURITY_BACKPORTS.md): stable and CIP merges, targeted backports, UNISOC bulletins, hardening config.
 - [`devices/`](devices/README.md): per-device specs, stock configs and device trees.
+- [`devices/CONFIG_PARITY.md`](devices/CONFIG_PARITY.md): every stock config option our builds lacked, classified (enabled, optional, kept off).
 
 **Nothing in this tree has run on a watch yet.** Everything below is built and code-reviewed only. The first booting build (TODO items 1, 2, 3, 6, 7) has not been done.
 
@@ -71,7 +72,7 @@ Cross compiler `aarch64-linux-gnu-` (GCC 16). Output goes outside the repo (defa
 scripts/watch_build.sh DEVICE [OUTDIR]   # DEVICE: dm63 dw100u-silver dw100u-v13m mt107 mt108 dm82
 ```
 
-The script runs `sprd_sharkle_defconfig`, merges `watch_base`, `watch_hardening` and the device fragments (dm63: `dm63_touch watch_hrs dm63_aod`; dw100u-*: `dw100u_touch watch_hrs dw100u_aod`; mt107, mt108, dm82: their own fragment), runs `olddefconfig`, checks that every fragment line took effect (fails listing mismatches), builds `Image` and modules, then builds the ramdisk modules `mali`, `sprdbt_tty`, `sprd_fm` against the same `O=` (`sprdwl_ng` is in-tree `=m`; never mix configs), cleans the module source dirs and copies `Image` + the four `.ko` + `sha256sum.txt` to `OUTDIR/DEVICE/`. `ARCH`, `CROSS_COMPILE`, `JOBS` are overridable by environment. `watch_release` (not ready) and `watch_otg` (off by default) are never merged.
+The script runs `sprd_sharkle_defconfig`, merges `watch_base`, `watch_stock_parity` (stock-config options we were missing, see [`devices/CONFIG_PARITY.md`](devices/CONFIG_PARITY.md)), `watch_hardening` and the device fragments (dm63: `dm63_touch watch_hrs watch_sc7a22 dm63_aod`; dw100u-*: `dw100u_touch watch_hrs watch_sc7a22 dw100u_aod`; mt107, mt108, dm82: their own fragment), runs `olddefconfig`, checks that every fragment line took effect (fails listing mismatches), builds `Image` and modules, then builds the ramdisk modules `mali`, `sprdbt_tty`, `sprd_fm` against the same `O=` (`sprdwl_ng` is in-tree `=m`; never mix configs), cleans the module source dirs and copies `Image` + the four `.ko` + `sha256sum.txt` to `OUTDIR/DEVICE/`. `ARCH`, `CROSS_COMPILE`, `JOBS` are overridable by environment. `watch_release` (not ready) and `watch_otg` (off by default) are never merged.
 
 Last full build of `security-backports` with the hardening fragment and `SPRD_AOD_IDLE=m`: 0 errors; `mali.ko`, `sprdbt_tty.ko`, `sprd_fm.ko` build.
 
