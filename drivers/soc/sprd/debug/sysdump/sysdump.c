@@ -588,14 +588,17 @@ static ssize_t sprd_sysdump_write(struct file *file, const char __user *buf,
 				size_t count, loff_t *data)
 {
 	char sysdump_buf[5] = {0};
+	size_t len;
 
 	pr_emerg("sprd_sysdump_write: start!!!\n");
 	if (count) {
-		if (copy_from_user(sysdump_buf, buf, count)) {
+		/* only "on"/"off" are meaningful, never copy more than fits */
+		len = min(count, sizeof(sysdump_buf) - 1);
+		if (copy_from_user(sysdump_buf, buf, len)) {
 			pr_emerg("sprd_sysdump_write: copy_from_user failed!!!\n");
-			return -1;
+			return -EFAULT;
 		}
-		sysdump_buf[count] = '\0';
+		sysdump_buf[len] = '\0';
 
 		if (!strncmp(sysdump_buf, "on", 2)) {
 			pr_emerg("sprd_sysdump_write: enable user version sysdump!!!\n");
