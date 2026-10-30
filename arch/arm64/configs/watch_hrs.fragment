@@ -1,0 +1,5 @@
+# TYHX HRS3xxx / HRS3918 heart-rate sensor (DW100U and DM63 watches).
+# Merge on top of the device config, e.g.:
+#   scripts/kconfig/merge_config.sh -m .config arch/arm64/configs/watch_hrs.fragment
+CONFIG_INPUT_SENSORS_HRS3XXX=y
+CONFIG_HEARTRATE_HRS3918=y
