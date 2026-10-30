@@ -64,7 +64,7 @@ The custom `batt_idle.ko` overrides the SC2721 charger CV voltage at runtime (`/
 | `batt_idle.ko` | `/system/lib/modules` | `/system/etc/init/batt_idle.rc` |
 | `aod_idle.ko` | `/system/lib/modules` | `/system/etc/init/aod_idle.rc` (also `aod_idled` service, `/system/bin/aod_idled.sh`) |
 
-The two custom modules are out of tree. Find their sources and rebuild them against this kernel. Without them the DM63 loses the charger CV override and the AOD double-tap / idle behaviour.
+`aod_idle.ko` is ported in tree as `CONFIG_SPRD_AOD_IDLE` (`sprd_aod_idle`, `arch/arm64/configs/dm63_aod.fragment`; see `KERNEL_TWEAKS.md`). With `=m` the module is `sprd_aod_idle.ko`, so `aod_idle.rc` must `insmod` that name (or build `=y` and drop the insmod). `batt_idle.ko` is still out of tree. Without them the DM63 loses the charger CV override and the AOD double-tap / idle behaviour.
 
 ## Kernel config notes
 

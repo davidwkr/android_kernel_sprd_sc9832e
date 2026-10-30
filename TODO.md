@@ -110,13 +110,13 @@ Present in this tree and used: ADF display (`drivers/video/adf/sprd`, matches st
 
 - [ ] **CST0xx touch (DM63).** Hynitron family; check whether `hynitron_ts` handles the CST0xx protocol and add the `cst0xx,cst0xx_ts` compatible, otherwise port an open-source CST0xx/CST8xx driver. Without this the DM63 has no touch.
 - [ ] **HRS3xxx heart rate (both).** Port a TYHX HRS3300/HRS3xxx driver, matching the stock input device name `heartrate` and its sysfs/ioctl interface so the vendor heart-rate HAL keeps working (check the HAL in `/vendor` for what it opens).
-- [ ] Check the stock `aod_dtap` input device on the DM63 (comes from the custom `aod_idle` module).
+- [x] `aod_dtap` input device on the DM63 (from the custom `aod_idle` module): ported in tree as `CONFIG_SPRD_AOD_IDLE` (`drivers/video/adf/sprd/drv/sprd_aod_idle.c`, fragment `dm63_aod.fragment`); builds as `=m` and `=y`. **Not yet tested on hardware** (see `KERNEL_TWEAKS.md`, Display/AOD). Open: confirm generic vs DCS write path on the CO5300, userspace `insmod` name.
 - [ ] Fingerprint, fall-off: decide after checking whether anything on the watches uses them.
 
 ### 5. Modules
 
 - [ ] Ramdisk modules loaded at boot: `mali.ko`, `sprdwl_ng.ko`, `sprd_fm.ko`, `sprdbt_tty.ko`. Build them from this tree (or build them in) for the new kernel.
-- [ ] Custom out-of-tree modules: `aod_idle.ko` (DM63, AOD idle + `aod_dtap`), `batt_idle.ko` (DM63, SC2721 charger CV override, loaded by `/system/etc/init/batt_idle.rc`), `wearit_aod` (DW100U, Magisk module). Find their sources and rebuild them against this kernel.
+- [ ] Custom out-of-tree modules: `aod_idle.ko` (DM63, AOD idle + `aod_dtap`; **ported in tree as `sprd_aod_idle`, `dm63_aod.fragment`, needs hardware test**), `batt_idle.ko` (DM63, SC2721 charger CV override, loaded by `/system/etc/init/batt_idle.rc`), `wearit_aod` (DW100U, Magisk module). Find their sources and rebuild them against this kernel.
 - [ ] Check `/vendor/lib/modules` and `/system/lib/modules` on each watch for any other `.ko` loaded at boot.
 
 ### 6. Boot image
