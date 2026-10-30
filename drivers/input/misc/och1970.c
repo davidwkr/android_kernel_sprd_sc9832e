@@ -419,10 +419,14 @@ static int och1970_suspend(struct device *dev)
 	data->resume_enabled = data->enabled;
 	mutex_unlock(&data->lock);
 
-	if (data->resume_enabled) {
-		ret = och1970_set_enabled(data, false);
-		if (ret)
-			dev_warn(dev, "power-down failed on suspend\n");
+	/* always run the power-down path, it retries an earlier failure */
+	ret = och1970_set_enabled(data, false);
+	if (ret) {
+		dev_warn(dev, "power-down failed on suspend\n");
+		/* PM will not call resume for us: restore the prior state */
+		if (data->resume_enabled)
+			och1970_set_enabled(data, true);
+		data->resume_enabled = false;
 	}
 
 	return ret;
