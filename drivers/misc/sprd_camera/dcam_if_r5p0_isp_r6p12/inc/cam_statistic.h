@@ -53,6 +53,8 @@ struct cam_statis_module {
 	struct cam_buf_queue ebd_statis_queue;
 	struct cam_buf_queue hist_statis_queue;
 	struct cam_statis_buf img_statis_buf;
+	/* dma-buf reference keeping img_statis_buf.buf_info.buf[0] alive (ISP) */
+	struct dma_buf *isp_statis_dmabuf;
 	uint32_t idx;
 	uint32_t module_flag;
 	uint32_t statis_valid;

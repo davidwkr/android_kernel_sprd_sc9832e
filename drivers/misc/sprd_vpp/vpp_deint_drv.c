@@ -62,6 +62,8 @@ struct deint_fh {
 	wait_queue_head_t wait_queue_work;
 	int condition_work;
 	int deint_int_status;
+	/* dma-bufs behind live IOVA mappings of this file */
+	struct sprd_ion_pin_list pins;
 };
 
 struct sprd_vpp_cfg_data {
@@ -294,14 +296,16 @@ static long compat_deint_ioctl(struct file *filp, unsigned int cmd,
 #endif
 
 static int vpp_get_iova(struct deint_dev_t *deint_hw_dev,
-		 struct vsp_iommu_map_data *mapdata, void __user *arg)
+		 struct vsp_iommu_map_data *mapdata, void __user *arg,
+		 struct sprd_ion_pin_list *pins)
 {
 	int ret = 0;
 	struct sprd_iommu_map_data iommu_map_data;
+	struct dma_buf *held;
 
-	ret = sprd_ion_get_buffer(mapdata->fd, NULL,
+	ret = sprd_ion_get_buffer_ref(mapdata->fd, NULL,
 				    &(iommu_map_data.buf),
-				    &iommu_map_data.iova_size);
+				    &iommu_map_data.iova_size, &held);
 	if (0 != ret) {
 		pr_err("get_sg_table failed, ret %d\n", ret);
 		return ret;
@@ -309,6 +313,22 @@ static int vpp_get_iova(struct deint_dev_t *deint_hw_dev,
 
 	iommu_map_data.ch_type = SPRD_IOMMU_FM_CH_RW;
 	ret = sprd_iommu_map(deint_hw_dev->deint_dev, &iommu_map_data);
+	if (ret) {
+		sprd_ion_put(held);
+	} else if (sprd_ion_pin_add(pins, iommu_map_data.iova_addr,
+				    iommu_map_data.iova_size, held)) {
+		/* keep the buffer alive while mapped, or do not map at all */
+		struct sprd_iommu_unmap_data undo = {
+			.iova_addr = iommu_map_data.iova_addr,
+			.iova_size = iommu_map_data.iova_size,
+			.ch_type = SPRD_IOMMU_FM_CH_RW,
+			.buf = NULL,
+		};
+
+		sprd_iommu_unmap(deint_hw_dev->deint_dev, &undo);
+		sprd_ion_put(held);
+		ret = -ENOMEM;
+	}
 	if (!ret) {
 		mapdata->iova_addr = iommu_map_data.iova_addr;
 		mapdata->size = iommu_map_data.iova_size;
@@ -326,7 +346,8 @@ static int vpp_get_iova(struct deint_dev_t *deint_hw_dev,
 }
 
 static int vpp_free_iova(struct deint_dev_t *deint_hw_dev,
-		  struct vsp_iommu_map_data *ummapdata)
+		  struct vsp_iommu_map_data *ummapdata,
+		  struct sprd_ion_pin_list *pins)
 {
 	int ret = 0;
 	struct sprd_iommu_unmap_data iommu_ummap_data;
@@ -341,6 +362,9 @@ static int vpp_free_iova(struct deint_dev_t *deint_hw_dev,
 	if (ret)
 		pr_err("vsp iommu-unmap failed ret %d addr&size 0x%lx 0x%zx\n",
 		       ret, ummapdata->iova_addr, ummapdata->size);
+	else
+		sprd_ion_pin_release(pins, ummapdata->iova_addr,
+				     ummapdata->size);
 	return ret;
 }
 
@@ -451,7 +475,8 @@ static long deint_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			}
 
 			ret = vpp_get_iova(&deint_hw_dev, &mapdata,
-					   (void __user *)arg);
+					   (void __user *)arg,
+					   &deint_fp->pins);
 
 			break;
 		}
@@ -467,7 +492,8 @@ static long deint_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 				return -EFAULT;
 			}
 
-			ret = vpp_free_iova(&deint_hw_dev, &ummapdata);
+			ret = vpp_free_iova(&deint_hw_dev, &ummapdata,
+					   &deint_fp->pins);
 
 			break;
 		}
@@ -594,6 +620,7 @@ static int deint_open(struct inode *inode, struct file *filp)
 	deint_fp->is_deint_acquired = 0;
 	deint_fp->condition_work = 0;
 	deint_fp->deint_int_status = 0;
+	sprd_ion_pin_init(&deint_fp->pins, "vpp_deint");
 
 	init_waitqueue_head(&deint_fp->wait_queue_work);
 
@@ -621,6 +648,7 @@ static int deint_release(struct inode *inode, struct file *filp)
 		up(&deint_hw_dev.deint_mutex);
 	}
 
+	sprd_ion_pin_release_all(&deint_fp->pins);
 	kfree(filp->private_data);
 	filp->private_data = NULL;
 

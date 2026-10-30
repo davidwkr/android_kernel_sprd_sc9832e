@@ -626,6 +626,10 @@ int cpp_scale_start(struct sprd_cpp_scale_cfg_parm *parm,
 	scale_k_set_output_size(p);
 	scale_k_set_output_format(p);
 	scale_k_set_dst_addr(p);
+	if (p->iommu_src.err || p->iommu_dst.err) {
+		pr_err("invalid buffer address, not starting\n");
+		return -EINVAL;
+	}
 	scale_k_set_output_endian(p);
 
 	if (parm->input_format == SCALE_JPEG_LS)

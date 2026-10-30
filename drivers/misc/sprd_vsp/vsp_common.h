@@ -2,6 +2,7 @@
 #define _VSP_COMMON_H
 
 #include <linux/semaphore.h>
+#include <linux/sprd_ion.h>
 #include <uapi/video/sprd_vsp.h>
 
 extern struct regmap *gpr_aon_apb;
@@ -18,6 +19,8 @@ struct vsp_fh {
 	int condition_work;
 	int vsp_int_status;
 	unsigned int codec_id;
+	/* dma-bufs behind live IOVA mappings of this file */
+	struct sprd_ion_pin_list pins;
 };
 
 struct sprd_vsp_cfg_data {
@@ -78,7 +81,9 @@ long compat_vsp_ioctl(struct file *filp, unsigned int cmd,
 			     unsigned long arg);
 #endif
 int vsp_get_iova(struct vsp_dev_t *vsp_hw_dev,
-		 struct vsp_iommu_map_data *mapdata, void __user *arg);
+		 struct vsp_iommu_map_data *mapdata, void __user *arg,
+		 struct sprd_ion_pin_list *pins);
 int vsp_free_iova(struct vsp_dev_t *vsp_hw_dev,
-		  struct vsp_iommu_map_data *ummapdata);
+		  struct vsp_iommu_map_data *ummapdata,
+		  struct sprd_ion_pin_list *pins);
 #endif

@@ -791,6 +791,10 @@ int cpp_path0_path3_start(struct sprd_cpp_path0_path3_cfg_parm *parm,
 #else
 	cpp_path0_path3_k_set_dst_addr(p);
 #endif
+	if (p->iommu_src.err || p->iommu_dst_path0.err || p->iommu_dst_path3.err) {
+		pr_err("invalid buffer address, not starting\n");
+		return -EINVAL;
+	}
 	cpp_path0_path3_k_set_output_endian(p);
 
 	/*reg_owr(p, CPP_PATH0_CFG0, CPP_SCALE_SR_MODE_EB);*/

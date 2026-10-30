@@ -94,6 +94,9 @@ struct isp_group {
 	struct s_iq_info_2 iqinfo2;
 	uint32_t af_stats_independence;
 	uint32_t on;
+	/* dma-bufs programmed into the hardware, see isp_pin_dmabuf() */
+	struct list_head pinned_dmabufs;
+	spinlock_t pinned_lock;
 };
 
 static struct isp_if_context *s_isp_pipeline[ISP_DEV_NUM];
@@ -122,12 +125,16 @@ int isp_get_sg_table(struct isp_iommu_info *pfinfo, uint32_t n)
 {
 	int i, ret;
 
+	for (i = 0; i < n; i++)
+		pfinfo[i].dmabuf_p = NULL;
+
 	for (i = 0; i < n; i++, pfinfo++) {
 		if (pfinfo->mfd > 0) {
-			ret = sprd_ion_get_sg_table(pfinfo->mfd,
+			ret = sprd_ion_get_sg_table_ref(pfinfo->mfd,
 				NULL,
 				&pfinfo->table,
-				&pfinfo->size);
+				&pfinfo->size,
+				&pfinfo->dmabuf_p);
 			if (ret) {
 				pr_err("failed to get sg table %d\n", i);
 				return -EFAULT;
@@ -137,10 +144,109 @@ int isp_get_sg_table(struct isp_iommu_info *pfinfo, uint32_t n)
 	return 0;
 }
 
+/*
+ * Drop the references taken by isp_get_sg_table(); pfinfo->table must not
+ * be used afterwards. Callers hold them only while the table is consumed
+ * by isp_get_addr().
+ */
+static void isp_put_sg_table(struct isp_iommu_info *pfinfo, uint32_t n)
+{
+	uint32_t i;
+
+	for (i = 0; i < n; i++, pfinfo++) {
+		sprd_ion_put(pfinfo->dmabuf_p);
+		pfinfo->dmabuf_p = NULL;
+		pfinfo->table = NULL;
+	}
+}
+
+struct isp_pinned_dmabuf {
+	struct list_head list;
+	struct dma_buf *dmabuf;
+};
+
+/*
+ * Buffers handed to the ISP stay programmed in hardware (the firmware is
+ * shared by all pipelines) until the last user closes, so the dma-buf
+ * reference is kept on a per-group list and dropped by isp_unpin_all(). Takes over the caller's reference @held.
+ * If no list node can be allocated the reference is deliberately leaked,
+ * which is safe (the buffer stays alive) unlike dropping it.
+ */
+static void isp_pin_dmabuf(struct isp_pipe_dev *isp_pipeline,
+			   struct dma_buf *held)
+{
+	struct isp_pinned_dmabuf *node, *entry;
+	struct isp_group *group = isp_pipeline->private_data;
+	bool dup = false;
+
+	if (!held)
+		return;
+
+	node = kzalloc(sizeof(*node), GFP_KERNEL);
+	if (!node) {
+		pr_err("no memory to track dma-buf reference, keeping it\n");
+		return;
+	}
+	node->dmabuf = held;
+
+	spin_lock(&group->pinned_lock);
+	list_for_each_entry(entry, &group->pinned_dmabufs, list) {
+		if (entry->dmabuf == held) {
+			dup = true;
+			break;
+		}
+	}
+	if (!dup)
+		list_add_tail(&node->list, &group->pinned_dmabufs);
+	spin_unlock(&group->pinned_lock);
+
+	if (dup) {
+		kfree(node);
+		sprd_ion_put(held);
+	}
+}
+
+static void isp_unpin_all(struct isp_group *group)
+{
+	struct isp_pinned_dmabuf *node;
+
+	for (;;) {
+		spin_lock(&group->pinned_lock);
+		node = list_first_entry_or_null(&group->pinned_dmabufs,
+				struct isp_pinned_dmabuf, list);
+		if (node)
+			list_del(&node->list);
+		spin_unlock(&group->pinned_lock);
+		if (!node)
+			break;
+		sprd_ion_put(node->dmabuf);
+		kfree(node);
+	}
+}
+
+/* hand the references in @pfinfo over to the pipeline's pinned list */
+static void isp_pin_sg_table(struct isp_pipe_dev *isp_pipeline,
+			     struct isp_iommu_info *pfinfo, uint32_t n)
+{
+	uint32_t i;
+
+	for (i = 0; i < n; i++, pfinfo++) {
+		isp_pin_dmabuf(isp_pipeline, pfinfo->dmabuf_p);
+		pfinfo->dmabuf_p = NULL;
+		pfinfo->table = NULL;
+	}
+}
+
 int isp_get_addr(struct isp_iommu_info *pfinfo, uint32_t n)
 {
 	int i, ret;
 	struct sprd_iommu_map_data iommu_data;
+
+	/* the first plane is always required */
+	if (n && (pfinfo->mfd <= 0 || pfinfo->size <= 0)) {
+		pr_err("no buffer for plane 0\n");
+		return -EINVAL;
+	}
 
 	for (i = 0; i < n; i++, pfinfo++) {
 		if (pfinfo->mfd <= 0 || pfinfo->size <= 0)
@@ -166,10 +272,15 @@ int isp_get_addr(struct isp_iommu_info *pfinfo, uint32_t n)
 			pfinfo->iova = iommu_data.iova_addr
 					+ pfinfo->offset;
 		} else {
-			sprd_ion_get_phys_addr(pfinfo->mfd,
-					NULL,
+			ret = sprd_ion_get_phys_addr(-1,
+					pfinfo->dmabuf_p,
 					&pfinfo->iova,
 					&pfinfo->size);
+			if (ret) {
+				pr_err("failed to get phy_addr 0x%x\n",
+					pfinfo->mfd);
+				return -EFAULT;
+			}
 			pfinfo->iova += pfinfo->offset;
 		}
 		pr_debug("iova_addr 0x%lx\n", pfinfo->iova);
@@ -1515,17 +1626,13 @@ static int32_t _isp_load_firmware(struct file *file,
 		spin_lock_init(&match_data.awb_lock);
 		cam_ion_client = sprd_ion_client_get(init_mem.fw_buf_dev_fd);
 		/*mapping prefetch iommu buffer*/
-		ret = sprd_ion_get_sg_table(init_mem.fw_buf_mfd, NULL, &table,
-			(size_t *)&size);
+		/* the reference is kept in dmabuf_p until the last release */
+		ret = sprd_ion_get_sg_table_ref(init_mem.fw_buf_mfd, NULL,
+			&table, (size_t *)&size, &dmabuf_p);
 		if (ret) {
 			ret = -EFAULT;
 			pr_err("isp_ioctl%d: sprd_ion_get_sg_table\n",
 				isp_pipeline->isp_id);
-			goto load_exit;
-		}
-		dmabuf_p = dma_buf_get(init_mem.fw_buf_mfd);
-		if (IS_ERR_OR_NULL(dmabuf_p)) {
-			pr_err("failed to get dma buf %p\n", dmabuf_p);
 			goto load_exit;
 		}
 		if (sprd_iommu_attach_device(&pdev->dev) == 0) {
@@ -1544,9 +1651,15 @@ static int32_t _isp_load_firmware(struct file *file,
 			group->fw_mem.iommu_addr = iommu_data.iova_addr;
 			group->fw_mem.iova_size = iommu_data.iova_size;
 		} else {
-			sprd_ion_get_phys_addr(init_mem.fw_buf_mfd, NULL,
+			ret = sprd_ion_get_phys_addr(-1, dmabuf_p,
 				&group->fw_mem.iommu_addr,
 				&group->fw_mem.iova_size);
+			if (ret) {
+				ret = -EFAULT;
+				pr_err("isp_ioctl%d: fail to get fw phy addr\n",
+					isp_pipeline->isp_id);
+				goto load_exit;
+			}
 		}
 
 		sprd_cam_pw_on();
@@ -2349,8 +2462,20 @@ static int32_t isp_cfg_img_ion_param(struct file *file,
 	buf->pfinfo[0].offset = img_frm->yaddr;
 	buf->pfinfo[1].offset = img_frm->uaddr;
 	buf->pfinfo[2].offset = img_frm->vaddr;
-	isp_get_sg_table(buf->pfinfo, 3);
-	isp_get_addr(buf->pfinfo, 3);
+	ret = isp_get_sg_table(buf->pfinfo, 3);
+	if (ret) {
+		pr_err("isp_get_sg_table failed\n");
+		isp_put_sg_table(buf->pfinfo, 3);
+		goto exit;
+	}
+	ret = isp_get_addr(buf->pfinfo, 3);
+	if (ret) {
+		pr_err("isp_get_addr failed\n");
+		isp_put_sg_table(buf->pfinfo, 3);
+		goto exit;
+	}
+	/* queued to the hardware: keep the buffers alive until release */
+	isp_pin_sg_table(isp_pipeline, buf->pfinfo, 3);
 
 
 exit:
@@ -2362,6 +2487,7 @@ static int32_t isp_set_hiso(struct isp_pipe_dev *isp_pipeline,
 {
 	int32_t ret = 0;
 	struct sg_table *table;
+	struct dma_buf *held;
 	size_t size = 0;
 	struct sprd_iommu_map_data iommu_data;
 	struct isp_group *group;
@@ -2379,8 +2505,8 @@ static int32_t isp_set_hiso(struct isp_pipe_dev *isp_pipeline,
 		hiso_data->phy_addr, hiso_data->virt_addr,
 		isp_pipeline->high_iso_mem.size);
 
-	ret = sprd_ion_get_sg_table(isp_pipeline->high_iso_mem.fd, NULL,
-				    &table, &size);
+	ret = sprd_ion_get_sg_table_ref(isp_pipeline->high_iso_mem.fd, NULL,
+					&table, &size, &held);
 	if (ret) {
 		ret = -EFAULT;
 		pr_err("isp_ioctl: sprd_ion_get_sg_table\n");
@@ -2394,6 +2520,7 @@ static int32_t isp_set_hiso(struct isp_pipe_dev *isp_pipeline,
 		iommu_data.iova_size = size;
 		ret = sprd_iommu_get_kaddr(&device->dev, &iommu_data);
 		if (ret) {
+			sprd_ion_put(held);
 			ret = -EFAULT;
 			pr_err("isp_ioctl: fail to get user info n");
 			return ret;
@@ -2401,11 +2528,19 @@ static int32_t isp_set_hiso(struct isp_pipe_dev *isp_pipeline,
 		isp_pipeline->high_iso_mem.iova_addr = iommu_data.iova_addr;
 		isp_pipeline->high_iso_mem.iova_size = iommu_data.iova_size;
 	} else {
-		sprd_ion_get_phys_addr(isp_pipeline->high_iso_mem.fd, NULL,
+		ret = sprd_ion_get_phys_addr(-1, held,
 				       &isp_pipeline->high_iso_mem.iova_addr,
 				       &isp_pipeline->high_iso_mem.iova_size);
+		if (ret) {
+			sprd_ion_put(held);
+			ret = -EFAULT;
+			pr_err("isp_ioctl: fail to get iova_addr\n");
+			return ret;
+		}
 
 	}
+	/* the buffer stays programmed in the hardware: pin it */
+	isp_pin_dmabuf(isp_pipeline, held);
 
 	pr_info("high_iso_iova_addr 0x%lx\n",
 		isp_pipeline->high_iso_mem.iova_addr);
@@ -2479,6 +2614,7 @@ static int32_t isp_set_raw(struct isp_pipe_dev *isp_pipeline,
 	struct isp_group *group;
 	struct platform_device *device = NULL;
 	struct sg_table *table;
+	struct dma_buf *held;
 	size_t size = 0;
 	struct sprd_iommu_map_data iommu_data;
 	struct isp_raw_buf_info *raw_buf = NULL;
@@ -2512,19 +2648,18 @@ static int32_t isp_set_raw(struct isp_pipe_dev *isp_pipeline,
 			}
 			continue;
 		}
+		ret = sprd_ion_get_sg_table_ref(raw_buf->fd, NULL,
+					&table, &size, &held);
+		if (ret) {
+			if (i != 0)
+				break;
+
+			ret = -EFAULT;
+			pr_err("isp_ioctl: sprd_ion_get_sg_table fail\n");
+			return ret;
+		}
+
 		if (0/*0 == sprd_iommu_attach_device(pfinfo->dev)*/) {
-
-			ret = sprd_ion_get_sg_table(raw_buf->fd, NULL,
-						&table, &size);
-			if (ret) {
-				if (i != 0)
-					break;
-
-				ret = -EFAULT;
-				pr_err("isp_ioctl: sprd_ion_get_sg_table fail\n");
-				return ret;
-			}
-
 			memset(&iommu_data, 0,
 				sizeof(struct sprd_iommu_map_data));
 			iommu_data.table = table;
@@ -2532,6 +2667,7 @@ static int32_t isp_set_raw(struct isp_pipe_dev *isp_pipeline,
 			iommu_data.iova_size = size;
 			ret = sprd_iommu_get_kaddr(&device->dev, &iommu_data);
 			if (ret) {
+				sprd_ion_put(held);
 				if (i != 0)
 					break;
 				ret = -EFAULT;
@@ -2543,10 +2679,11 @@ static int32_t isp_set_raw(struct isp_pipe_dev *isp_pipeline,
 			raw_buf->iova_size =
 				iommu_data.iova_size;
 		} else {
-			ret = sprd_ion_get_phys_addr(raw_buf->fd, NULL,
+			ret = sprd_ion_get_phys_addr(-1, held,
 					&raw_buf->iova_addr,
 					&raw_buf->iova_size);
 			if (ret) {
+				sprd_ion_put(held);
 				if (i != 0)
 					break;
 
@@ -2556,6 +2693,8 @@ static int32_t isp_set_raw(struct isp_pipe_dev *isp_pipeline,
 			}
 
 		}
+		/* the buffer stays programmed in the hardware: pin it */
+		isp_pin_dmabuf(isp_pipeline, held);
 
 		pr_info("raw10_iova_addr 0x%lx\n", raw_buf->iova_addr);
 		j++;
@@ -2745,6 +2884,7 @@ static long isp_ioctl(struct file *file, unsigned int cmd, unsigned long param)
 	struct isp_img_buf img_buf;
 	struct isp_cfg_img_buf cfg_img_buf;
 	struct sg_table *table;
+	struct dma_buf *held;
 	struct sprd_iommu_map_data iommu_data;
 	struct isp_group *group;
 	struct platform_device *device = NULL;
@@ -3187,9 +3327,9 @@ get_irq_end:
 		pr_info("sns_raw fd 0x%x yaddr 0x%lx yaddr_vir 0x%lx\n",
 				img_frm.img_y_fd, img_frm.yaddr,
 				img_frm.yaddr_vir);
-		ret = sprd_ion_get_sg_table(
+		ret = sprd_ion_get_sg_table_ref(
 			isp_pipeline->isp_src_sns_raw.img_y_fd,
-			NULL, &table, &size);
+			NULL, &table, &size, &held);
 		if (ret) {
 			ret = -EFAULT;
 			pr_err("isp_ioctl%d: sprd_ion_get_sg_table\n",
@@ -3206,6 +3346,7 @@ get_irq_end:
 			iommu_data.iova_size = size;
 			ret = sprd_iommu_get_kaddr(&device->dev, &iommu_data);
 			if (ret) {
+				sprd_ion_put(held);
 				ret = -EFAULT;
 				pr_err("isp_ioctl%d: fail to get user info\n",
 					isp_pipeline->isp_id);
@@ -3220,16 +3361,26 @@ get_irq_end:
 			isp_pipeline->isp_src_sns_raw.iova_y_size =
 				iommu_data.iova_size;
 		} else {
-			sprd_ion_get_phys_addr(
-				isp_pipeline->isp_src_sns_raw.img_y_fd, NULL,
+			ret = sprd_ion_get_phys_addr(-1, held,
 				&isp_pipeline->isp_src_sns_raw.iova_yaddr,
 				&isp_pipeline->isp_src_sns_raw.iova_y_size);
+			if (ret) {
+				sprd_ion_put(held);
+				ret = -EFAULT;
+				pr_err("isp_ioctl%d: fail to get phy addr\n",
+					isp_pipeline->isp_id);
+				mutex_unlock(&group->
+					     ioctl_mutex[isp_pipeline->isp_id]);
+				return ret;
+			}
 			pr_info("sns_raw_iova_base_addr 0x%lx offset 0x%lx\n",
 				isp_pipeline->isp_src_sns_raw.iova_yaddr,
 				isp_pipeline->isp_src_sns_raw.yaddr);
 			isp_pipeline->isp_src_sns_raw.iova_yaddr +=
 				isp_pipeline->isp_src_sns_raw.yaddr;
 		}
+		/* the buffer stays programmed in the hardware: pin it */
+		isp_pin_dmabuf(isp_pipeline, held);
 
 		pr_info("sns_raw_iova_addr 0x%lx\n",
 				isp_pipeline->isp_src_sns_raw.iova_yaddr);
@@ -3860,8 +4011,10 @@ static int isp_release(struct inode *node, struct file *file)
 			sizeof(struct isp2dcam_cfg_parm));
 		sprd_ion_client_put(cam_ion_client);
 		cam_ion_client = NULL;
-		dma_buf_put(dmabuf_p);
+		sprd_ion_put(dmabuf_p);
 		dmabuf_p = NULL;
+		/* the firmware is stopped: nothing uses the buffers anymore */
+		isp_unpin_all(group);
 	}
 	s_isp_pipeline[isp_pipeline->isp_id] = NULL;
 	group->ispif[isp_pipeline->isp_id] = NULL;
@@ -3931,6 +4084,8 @@ static int isp_probe(struct platform_device *pdev)
 	group = devm_kzalloc(&pdev->dev, sizeof(struct isp_group), GFP_KERNEL);
 	if (group == NULL)
 		return -ENOMEM;
+	INIT_LIST_HEAD(&group->pinned_dmabufs);
+	spin_lock_init(&group->pinned_lock);
 
 	isp_hwdev = devm_kzalloc(&pdev->dev, sizeof(*isp_hwdev), GFP_KERNEL);
 	if (!isp_hwdev)

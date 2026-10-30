@@ -34,6 +34,8 @@ struct cpp_iommu_info {
 	unsigned long iova[3];
 	struct dma_buf *dmabuf_p[3];
 	unsigned int offset[3];
+	/* set once the plane is mapped in the iommu, so only that is unmapped */
+	unsigned char mapped[3];
 };
 
 struct cpp_addr {
@@ -43,6 +45,8 @@ struct cpp_addr {
 
 int sprd_cpp_core_get_sg_table(
 	struct cpp_iommu_info *pfinfo);
+int sprd_cpp_core_check_extent(struct cpp_iommu_info *pfinfo, int i,
+		unsigned long long len);
 int sprd_cpp_core_get_addr(
 	struct cpp_iommu_info *pfinfo);
 int sprd_cpp_core_free_addr(

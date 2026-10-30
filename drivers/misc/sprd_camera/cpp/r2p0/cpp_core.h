@@ -32,6 +32,10 @@ struct cpp_iommu_info {
 	unsigned long iova[3];
 	struct dma_buf *dmabuf_p[3];
 	unsigned int offset[3];
+	/* set once the plane is mapped in the iommu, so only that is unmapped */
+	unsigned char mapped[3];
+	/* set when mapping a required buffer failed, checked before starting */
+	int err;
 };
 void cpp_print_reg(void *);
 int cpp_get_sg_table(struct cpp_iommu_info *pfinfo);

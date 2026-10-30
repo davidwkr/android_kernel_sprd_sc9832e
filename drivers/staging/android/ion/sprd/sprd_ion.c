@@ -160,6 +160,10 @@ int sprd_ion_is_reserved(int fd, struct dma_buf *dmabuf, bool *reserved)
 	return 0;
 }
 
+/*
+ * DEPRECATED: drops the fd's dma-buf reference before returning, so the
+ * result is only valid while another reference exists. Use the _ref variants.
+ */
 int sprd_ion_get_sg_table(int fd, struct dma_buf *dmabuf,
 			  struct sg_table **table, size_t *size)
 {
@@ -175,6 +179,7 @@ int sprd_ion_get_sg_table(int fd, struct dma_buf *dmabuf,
 	return 0;
 }
 
+/* DEPRECATED: see sprd_ion_get_sg_table(). */
 int sprd_ion_get_buffer(int fd, struct dma_buf *dmabuf,
 			void **buf, size_t *size)
 {
@@ -189,6 +194,142 @@ int sprd_ion_get_buffer(int fd, struct dma_buf *dmabuf,
 
 	return 0;
 }
+
+/*
+ * Reference-holding variants of sprd_ion_get_sg_table()/sprd_ion_get_buffer().
+ * When @fd is used, *@held receives the dma-buf reference that keeps the
+ * returned buffer alive; the caller must release it with sprd_ion_put()
+ * once it no longer uses the buffer/sg_table (including every error and
+ * teardown path). When a caller-supplied @dmabuf is used, *@held is NULL
+ * and the caller's own reference must outlive the use.
+ */
+int sprd_ion_get_sg_table_ref(int fd, struct dma_buf *dmabuf,
+			      struct sg_table **table, size_t *size,
+			      struct dma_buf **held)
+{
+	struct ion_buffer *buffer;
+
+	buffer = get_ion_buffer_ref(fd, dmabuf, held);
+	if (IS_ERR(buffer))
+		return PTR_ERR(buffer);
+
+	*table = buffer->sg_table;
+	*size = buffer->size;
+
+	return 0;
+}
+EXPORT_SYMBOL(sprd_ion_get_sg_table_ref);
+
+int sprd_ion_get_buffer_ref(int fd, struct dma_buf *dmabuf,
+			    void **buf, size_t *size,
+			    struct dma_buf **held)
+{
+	struct ion_buffer *buffer;
+
+	buffer = get_ion_buffer_ref(fd, dmabuf, held);
+	if (IS_ERR(buffer))
+		return PTR_ERR(buffer);
+
+	*buf = (void *)buffer;
+	*size = buffer->size;
+
+	return 0;
+}
+EXPORT_SYMBOL(sprd_ion_get_buffer_ref);
+
+/* Drop the reference returned in *held; NULL is allowed. */
+void sprd_ion_put(struct dma_buf *held)
+{
+	if (held)
+		dma_buf_put(held);
+}
+EXPORT_SYMBOL(sprd_ion_put);
+
+struct sprd_ion_pin {
+	struct list_head node;
+	struct dma_buf *dmabuf;
+	unsigned long iova;
+	size_t size;
+};
+
+void sprd_ion_pin_init(struct sprd_ion_pin_list *list, const char *name)
+{
+	list->name = name;
+	INIT_LIST_HEAD(&list->head);
+	spin_lock_init(&list->lock);
+	list->count = 0;
+}
+EXPORT_SYMBOL(sprd_ion_pin_init);
+
+/* On success the list owns the caller's reference @dmabuf. */
+int sprd_ion_pin_add(struct sprd_ion_pin_list *list, unsigned long iova,
+		     size_t size, struct dma_buf *dmabuf)
+{
+	struct sprd_ion_pin *pin;
+
+	pin = kzalloc(sizeof(*pin), GFP_KERNEL);
+	if (!pin)
+		return -ENOMEM;
+	pin->dmabuf = dmabuf;
+	pin->iova = iova;
+	pin->size = size;
+
+	spin_lock(&list->lock);
+	if (list->count >= SPRD_ION_PIN_MAX) {
+		spin_unlock(&list->lock);
+		pr_warn_ratelimited("%s: pinned dma-buf list full (%d), mapping refused; is free_iova paired with get_iova?\n",
+				    list->name ? list->name : "sprd_ion",
+				    SPRD_ION_PIN_MAX);
+		kfree(pin);
+		return -ENOSPC;
+	}
+	list_add_tail(&pin->node, &list->head);
+	list->count++;
+	spin_unlock(&list->lock);
+
+	return 0;
+}
+EXPORT_SYMBOL(sprd_ion_pin_add);
+
+void sprd_ion_pin_release(struct sprd_ion_pin_list *list, unsigned long iova,
+			  size_t size)
+{
+	struct sprd_ion_pin *pin, *found = NULL;
+
+	spin_lock(&list->lock);
+	list_for_each_entry(pin, &list->head, node) {
+		if (pin->iova == iova && pin->size == size) {
+			found = pin;
+			list_del(&pin->node);
+			list->count--;
+			break;
+		}
+	}
+	spin_unlock(&list->lock);
+
+	if (found) {
+		dma_buf_put(found->dmabuf);
+		kfree(found);
+	}
+}
+EXPORT_SYMBOL(sprd_ion_pin_release);
+
+void sprd_ion_pin_release_all(struct sprd_ion_pin_list *list)
+{
+	LIST_HEAD(release);
+	struct sprd_ion_pin *pin, *next;
+
+	spin_lock(&list->lock);
+	list_splice_init(&list->head, &release);
+	list->count = 0;
+	spin_unlock(&list->lock);
+
+	list_for_each_entry_safe(pin, next, &release, node) {
+		dma_buf_put(pin->dmabuf);
+		kfree(pin);
+	}
+}
+EXPORT_SYMBOL(sprd_ion_pin_release_all);
 
 int sprd_ion_get_sg(void *buf, struct sg_table **table)
 {

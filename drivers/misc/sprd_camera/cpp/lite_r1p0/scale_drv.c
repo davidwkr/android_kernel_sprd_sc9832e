@@ -147,7 +147,11 @@ static int scale_k_set_src_addr(struct scale_drv_private *p)
 		p->iommu_src.offset[0] = cfg_parm->input_addr.y;
 		p->iommu_src.offset[1] = cfg_parm->input_addr.u;
 		p->iommu_src.offset[2] = cfg_parm->input_addr.v;
-		cpp_get_addr(&p->iommu_src, SPRD_IOMMU_FM_CH_RW);
+		ret = cpp_get_addr(&p->iommu_src, SPRD_IOMMU_FM_CH_RW);
+		if (ret) {
+			pr_err("failed to get src addr %d", ret);
+			return ret;
+		}
 		CPP_LOG("scale set input y,u,v=(0x%lx,0x%lx,0x%lx)\n",
 			p->iommu_src.iova[0], p->iommu_src.iova[1],
 			p->iommu_src.iova[2]);
@@ -285,7 +289,11 @@ static int scale_k_set_dst_addr(struct scale_drv_private *p)
 		p->iommu_dst.offset[0] = cfg_parm->output_addr.y;
 		p->iommu_dst.offset[1] = cfg_parm->output_addr.u;
 		p->iommu_dst.offset[2] = cfg_parm->output_addr.v;
-		cpp_get_addr(&p->iommu_dst, SPRD_IOMMU_FM_CH_RW);
+		ret = cpp_get_addr(&p->iommu_dst, SPRD_IOMMU_FM_CH_RW);
+		if (ret) {
+			pr_err("failed to get dst addr %d", ret);
+			return ret;
+		}
 		CPP_LOG("scale set dst y,u,v=(0x%lx,0x%lx,0x%lx)\n",
 			p->iommu_dst.iova[0],
 			p->iommu_dst.iova[1],

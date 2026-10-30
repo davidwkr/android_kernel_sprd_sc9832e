@@ -141,6 +141,29 @@ int sprd_rot_drv_is_end(struct sprd_cpp_rot_cfg_parm *parm)
 	return ret;
 }
 
+/*
+ * Check that every plane the format uses is present and that the user
+ * offsets plus the rotated area stay inside the mapped buffers.
+ */
+static int rot_check_buffers(struct cpp_iommu_info *info,
+			     struct sprd_cpp_rot_cfg_parm *parm)
+{
+	unsigned long long area = (unsigned long long)parm->size.w *
+				  parm->size.h;
+	int ret;
+
+	if (parm->format == ROT_YUV422 || parm->format == ROT_YUV420) {
+		ret = sprd_cpp_core_check_extent(info, 0, area);
+		if (ret)
+			return ret;
+		/* the UV plane is rotated in a second pass */
+		return sprd_cpp_core_check_extent(info, 1,
+			       parm->format == ROT_YUV420 ? area / 2 : area);
+	}
+
+	return sprd_cpp_core_check_extent(info, 0, area * 4);
+}
+
 int sprd_rot_drv_y_parm_set(struct sprd_cpp_rot_cfg_parm *parm,
 			struct rot_drv_private *p)
 {
@@ -171,6 +194,11 @@ int sprd_rot_drv_y_parm_set(struct sprd_cpp_rot_cfg_parm *parm,
 		pr_err("fail to get src addr\n");
 		return -EFAULT;
 	}
+	ret = rot_check_buffers(&p->iommu_src, parm);
+	if (ret) {
+		pr_err("invalid src buffer\n");
+		return ret;
+	}
 
 	ret = sprd_cpp_core_get_sg_table(&p->iommu_dst);
 	if (ret) {
@@ -185,6 +213,12 @@ int sprd_rot_drv_y_parm_set(struct sprd_cpp_rot_cfg_parm *parm,
 		pr_err("fail to get src addr\n");
 		sprd_cpp_core_free_addr(&p->iommu_src);
 		return -EFAULT;
+	}
+	ret = rot_check_buffers(&p->iommu_dst, parm);
+	if (ret) {
+		pr_err("invalid dst buffer\n");
+		sprd_cpp_core_free_addr(&p->iommu_src);
+		return ret;
 	}
 
 	p->rot_fmt = sprd_rotdrv_rot_format_get(parm);

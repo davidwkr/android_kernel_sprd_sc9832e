@@ -362,16 +362,18 @@ long compat_jpg_ioctl(struct file *filp, unsigned int cmd,
 }
 #endif
 int jpg_get_iova(struct jpg_dev_t *jpg_hw_dev,
-		 struct jpg_iommu_map_data *mapdata, void __user *arg)
+		 struct jpg_iommu_map_data *mapdata, void __user *arg,
+		 struct sprd_ion_pin_list *pins)
 {
 	int ret = 0;
 	/*struct jpg_iommu_map_data mapdata; */
 	struct sprd_iommu_map_data iommu_map_data;
+	struct dma_buf *held;
 
 	if (sprd_iommu_attach_device(jpg_hw_dev->jpg_dev) == 0) {
-		ret = sprd_ion_get_buffer(mapdata->fd, NULL,
+		ret = sprd_ion_get_buffer_ref(mapdata->fd, NULL,
 					    &(iommu_map_data.buf),
-					    &iommu_map_data.iova_size);
+					    &iommu_map_data.iova_size, &held);
 		if (ret) {
 			pr_err("get_sg_table failed, ret %d\n", ret);
 			return ret;
@@ -380,6 +382,22 @@ int jpg_get_iova(struct jpg_dev_t *jpg_hw_dev,
 		iommu_map_data.ch_type = SPRD_IOMMU_FM_CH_RW;
 		ret =
 		    sprd_iommu_map(jpg_hw_dev->jpg_dev, &iommu_map_data);
+		if (ret) {
+			sprd_ion_put(held);
+		} else if (sprd_ion_pin_add(pins, iommu_map_data.iova_addr,
+					    iommu_map_data.iova_size, held)) {
+			/* keep the buffer alive while mapped, or do not map */
+			struct sprd_iommu_unmap_data undo = {
+				.iova_addr = iommu_map_data.iova_addr,
+				.iova_size = iommu_map_data.iova_size,
+				.ch_type = SPRD_IOMMU_FM_CH_RW,
+				.buf = NULL,
+			};
+
+			sprd_iommu_unmap(jpg_hw_dev->jpg_dev, &undo);
+			sprd_ion_put(held);
+			ret = -ENOMEM;
+		}
 		if (!ret) {
 			mapdata->iova_addr = iommu_map_data.iova_addr;
 			mapdata->size = iommu_map_data.iova_size;
@@ -397,13 +415,29 @@ int jpg_get_iova(struct jpg_dev_t *jpg_hw_dev,
 			pr_err("map size 0x%zx\n", iommu_map_data.iova_size);
 		}
 	} else {
+		ret = sprd_ion_get_buffer_ref(mapdata->fd, NULL,
+					      &(iommu_map_data.buf),
+					      &iommu_map_data.iova_size,
+					      &held);
+		if (ret) {
+			pr_err("get buffer failed, ret %d\n", ret);
+			return ret;
+		}
 		ret =
-		    sprd_ion_get_phys_addr(mapdata->fd, NULL,
+		    sprd_ion_get_phys_addr(-1, held,
 					   &mapdata->iova_addr, &mapdata->size);
 		if (ret) {
 			pr_err
 			    ("jpg sprd_ion_get_phys_addr failed, ret %d\n",
 			     ret);
+			sprd_ion_put(held);
+			return ret;
+		}
+		/* the hardware uses the physical address: keep the buffer */
+		ret = sprd_ion_pin_add(pins, mapdata->iova_addr, mapdata->size,
+				       held);
+		if (ret) {
+			sprd_ion_put(held);
 			return ret;
 		}
 
@@ -420,7 +454,8 @@ int jpg_get_iova(struct jpg_dev_t *jpg_hw_dev,
 }
 
 int jpg_free_iova(struct jpg_dev_t *jpg_hw_dev,
-		  struct jpg_iommu_map_data *ummapdata)
+		  struct jpg_iommu_map_data *ummapdata,
+		  struct sprd_ion_pin_list *pins)
 {
 
 	int ret = 0;
@@ -441,6 +476,10 @@ int jpg_free_iova(struct jpg_dev_t *jpg_hw_dev,
 			       ummapdata->iova_addr, ummapdata->size);
 		}
 	}
+
+	if (!ret)
+		sprd_ion_pin_release(pins, ummapdata->iova_addr,
+				     ummapdata->size);
 
 	return ret;
 }
@@ -869,7 +908,8 @@ long jpg_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			return -EFAULT;
 		}
 
-		ret = jpg_get_iova(jpg_hw_dev, &mapdata, (void __user *)arg);
+		ret = jpg_get_iova(jpg_hw_dev, &mapdata, (void __user *)arg,
+				   &jpg_fp->pins);
 		pr_info("JPG_GET_IOVA end\n");
 		break;
 
@@ -884,7 +924,7 @@ long jpg_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			return -EFAULT;
 		}
 
-		ret = jpg_free_iova(jpg_hw_dev, &ummapdata);
+		ret = jpg_free_iova(jpg_hw_dev, &ummapdata, &jpg_fp->pins);
 		pr_info("JPG_FREE_IOVA end\n");
 		break;
 

@@ -36,6 +36,7 @@ int cambuf_get_ionbuf(struct camera_buf *buf_info)
 	int i;
 	int ret = 0;
 	void *ionbuf[3];
+	struct dma_buf *held;
 
 	if (!buf_info) {
 		pr_err("error: input ptr is NULL\n");
@@ -52,43 +53,42 @@ int cambuf_get_ionbuf(struct camera_buf *buf_info)
 			continue;
 
 		pr_debug("user buf:  %d,  %d\n", i, buf_info->mfd[i]);
-		ret = sprd_ion_get_buffer(buf_info->mfd[i],
+		/*
+		* Look the buffer up once and keep that dma-buf reference to
+		* avoid the ion buf being freed while hardware accesses it
+		* (e.g. when the application exits exceptionally); the
+		* reference also pins the ion buffer behind ionbuf[].
+		* It is the one dropped by cambuf_put_ionbuf() and must be put
+		* before returning to user space, or else ion memory leaks.
+		*/
+		ret = sprd_ion_get_buffer_ref(buf_info->mfd[i],
 				NULL,
 				&ionbuf[i],
-				&buf_info->size[i]);
+				&buf_info->size[i],
+				&held);
 		if (ret) {
 			pr_err("failed to get ionbuf for user buffer %d\n",
 					buf_info->mfd[i]);
 			goto failed;
 		}
-		buf_info->ionbuf[i] = ionbuf[i];
-		pr_debug("size %d, ionbuf %p\n",
-			(int)buf_info->size[i], ionbuf[i]);
 
-		/*
-		* get dambuf to avoid ion buf is freed during hardware access it.
-		* In fact, this situation will happen when application exit
-		* exceptionally and for user buffer only.
-		* Just get dmabuf when hardware ready to access it
-		* for user buffer can avoid previous situation.
-		* We get dmabuf here because if the buffer is passed to kernel,
-		* there is potential hardware access.
-		* And it must be put before return to user space,
-		* or else it may cause ion memory leak.
-		*/
 		if (buf_info->dmabuf_p[i] == NULL) {
-			buf_info->dmabuf_p[i] =
-					dma_buf_get(buf_info->mfd[i]);
-			if (IS_ERR_OR_NULL(buf_info->dmabuf_p[i])) {
-				pr_err("failed to get dma buf %p\n",
-						buf_info->dmabuf_p[i]);
-				goto failed;
-			}
+			buf_info->dmabuf_p[i] = held;
 			if (g_mem_dbg)
 				atomic_inc(&g_mem_dbg->ion_dma_cnt);
 			pr_debug("dmabuf %p\n", buf_info->dmabuf_p[i]);
+		} else if (buf_info->dmabuf_p[i] != held) {
+			/* fd now refers to another buffer than the held one */
+			sprd_ion_put(held);
+			ret = -EINVAL;
+			goto failed;
+		} else {
+			/* already held from a previous call */
+			sprd_ion_put(held);
 		}
-
+		buf_info->ionbuf[i] = ionbuf[i];
+		pr_debug("size %d, ionbuf %p\n",
+			(int)buf_info->size[i], ionbuf[i]);
 	}
 	return 0;
 

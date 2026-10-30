@@ -109,7 +109,7 @@ static int sprd_dmadrv_parm_check(struct sprd_cpp_dma_cfg_parm *parm)
 		return -EINVAL;
 	}
 
-	if (parm->total_num % 8 != 0) {
+	if (parm->total_num % 8 != 0 || parm->total_num > 0xfffff) {
 		pr_err("fail to get align total num:%d\n",
 			parm->total_num);
 		return -EINVAL;
@@ -148,6 +148,11 @@ static int sprd_dmadrv_parm_cfg(
 		pr_err("fail to get src addr\n");
 		return -EFAULT;
 	}
+	ret = sprd_cpp_core_check_extent(&p->iommu_src, 0, parm->total_num);
+	if (ret) {
+		pr_err("invalid dma src buffer\n");
+		return ret;
+	}
 	p->dma_src_addr = p->iommu_src.iova[0];
 
 	ret = sprd_cpp_core_get_sg_table(&p->iommu_dst);
@@ -163,6 +168,12 @@ static int sprd_dmadrv_parm_cfg(
 		sprd_cpp_core_free_addr(&p->iommu_src);
 		pr_err("fail to get src addr\n");
 		return -EFAULT;
+	}
+	ret = sprd_cpp_core_check_extent(&p->iommu_dst, 0, parm->total_num);
+	if (ret) {
+		pr_err("invalid dma dst buffer\n");
+		sprd_cpp_core_free_addr(&p->iommu_src);
+		return ret;
 	}
 	p->dma_dst_addr = p->iommu_dst.iova[0];
 

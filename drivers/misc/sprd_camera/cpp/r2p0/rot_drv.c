@@ -213,6 +213,11 @@ void cpp_rot_set_uv_parm(struct rot_drv_private *p)
 
 void cpp_rot_start(struct rot_drv_private *p)
 {
+	if (p->iommu_src.err || p->iommu_dst.err) {
+		pr_err("invalid buffer address, not starting\n");
+		return;
+	}
+
 	reg_awr(p, CPP_PATH_START, (~CPP_ROT_START_BIT));
 
 	/* set src addr */

@@ -298,6 +298,57 @@ static void scale_isr(void *priv)
 	complete(&scif->done_com);
 }
 
+/*
+ * Release the dma-buf reference of slot @i and forget everything derived
+ * from it (ion buffer/sg table, size, iova), so a later map cannot reuse a
+ * pointer whose reference is gone.
+ */
+static void cpp_clear_slot(struct cpp_iommu_info *pfinfo, int i)
+{
+	pfinfo->mapped[i] = 0;
+	sprd_ion_put(pfinfo->dmabuf_p[i]);
+	pfinfo->dmabuf_p[i] = NULL;
+	pfinfo->table[i] = NULL;
+	pfinfo->buf[i] = NULL;
+	pfinfo->size[i] = 0;
+	pfinfo->iova[i] = 0;
+}
+
+/*
+ * References are taken by the get_sg_table helper and held until free_addr
+ * (or until the next get_sg_table on the same pfinfo).
+ */
+static void cpp_clear_slots(struct cpp_iommu_info *pfinfo)
+{
+	int i;
+
+	if (!pfinfo)
+		return;
+
+	for (i = 0; i < 3; i++)
+		cpp_clear_slot(pfinfo, i);
+}
+
+/*
+ * Unmapping failed: the mapping may still be live, so the buffer must not
+ * be freed under it. Forget the slots from @from on WITHOUT dropping their
+ * dma-buf reference (deliberate leak), so a later get_sg_table cannot
+ * release them.
+ */
+static void cpp_abandon_slots(struct cpp_iommu_info *pfinfo, int from)
+{
+	int i;
+
+	for (i = from; i < 3; i++) {
+		pfinfo->mapped[i] = 0;
+		pfinfo->dmabuf_p[i] = NULL;
+		pfinfo->table[i] = NULL;
+		pfinfo->buf[i] = NULL;
+		pfinfo->size[i] = 0;
+		pfinfo->iova[i] = 0;
+	}
+}
+
 int cpp_get_sg_table(struct cpp_iommu_info *pfinfo)
 {
 	int i = 0, ret = 0;
@@ -307,14 +358,18 @@ int cpp_get_sg_table(struct cpp_iommu_info *pfinfo)
 		return -EINVAL;
 	}
 
+	cpp_clear_slots(pfinfo);
+
 	for (i = 0; i < 2; i++) {
 		if (pfinfo->mfd[i] > 0) {
-			ret = sprd_ion_get_buffer(pfinfo->mfd[i],
+			ret = sprd_ion_get_buffer_ref(pfinfo->mfd[i],
 				NULL,
 				&pfinfo->buf[i],
-				&pfinfo->size[i]);
+				&pfinfo->size[i],
+				&pfinfo->dmabuf_p[i]);
 			if (ret) {
 				pr_err("fail to get sg table\n");
+				cpp_clear_slots(pfinfo);
 				return -EFAULT;
 			}
 		}
@@ -333,8 +388,20 @@ int cpp_get_addr(struct cpp_iommu_info *pfinfo)
 	}
 
 	for (i = 0; i < 2; i++) {
-		if (pfinfo->size[i] <= 0)
+		if (pfinfo->size[i] <= 0) {
+			/* the first plane is always required */
+			if (i == 0) {
+				pr_err("no buffer for plane 0\n");
+				return -EINVAL;
+			}
 			continue;
+		}
+
+		if (pfinfo->offset[i] >= pfinfo->size[i]) {
+			pr_err("offset 0x%x outside buffer 0x%zx plane %d\n",
+			       pfinfo->offset[i], pfinfo->size[i], i);
+			return -EINVAL;
+		}
 
 		if (sprd_iommu_attach_device(pfinfo->dev) == 0) {
 			memset(&iommu_data, 0,
@@ -349,11 +416,13 @@ int cpp_get_addr(struct cpp_iommu_info *pfinfo)
 				pr_err("fail to get iommu kaddr %d\n", i);
 				return -EFAULT;
 			}
+
+			pfinfo->mapped[i] = 1;
 			pfinfo->iova[i] = iommu_data.iova_addr
 					+ pfinfo->offset[i];
 		} else {
-			ret = sprd_ion_get_phys_addr(pfinfo->mfd[i],
-					NULL,
+			ret = sprd_ion_get_phys_addr(-1,
+					pfinfo->dmabuf_p[i],
 					&pfinfo->iova[i],
 					&pfinfo->size[i]);
 			if (ret) {
@@ -363,10 +432,20 @@ int cpp_get_addr(struct cpp_iommu_info *pfinfo)
 			pfinfo->iova[i] += pfinfo->offset[i];
 		}
 	}
+
+	/* the address registers are 32 bit wide */
+	for (i = 0; i < 2; i++) {
+		if (pfinfo->iova[i] > 0xffffffffUL) {
+			pr_err("iova 0x%lx does not fit the 32 bit register\n",
+			       pfinfo->iova[i]);
+			return -EINVAL;
+		}
+	}
+
 	return ret;
 }
 
-int cpp_free_addr(struct cpp_iommu_info *pfinfo)
+static int cpp_free_addr_unmap(struct cpp_iommu_info *pfinfo)
 {
 	int i, ret;
 	struct sprd_iommu_unmap_data iommu_data;
@@ -380,7 +459,8 @@ int cpp_free_addr(struct cpp_iommu_info *pfinfo)
 		if (pfinfo->size[i] <= 0)
 			continue;
 
-		if (sprd_iommu_attach_device(pfinfo->dev) == 0) {
+		if (pfinfo->mapped[i] &&
+		    sprd_iommu_attach_device(pfinfo->dev) == 0) {
 			iommu_data.iova_addr = pfinfo->iova[i]
 						- pfinfo->offset[i];
 			iommu_data.iova_size = pfinfo->size[i];
@@ -390,12 +470,27 @@ int cpp_free_addr(struct cpp_iommu_info *pfinfo)
 			ret = sprd_iommu_unmap(pfinfo->dev, &iommu_data);
 			if (ret) {
 				pr_err("failed to free iommu %d\n", i);
+				cpp_abandon_slots(pfinfo, i);
 				return -EFAULT;
 			}
 		}
+
+		/* unmapped (or nothing to unmap): drop this slot's reference */
+		cpp_clear_slot(pfinfo, i);
 	}
 
 	return 0;
+}
+
+int cpp_free_addr(struct cpp_iommu_info *pfinfo)
+{
+	int ret = cpp_free_addr_unmap(pfinfo);
+
+	/* on failure the slots whose unmap failed keep their reference */
+	if (!ret)
+		cpp_clear_slots(pfinfo);
+
+	return ret;
 }
 
 static long sprd_cpp_ioctl(struct file *file, unsigned int cmd,
