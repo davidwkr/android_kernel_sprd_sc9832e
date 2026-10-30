@@ -419,12 +419,19 @@ static ssize_t cproc_proc_read(struct file *filp,
 		while (s_cur_info) {
 			if (!count)
 				break;
-			len = sprintf(head,
-				      "%s_%s_0x%8x_0x%x.bin",
-				      s_cur_info->parent_name,
-				      s_cur_info->name,
-				      s_cur_info->start_addr,
-				      s_cur_info->size);
+			/*
+			 * Names live in modem-shared memory and may be
+			 * unterminated: bound the string reads and the
+			 * returned length to the stack buffer.
+			 */
+			len = scnprintf(head, sizeof(head),
+					"%.*s_%.*s_0x%8x_0x%x.bin",
+					(int)sizeof(s_cur_info->parent_name),
+					s_cur_info->parent_name,
+					(int)sizeof(s_cur_info->name),
+					s_cur_info->name,
+					s_cur_info->start_addr,
+					s_cur_info->size);
 
 			if (*ppos > len) {
 				offset = *ppos - len;
@@ -665,23 +672,27 @@ static loff_t cproc_proc_lseek(struct file *filp, loff_t off, int whence)
 	switch (whence) {
 	case SEEK_SET:
 		new = off;
-		filp->f_pos = new;
 		break;
 	case SEEK_CUR:
 		new = filp->f_pos + off;
-		filp->f_pos = new;
 		break;
 	case SEEK_END:
-		if (strcmp(type, "mem") == 0) {
+		if (strcmp(type, "mem") == 0)
 			new = cproc->initdata->maxsz + off;
-			filp->f_pos = new;
-		} else {
+		else
 			return -EINVAL;
-		}
 		break;
 	default:
 		return -EINVAL;
 	}
+
+	/*
+	 * A negative position would be added to the shared-memory base by
+	 * the read path and map physical memory below the modem region.
+	 */
+	if (new < 0)
+		return -EINVAL;
+	filp->f_pos = new;
 	return new;
 }
 
