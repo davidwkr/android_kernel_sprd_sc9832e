@@ -1,6 +1,9 @@
 # Hardening fragment for the UNISOC SL8541E watches (DW100Ultra, DM63).
 # Linux 4.4.302, arm64, 4x Cortex-A53, Android 8.1 userspace.
 #
+# NOTE: every external/ramdisk .ko (mali, sprdwl_ng, sprdbt_tty, sprd_fm) must be built against
+# the O= output of the same fragment set (MODVERSIONS, _mcount, SW PAN uaccess): do not mix.
+#
 # Apply on top of the full watch config (keeps debug features for development):
 #   scripts/kconfig/merge_config.sh -m -O $O $O/.config arch/arm64/configs/watch_hardening.fragment
 #   make ARCH=arm64 O=$O olddefconfig
@@ -16,7 +19,7 @@ CONFIG_HARDENED_USERCOPY=y
 CONFIG_CC_STACKPROTECTOR_STRONG=y
 # Kernel text/rodata read-only, data/stack non-executable (arm64 "strict RWX").
 CONFIG_DEBUG_RODATA=y
-# Same for module text/rodata (vendor modules are built from this tree, no conflict).
+# Same for module text/rodata. All .ko (incl. ramdisk ones) must be built against this O= output.
 CONFIG_DEBUG_SET_MODULE_RONX=y
 # Software PAN: kernel cannot dereference user pointers outside uaccess helpers
 # (A53 = ARMv8.0, no hardware PAN). Blocks ret2usr / NULL-deref style exploits. Small uaccess cost.
@@ -55,16 +58,12 @@ CONFIG_SECCOMP_FILTER=y
 CONFIG_BPF_JIT=y
 CONFIG_BPF_JIT_ALWAYS_ON=y
 
-# --- Deliberately NOT enabled (see SECURITY_BACKPORTS.md section 6) ----------
+# --- Deliberately left to the defconfig ---------------------------------------
 
-# KASLR: the vendor U-Boot passes no /chosen/kaslr-seed (none in stock.dts), so it would not
-# randomize anything. It also forces KPTI on for every CPU (see cpufeature.c), which costs
-# performance and battery on an A53 that is not Meltdown-affected, and makes the Image
-# PIE/relocatable. Off until a seed exists.
-# CONFIG_RANDOMIZE_BASE is not set
-# CONFIG_RANDOMIZE_MODULE_REGION_FULL is not set
-# Cortex-A53 is not affected by Meltdown. Without KASLR the runtime detection never enables it.
-# CONFIG_UNMAP_KERNEL_AT_EL0 is not set
-# Out-of-tree modules are loaded from the unsigned ramdisk and Wi-Fi HAL; signing would need a
-# key management process and gives little with an unlocked bootloader.
+# RANDOMIZE_BASE (KASLR) and UNMAP_KERNEL_AT_EL0 (KPTI) are not set here: sprd_sharkle_defconfig
+# has both =y and android-base.config requires RANDOMIZE_BASE=y. KASLR forces KPTI on in this
+# tree (cpufeature.c), which costs battery on the A53 (not Meltdown-affected); whether the
+# bootloader passes a /chosen/kaslr-seed is an open item (SECURITY_BACKPORTS.md section 6).
+# MODULE_SIG stays off: modules are loaded from an unsigned ramdisk and by the Wi-Fi HAL, on an
+# unlocked bootloader.
 # CONFIG_MODULE_SIG is not set
