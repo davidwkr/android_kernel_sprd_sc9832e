@@ -612,7 +612,7 @@ static void gr_step(void)
 		return;
 	}
 	soc = sprdfgu_ocv_to_capacity(ocv, &full);	/* 0.1 % */
-	raw = soc < 0 ? -1 : sprdfgu_read_soc();	/* gauge SOC, 0.1 % */
+	raw = soc < 0 ? -1 : sprdfgu_read_soc();	/* gauge SOC, 0.1 %; not a pure read, see sprdfgu_read_soc() */
 	gr_cap = raw;
 	if (soc < 0 || raw < 0 || gr_ui_cap < 0) {
 		gr_idle("gauge_unsupported");
