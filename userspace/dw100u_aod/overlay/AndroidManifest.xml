@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.dw100u.overlay.aodsleep">
+    <!-- Android 8.1: static overlay, applied at boot from /vendor/overlay.
+         No "cmd overlay enable" needed; priority orders it against others. -->
+    <overlay
+        android:targetPackage="android"
+        android:priority="10"
+        android:isStatic="true" />
+</manifest>

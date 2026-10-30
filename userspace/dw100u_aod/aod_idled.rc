@@ -1,0 +1,25 @@
+# /system/etc/init/aod_idled.rc  (init.rc syntax of Android 8.1)
+# Needs sprd_aod_idle built in (=y). For =m, load it before this service:
+#   insmod /vendor/lib/modules/sprd_aod_idle.ko   (see README)
+
+on boot
+    # root-only sysfs nodes: hand the two we write to the service user
+    chown system system /sys/kernel/aod_idle/idle
+    chown system system /sys/kernel/aod_idle/idle_brightness
+    chmod 0664 /sys/kernel/aod_idle/idle
+    chmod 0664 /sys/kernel/aod_idle/idle_brightness
+
+# dumpsys and logd need the framework up
+on property:sys.boot_completed=1
+    start aod_idled
+
+service aod_idled /system/bin/sh /system/bin/aod_idled.sh
+    class late_start
+    disabled
+    user system
+    group system log
+    # SELinux (8.1, enforcing): without "seclabel" the service stays in the
+    # init domain, which needs no new policy but is far too privileged.
+    # Preferred: build a domain (see README) and add
+    #   seclabel u:r:aod_idled:s0
+    # We cannot see how wearit_aod was labelled and did not copy it.

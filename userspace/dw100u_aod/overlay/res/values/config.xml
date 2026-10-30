@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- let the CPU suspend while the display stays on in doze (AOD) -->
+    <bool name="config_powerDecoupleAutoSuspendModeFromDisplay">true</bool>
+</resources>
