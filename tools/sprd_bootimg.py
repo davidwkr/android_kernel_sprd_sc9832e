@@ -412,9 +412,50 @@ def cmd_unpack(a):
 
 # ----------------------------------------------------------------- pack ---
 
+HDR_INT = ('kernel_size', 'kernel_addr', 'ramdisk_size', 'ramdisk_addr',
+           'second_size', 'second_addr', 'tags_addr', 'page_size', 'dt_size',
+           'os_version', 'image_size', 'image_end')
+HDR_STR = ('name', 'cmdline', 'extra_cmdline', 'id_recipe')
+AVB_INT = ('major', 'minor', 'vbmeta_offset', 'vbmeta_size',
+           'original_image_size')
+
+
+def check_header(h, d):
+    """Refuse an incomplete or inconsistent header.json instead of
+    filling in defaults (a silent default changes the image)."""
+    if not isinstance(h, dict):
+        raise Error('header.json: not an object')
+    for k in HDR_INT:
+        if not isinstance(h.get(k), int) or isinstance(h.get(k), bool):
+            raise Error('header.json: missing or bad %s' % k)
+    for k in HDR_STR:
+        if not isinstance(h.get(k), str):
+            raise Error('header.json: missing or bad %s' % k)
+    if 'extra_offset' in h and not isinstance(h['extra_offset'], int):
+        raise Error('header.json: bad extra_offset')
+    vb = os.path.exists(os.path.join(d, FILES['vbmeta']))
+    avb = h.get('avb')
+    if avb is None:
+        if vb:
+            raise Error('header.json has no avb section but %s exists; '
+                        'unpack again' % FILES['vbmeta'])
+        return
+    if not isinstance(avb, dict):
+        raise Error('header.json: bad avb section')
+    for k in AVB_INT:
+        if not isinstance(avb.get(k), int):
+            raise Error('header.json: missing or bad avb.%s' % k)
+    if not isinstance(avb.get('footer_tail'), str):
+        raise Error('header.json: missing avb.footer_tail')
+    if not vb:
+        raise Error('header.json has an avb section but %s is missing; '
+                    'unpack again' % FILES['vbmeta'])
+
+
 def cmd_pack(a):
     with open(os.path.join(a.dir, 'header.json')) as f:
         h = json.load(f)
+    check_header(h, a.dir)
 
     def part(key, override):
         p = override or os.path.join(a.dir, FILES[key])
@@ -422,7 +463,7 @@ def cmd_pack(a):
             return read_file(p)
         if override:
             raise Error('missing file %s' % p)
-        saved = h.get('dt_size' if key == 'dt' else key + '_size', 0)
+        saved = h['dt_size' if key == 'dt' else key + '_size']
         if saved:
             raise Error('missing %s (header.json says %d bytes); unpack again '
                         'or pass it explicitly' % (p, saved))
@@ -501,7 +542,7 @@ def cmd_pack(a):
             raise Error('no room for the AVB vbmeta blob')
         out[voff:voff + len(vb)] = vb
         out[-64:] = AVB_FOOTER.pack(
-            AVB_FOOTER_MAGIC, avb.get('major', 1), avb.get('minor', 0), end, voff,
+            AVB_FOOTER_MAGIC, avb['major'], avb['minor'], end, voff,
             len(vb),
             bytes.fromhex(avb['footer_tail'])[:28])
         st, d, note = avb_hash_state(vb, out, end)
@@ -549,7 +590,8 @@ def main():
     a = ap.parse_args()
     try:
         return a.fn(a)
-    except (Error, OSError, struct.error, ValueError, UnicodeError) as e:
+    except (Error, OSError, struct.error, ValueError, UnicodeError,
+            KeyError, TypeError) as e:
         print('error: %s' % e, file=sys.stderr)
         return 1
 
