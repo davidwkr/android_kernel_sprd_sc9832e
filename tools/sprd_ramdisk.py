@@ -675,70 +675,23 @@ def cmd_replace(a):
     return 0
 
 
-def rc_statements(data):
-    """Token lists of the logical lines of an init .rc file, tokenised like
-    Android 8.1 init: blanks separate tokens, double quotes group, '#' at
-    the start of a token ends the line, backslash-newline joins lines."""
-    res, tok, cur = [], None, []
-    quote = False
-    i, n = 0, len(data)
-
-    def end_tok():
-        nonlocal tok
-        if tok is not None:
-            cur.append(bytes(tok))
-            tok = None
-
-    while i < n:
-        c = data[i:i + 1]
-        if c == b'\\' and data[i + 1:i + 2] == b'\n':
-            end_tok() if not quote else None
-            i += 2
-            if quote:
-                tok.extend(b' ')
-            continue
-        if c == b'\\' and data[i + 1:i + 2] in (b'"', b'\\', b'n', b't', b'r'):
-            if tok is None:
-                tok = bytearray()
-            tok.extend({b'n': b'\n', b't': b'\t', b'r': b'\r'}.get(
-                data[i + 1:i + 2], data[i + 1:i + 2]))
-            i += 2
-            continue
-        if c == b'\n':
-            end_tok()
-            quote = False
-            if cur:
-                res.append(cur)
-            cur = []
-        elif quote:
-            if c == b'"':
-                quote = False
-            else:
-                tok.extend(c)
-        elif c in (b' ', b'\t', b'\r'):
-            end_tok()
-        elif c == b'#' and tok is None:
-            j = data.find(b'\n', i)
-            i = n if j < 0 else j
-            continue
-        elif c == b'"':
-            quote = True
-            if tok is None:
-                tok = bytearray()
-        else:
-            if tok is None:
-                tok = bytearray()
-            tok.extend(c)
-        i += 1
-    end_tok()
-    if cur:
-        res.append(cur)
-    return res
-
-
-def imports_fragment(data):
-    return any(len(t) == 2 and t[0] == b'import' and
-               t[1] == b'/' + FRAGMENT.encode() for t in rc_statements(data))
+def import_state(data):
+    """True if /init.rc holds exactly one canonical import line of the
+    fragment, False if it never mentions it; anything else is ambiguous
+    (this does not try to tokenise like init)."""
+    key = b'watch_tweaks'
+    joined = re.sub(rb'[\s\\"]', b'', data)
+    n = data.count(key)
+    if n == 0 and joined.count(key) == 0:
+        return False
+    lines = data.split(b'\n')
+    canon = b'import /' + FRAGMENT.encode()
+    ok = [i for i, l in enumerate(lines)
+          if l == canon and (i == 0 or not lines[i - 1].endswith(b'\\'))]
+    if n == 1 and joined.count(key) == 1 and len(ok) == 1:
+        return True
+    raise Error('ambiguous existing reference to %s, fix init.rc by hand' %
+                FRAGMENT)
 
 
 def read_fragment(path):
@@ -783,7 +736,7 @@ def cmd_add_rc(a):
         raise Error('/init.rc over 1 MiB; refusing')
     rcdata = p.cpio[rc.data_off:rc.data_off + rc.f['filesize']]
     have = [e for e in entries if norm(e.name) == FRAGMENT]
-    imported = imports_fragment(rcdata)
+    imported = import_state(rcdata)
     if have:
         x = have[0]
         same = is_reg(x) and \
