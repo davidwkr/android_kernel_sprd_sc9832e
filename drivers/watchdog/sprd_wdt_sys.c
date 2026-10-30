@@ -118,14 +118,14 @@ static int pmic_timeout = 15;
 static int feed_period = 3;
 static int wdt_dt_support = 1;
 static unsigned long enabled = 1;
-module_param(irq_timeout, int, S_IWUSR | S_IRUGO);
+module_param(irq_timeout, int, S_IRUGO);
 MODULE_PARM_DESC(irq_timeout,
 		 "SPRD Watchdog IRQ timeout in seconds (default 9s)");
-module_param(reset_timeout, int, S_IWUSR | S_IRUGO);
+module_param(reset_timeout, int, S_IRUGO);
 MODULE_PARM_DESC(reset_timeout,
 		 "SPRD Watchdog reset timeout in seconds (default 10s)");
 MODULE_PARM_DESC(feed_period, "Watchdog feed period in seconds (default 3s)");
-module_param(pmic_timeout, int, S_IWUSR | S_IRUGO);
+module_param(pmic_timeout, int, S_IRUGO);
 MODULE_PARM_DESC(pmic_timeout, "Chip Watchdog margin in seconds (default 15s)");
 
 #if 0
@@ -398,7 +398,7 @@ int param_set_enabled(const char *val, struct kernel_param *kp)
 	return ret;
 }
 
-module_param_call(enabled, param_set_enabled, param_get_ulong, &enabled, 0664);
+module_param_call(enabled, param_set_enabled, param_get_ulong, &enabled, 0644);
 MODULE_PARM_DESC(enabled, "Enable kernel watchdog task to feed dog");
 
 static char cmd_buf[64];
