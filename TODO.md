@@ -106,7 +106,7 @@ Present in this tree and used: ADF display (`drivers/video/adf/sprd`, matches st
 
 - [ ] Use each device's own DTB from its stock boot image (silver, V13M, DM63), not this tree's `sp9832e-1h10-*.dts`, for the first boot. That keeps panel timing, pinmux, battery and keys unchanged.
 - [ ] Decompile each DTB and compare it with `sp9832e-1h10-native.dts` / `sc9832e.dtsi` for bindings that changed between the 4.4.83 BSP and 4.4.147 (display, WCN, GNSS, charger, thermal). Fix the device DTS where a driver expects a different binding.
-- [ ] Later: commit proper `sp9832e-1h10-dw100u-silver.dts`, `...-dw100u-v13m.dts`, `...-dm63.dts` into `arch/arm64/boot/dts/sprd/`.
+- [x] Done: `sp9832e-1h10-{dw100u-silver,dw100u-v13m,dm63,mt107,mt108,dm82}.dts` are in `arch/arm64/boot/dts/sprd/` (labelled copies of the stock DTs, built by `make dtbs`, byte-identical to the stock DTBs when compiled with the tree's dtc; see `devices/README.md`, `tools/dtcompare.py`). The first boot still uses the stock DT table from the boot image; the next step is the binding comparison in the item above.
 
 ### 4. Missing drivers
 
