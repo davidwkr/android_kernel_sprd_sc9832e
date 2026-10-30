@@ -22,14 +22,15 @@ JOBS=${JOBS:-$(nproc)}
 export ARCH CROSS_COMPILE
 
 case $DEVICE in
-  dm63)                      DEVFRAGS="dm63_touch watch_hrs dm63_aod" ;;
-  dw100u-silver|dw100u-v13m) DEVFRAGS="dw100u_touch watch_hrs dw100u_aod" ;;
+  dm63)                      DEVFRAGS="dm63_touch watch_hrs watch_sc7a22 dm63_aod" ;;
+  dw100u-silver|dw100u-v13m) DEVFRAGS="dw100u_touch watch_hrs watch_sc7a22 dw100u_aod" ;;
   mt107)                     DEVFRAGS="mt107" ;;
   mt108)                     DEVFRAGS="mt108" ;;
   dm82)                      DEVFRAGS="dm82" ;;
   *) usage ;;
 esac
-FRAGS="watch_base watch_hardening $DEVFRAGS"
+# parity before hardening: hardening wins on any overlap
+FRAGS="watch_base watch_stock_parity watch_hardening $DEVFRAGS"
 CFG=$SRC/arch/arm64/configs
 
 cd "$SRC"
