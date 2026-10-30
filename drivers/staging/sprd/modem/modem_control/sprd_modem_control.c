@@ -161,7 +161,7 @@ static ssize_t mini_dump_read(struct cproc_proc_entry *entry,
 
 	con = entry->cproc->controller;
 	index = entry->index;
-	if (index > con->segnr)
+	if (index < 0 || index >= con->segnr)
 		return -EBADF;
 	seg = &con->segs[index];
 	if (seg->attr != DUMP_FIELD)
@@ -175,9 +175,15 @@ static ssize_t mini_dump_read(struct cproc_proc_entry *entry,
 	while (s_cur_info) {
 		if (!count)
 			break;
-		len = snprintf(head, sizeof(head), "%s_%s_0x%8x_0x%x.bin",
-			       s_cur_info->parent_name, s_cur_info->name,
-			       s_cur_info->start_addr, s_cur_info->size);
+		/*
+		 * The names live in modem-shared memory and may be
+		 * unterminated; bound both the string reads and the length
+		 * returned, so that head + *ppos never leaves the buffer.
+		 */
+		len = scnprintf(head, sizeof(head), "%.*s_%.*s_0x%8x_0x%x.bin",
+				MAX_NAME_LEN, s_cur_info->parent_name,
+				MAX_NAME_LEN, s_cur_info->name,
+				s_cur_info->start_addr, s_cur_info->size);
 
 		if (*ppos > len) {
 			offset = *ppos - len;
@@ -470,7 +476,7 @@ static ssize_t cproc_proc_read(struct file *filp,
 			size = cproc->controller->maxsz;
 		} else {
 			index = entry->index;
-			if (index > cproc->controller->segnr)
+			if (index >= cproc->controller->segnr)
 				return -EBADF;
 
 			seg = &cproc->controller->segs[index];
