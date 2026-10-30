@@ -17,6 +17,15 @@ Each folder has:
 
 Use `stock.dts` as the device tree for the first boots. It's the vendor's, and it matches the bootloader, panel, battery and pin setup on each unit.
 
+### In-tree device trees
+
+`arch/arm64/boot/dts/sprd/sp9832e-1h10-<folder>.dts` exists for all six folders (`dm63`, `dw100u-silver`, `dw100u-v13m`, `mt107`, `mt108`, `dm82`) and is built by `make dtbs`. Each file is a self-contained, readable copy of that device's `stock.dts` (no dtsi split): raw phandle numbers in well known properties whose target is a valid provider for them (checked per binding, e.g. `gpio-controller` for `*-gpios`, `#clock-cells` for `clocks`, a regulator for `*-supply`; anything uncertain stays a raw number) (`clocks`, `interrupt-parent`, `*-supply`, `pinctrl-N`, `*-gpios`, `dmas`, `sprd,syscon-*`, ...) became `&label` references, everything else is unchanged. The explicit `phandle` / `linux,phandle` properties are kept on purpose, so the compiled DTB reproduces the stock phandle numbers (cells that were not converted still hold the raw number). With the in-tree `scripts/dtc`, each file compiles to a DTB that is byte-identical to the stock DTB (the kernel build adds a `/__symbols__` node because of `-@`).
+
+- The first boot still uses the stock DT table that is already in the boot image (`sprd_bootimg.py pack` without `--dt`). The in-tree DTS are for review, for later edits, and for a `--dt` image once a change is wanted; they are not a boot requirement.
+- Regenerate with `python3 -I tools/dts_label.py devices/<dev>/stock.dts OUT.dts`.
+- Prove equivalence with `python3 -I tools/dtcompare.py --dtc ../out_dts/scripts/dtc/dtc STOCK NEW`. STOCK and NEW can each be a boot image, a DTB or a DTS. It parses the FDT binary and compares the header fields, `/memreserve/` entries, node names, property names and raw value bytes (so phandle numbers must match exactly, nothing is normalised); DTS input is compiled first. It prints `BYTE-IDENTICAL`, `SAME STRUCTURE IN ORDER`, `SAME CONTENT, ORDER DIFFERS` or the list of differences; `--strict-order` also fails on order differences. Errors exit 2. Checked: the six DTS against the DTBs of the stock boot images (DW100U V13M against its extracted stock DTB, since no V13M boot image is kept) all report `BYTE-IDENTICAL`.
+- The DTS carry no per-unit data (no MAC, serial or IMEI properties). Re-check before adding a tree from a new dump.
+
 Related: [`../TODO.md`](../TODO.md) (work plan), [`../KERNEL_TWEAKS.md`](../KERNEL_TWEAKS.md) (battery, flash-write and GNSS changes wanted once the kernel boots).
 
 ## Common platform (all three)
