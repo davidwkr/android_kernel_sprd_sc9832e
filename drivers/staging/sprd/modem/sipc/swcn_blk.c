@@ -47,15 +47,58 @@
 			pr_err("%s:channel %d invalid!\n", \
 			       __func__, channel); \
 			swcnblk = NULL; \
+		} else { \
+			swcnblk = swcnblks[dst][ch_index]; \
 		} \
-		swcnblk = swcnblks[dst][ch_index]; \
 	} while (0)
 
 static struct swcnblk_mgr *swcnblks[SIPC_ID_NR][SMSG_VALID_CH_NR];
 
+/*
+ * The ring/pool headers and the block descriptors live in shared memory
+ * the WCN core can write. Everything that sizes or positions an access is
+ * taken from the AP-side values cached in struct swcnblk_mgr, and a
+ * peer-written block descriptor is only used after swcnblk_peer_blk()
+ * accepted it.
+ */
+
+/*
+ * Validate a peer-supplied block (mapped address + length) against the pool
+ * [base, base + num * size). On success *idx is the block index.
+ */
+static int swcnblk_peer_blk(u32 addr, u32 len, u32 base, u32 num, u32 size,
+			    u32 *idx)
+{
+	u64 off;
+
+	if (!size || addr < base)
+		return -EINVAL;
+	off = addr - base;
+	if (off >= (u64)num * size || off % size || len > size)
+		return -EINVAL;
+	*idx = (u32)(off / size);
+	return 0;
+}
+
+/* Index of an AP-side block pointer in its pool; false if out of range. */
+static bool swcnblk_ap_index(void *addr, void *pool_virt, u32 num, u32 size,
+			     u32 *idx)
+{
+	unsigned long off;
+
+	if (!size || addr < pool_virt)
+		return false;
+	off = (unsigned long)(addr - pool_virt) / size;
+	if (off >= num)
+		return false;
+	*idx = (u32)off;
+	return true;
+}
+
 void swcnblk_put(u8 dst, u8 channel, struct swcnblk_blk *blk)
 {
-	int txpos, index;
+	int txpos;
+	u32 index;
 	struct swcnblk_mgr *swcnblk;
 	struct swcnblk_ring *ring = NULL;
 	VOLA_SWCNBLK_RING *poolhd = NULL;
@@ -68,18 +111,25 @@ void swcnblk_put(u8 dst, u8 channel, struct swcnblk_blk *blk)
 	ring = swcnblk->ring;
 	poolhd = (VOLA_SWCNBLK_RING *)(&ring->header->pool);
 
+	if (!swcnblk_ap_index(blk->addr, ring->txblk_virt, swcnblk->txblknum,
+			      swcnblk->txblksz, &index)) {
+		pr_err_ratelimited("%s: swcnblk-%d-%d block %p outside the tx pool\n",
+				   __func__, dst, channel, blk->addr);
+		return;
+	}
+
 	spin_lock_irqsave(&ring->p_txlock, flags);
 	txpos = swcnblk_get_ringpos(poolhd->txblk_rdptr - 1,
-				    poolhd->txblk_count);
-	ring->r_txblks[txpos].addr = blk->addr -
+				    swcnblk->txblknum);
+	ring->p_txblks[txpos].addr = blk->addr -
 				     swcnblk->smem_blk_virt +
 				     swcnblk->mapped_smem_addr;
-	ring->r_txblks[txpos].length = poolhd->txblk_size;
+	ring->p_txblks[txpos].length = swcnblk->txblksz;
+	wmb();
 	poolhd->txblk_rdptr = poolhd->txblk_rdptr - 1;
+	mb();
 	if ((int)(poolhd->txblk_wrptr - poolhd->txblk_rdptr) == 1)
 		wake_up_interruptible_all(&ring->getwait);
-	index = swcnblk_get_index((blk->addr - ring->txblk_virt),
-				  swcnblk->txblksz);
 	ring->txrecord[index] = SWCNBLK_BLK_STATE_DONE;
 
 	spin_unlock_irqrestore(&ring->p_txlock, flags);
@@ -114,10 +164,10 @@ static int swcnblk_recover(u8 dst, u8 channel)
 	spin_lock_irqsave(&ring->p_txlock, qflags);
 	/* recover txblks pool */
 	poolhd->txblk_rdptr = poolhd->txblk_wrptr;
-	for (i = 0, j = 0; i < poolhd->txblk_count; i++) {
+	for (i = 0, j = 0; i < swcnblk->txblknum; i++) {
 		if (ring->txrecord[i] == SWCNBLK_BLK_STATE_DONE) {
 			ring->p_txblks[j].addr = i * swcnblk->txblksz +
-						 poolhd->txblk_addr;
+						 swcnblk->txblk_base;
 			ring->p_txblks[j].length = swcnblk->txblksz;
 			poolhd->txblk_wrptr = poolhd->txblk_wrptr + 1;
 			j++;
@@ -133,10 +183,10 @@ static int swcnblk_recover(u8 dst, u8 channel)
 	spin_lock_irqsave(&ring->p_rxlock, qflags);
 	/* recover rxblks pool */
 	poolhd->rxblk_wrptr = poolhd->rxblk_rdptr;
-	for (i = 0, j = 0; i < poolhd->rxblk_count; i++) {
+	for (i = 0, j = 0; i < swcnblk->rxblknum; i++) {
 		if (ring->rxrecord[i] == SWCNBLK_BLK_STATE_DONE) {
 			ring->p_rxblks[j].addr = i * swcnblk->rxblksz +
-						 poolhd->rxblk_addr;
+						 swcnblk->rxblk_base;
 			ring->p_rxblks[j].length = swcnblk->rxblksz;
 			poolhd->rxblk_wrptr = poolhd->rxblk_wrptr + 1;
 			j++;
@@ -264,6 +314,7 @@ int swcnblk_create(struct swcnblk_create_info *info,
 	u8 ch_index;
 	int i, ret;
 	u32 hsize, smem_base, smem_map;
+	u32 off_rtx, off_rrx, off_ptx, off_prx;
 	u32 txblocksize, rxblocksize;
 	u32 hesize = 0;
 	struct swcnblk_mgr *swcnblk = NULL;
@@ -414,29 +465,34 @@ int swcnblk_create(struct swcnblk_create_info *info,
 		goto err_calloc_rxrecord;
 	}
 
+	/* computed here, not read back from the peer-writable header */
+	swcnblk->txblk_base = swcnblk->mapped_smem_addr + hsize;
+	swcnblk->rxblk_base = swcnblk->txblk_base +
+			      info->txblocknum * txblocksize;
+
 	swcnblk->ring->header = swcnblk->smem_virt;
-	swcnblk->ring->txblk_virt = swcnblk->smem_blk_virt +
-		(ringhd->txblk_addr - swcnblk->mapped_smem_addr);
-	swcnblk->ring->r_txblks = swcnblk->smem_virt +
-		(ringhd->txblk_blks - swcnblk->mapped_smem_addr);
-	swcnblk->ring->rxblk_virt = swcnblk->smem_blk_virt +
-		(ringhd->rxblk_addr - swcnblk->mapped_smem_addr);
-	swcnblk->ring->r_rxblks = swcnblk->smem_virt +
-		(ringhd->rxblk_blks - swcnblk->mapped_smem_addr);
-	swcnblk->ring->p_txblks = swcnblk->smem_virt +
-		(poolhd->txblk_blks - swcnblk->mapped_smem_addr);
-	swcnblk->ring->p_rxblks = swcnblk->smem_virt +
-		(poolhd->rxblk_blks - swcnblk->mapped_smem_addr);
+	/* every base is derived from the AP's own layout, not the header */
+	off_rtx = hsize + hesize;
+	off_rrx = off_rtx + info->txblocknum * sizeof(struct swcnblk_blks);
+	off_ptx = off_rrx + info->rxblocknum * sizeof(struct swcnblk_blks);
+	off_prx = off_ptx + info->txblocknum * sizeof(struct swcnblk_blks);
+	swcnblk->ring->txblk_virt = swcnblk->smem_blk_virt + hsize;
+	swcnblk->ring->r_txblks = swcnblk->smem_virt + off_rtx;
+	swcnblk->ring->rxblk_virt = swcnblk->ring->txblk_virt +
+		info->txblocknum * txblocksize;
+	swcnblk->ring->r_rxblks = swcnblk->smem_virt + off_rrx;
+	swcnblk->ring->p_txblks = swcnblk->smem_virt + off_ptx;
+	swcnblk->ring->p_rxblks = swcnblk->smem_virt + off_prx;
 
 	for (i = 0; i < info->txblocknum; i++) {
-		swcnblk->ring->p_txblks[i].addr = poolhd->txblk_addr +
+		swcnblk->ring->p_txblks[i].addr = swcnblk->txblk_base +
 						 i * txblocksize;
 		swcnblk->ring->p_txblks[i].length = txblocksize;
 		swcnblk->ring->txrecord[i] = SWCNBLK_BLK_STATE_DONE;
 		poolhd->txblk_wrptr++;
 	}
 	for (i = 0; i < info->rxblocknum; i++) {
-		swcnblk->ring->p_rxblks[i].addr = poolhd->rxblk_addr +
+		swcnblk->ring->p_rxblks[i].addr = swcnblk->rxblk_base +
 						 i * rxblocksize;
 		swcnblk->ring->p_rxblks[i].length = rxblocksize;
 		swcnblk->ring->rxrecord[i] = SWCNBLK_BLK_STATE_DONE;
@@ -560,7 +616,8 @@ int swcnblk_get(u8 dst, u8 channel, struct swcnblk_blk *blk, int timeout)
 	struct swcnblk_ring *ring = NULL;
 	VOLA_SWCNBLK_RING *ringhd = NULL;
 	VOLA_SWCNBLK_RING *poolhd = NULL;
-	int txpos, index;
+	int txpos;
+	u32 index, wr, rd;
 	int rval = 0;
 	unsigned long flags;
 
@@ -618,21 +675,44 @@ int swcnblk_get(u8 dst, u8 channel, struct swcnblk_blk *blk, int timeout)
 
 	/* multi-gotter may cause got failure */
 	spin_lock_irqsave(&ring->p_txlock, flags);
-	if (poolhd->txblk_rdptr != poolhd->txblk_wrptr &&
-	    swcnblk->state == SWCNBLK_STATE_READY) {
-		txpos = swcnblk_get_ringpos(poolhd->txblk_rdptr,
-					    poolhd->txblk_count);
+	/* one snapshot of the peer-written pointer and descriptor */
+	wr = poolhd->txblk_wrptr;
+	rd = poolhd->txblk_rdptr;
+	/* read the descriptor only after the pointer */
+	rmb();
+	if (wr != rd && swcnblk->state == SWCNBLK_STATE_READY) {
+		u32 baddr;
+
+		if (wr - rd > swcnblk->txblknum) {
+			pr_err_ratelimited("swcnblk_get %d-%d: bad tx pool occupancy %u (wr=%u rd=%u)\n",
+					   dst, channel, wr - rd, wr, rd);
+			/* drop everything the peer claims to have returned */
+			poolhd->txblk_rdptr = wr;
+			rval = -EIO;
+			goto unlock_get;
+		}
+		txpos = swcnblk_get_ringpos(rd, swcnblk->txblknum);
+		baddr = ring->p_txblks[txpos].addr;
+		/* finish reading the descriptor before giving the slot back */
+		mb();
+		poolhd->txblk_rdptr = rd + 1;
+		/* the pool length is unused: blk->length is the AP txblksz */
+		if (swcnblk_peer_blk(baddr, 0, swcnblk->txblk_base,
+				     swcnblk->txblknum, swcnblk->txblksz,
+				     &index)) {
+			pr_err_ratelimited("swcnblk_get %d-%d: bad tx block 0x%x dropped\n",
+					   dst, channel, baddr);
+			rval = -EIO;
+			goto unlock_get;
+		}
 		blk->addr = swcnblk->smem_blk_virt +
-			    (ring->p_txblks[txpos].addr -
-			     swcnblk->mapped_smem_addr);
-		blk->length = poolhd->txblk_size;
-		poolhd->txblk_rdptr = poolhd->txblk_rdptr + 1;
-		index = swcnblk_get_index((blk->addr - ring->txblk_virt),
-					  swcnblk->txblksz);
+			    (baddr - swcnblk->mapped_smem_addr);
+		blk->length = swcnblk->txblksz;
 		ring->txrecord[index] = SWCNBLK_BLK_STATE_PENDING;
 	} else {
 		rval = swcnblk->state == SWCNBLK_STATE_READY ? -EAGAIN : -EIO;
 	}
+unlock_get:
 	spin_unlock_irqrestore(&ring->p_txlock, flags);
 
 	return rval;
@@ -646,7 +726,8 @@ static int swcnblk_send_ex(u8 dst, u8 channel,
 	struct swcnblk_ring *ring;
 	VOLA_SWCNBLK_RING *ringhd;
 	struct smsg mevt;
-	int txpos, index;
+	int txpos;
+	u32 index;
 	int rval = 0;
 	unsigned long flags;
 
@@ -660,15 +741,23 @@ static int swcnblk_send_ex(u8 dst, u8 channel,
 	pr_debug("swcnblk_send: dst=%d, channel=%d, addr=%p, len=%d\n",
 		 dst, channel, blk->addr, blk->length);
 
-#ifdef SPRD_SWCN_MEM_CACHE_EN
-	SKB_DATA_TO_SWCN_CACHE_FLUSH(blk->addr, blk->addr + blk->length);
-#endif
 	ring = swcnblk->ring;
 	ringhd = (VOLA_SWCNBLK_RING *)(&ring->header->ring);
 
+	if (!swcnblk_ap_index(blk->addr, ring->txblk_virt, swcnblk->txblknum,
+			      swcnblk->txblksz, &index)) {
+		pr_err_ratelimited("%s: swcnblk-%d-%d block %p outside the tx pool\n",
+				   __func__, dst, channel, blk->addr);
+		return -EINVAL;
+	}
+
+#ifdef SPRD_SWCN_MEM_CACHE_EN
+	SKB_DATA_TO_SWCN_CACHE_FLUSH(blk->addr, blk->addr + blk->length);
+#endif
+
 	spin_lock_irqsave(&ring->r_txlock, flags);
 
-	txpos = swcnblk_get_ringpos(ringhd->txblk_wrptr, ringhd->txblk_count);
+	txpos = swcnblk_get_ringpos(ringhd->txblk_wrptr, swcnblk->txblknum);
 	ring->r_txblks[txpos].addr = blk->addr -
 				     swcnblk->smem_blk_virt +
 				     swcnblk->mapped_smem_addr;
@@ -676,7 +765,10 @@ static int swcnblk_send_ex(u8 dst, u8 channel,
 	pr_debug("swcnblk_send: channel=%d, wrptr=%d, txpos=%d, addr=%x\n",
 		 channel, ringhd->txblk_wrptr,
 		 txpos, ring->r_txblks[txpos].addr);
+	/* descriptor visible before the pointer, pointer before the peek */
+	wmb();
 	ringhd->txblk_wrptr = ringhd->txblk_wrptr + 1;
+	mb();
 
 	if (swcnblk->state == SWCNBLK_STATE_READY) {
 		if (yell || ((int)(ringhd->txblk_wrptr -
@@ -688,8 +780,6 @@ static int swcnblk_send_ex(u8 dst, u8 channel,
 			rval = smsg_send(dst, &mevt, 0);
 		}
 	}
-	index = swcnblk_get_index((blk->addr - ring->txblk_virt),
-				  swcnblk->txblksz);
 	ring->txrecord[index] = SWCNBLK_BLK_STATE_DONE;
 
 	spin_unlock_irqrestore(&ring->r_txlock, flags);
@@ -715,7 +805,8 @@ int swcnblk_receive(u8 dst, u8 channel,
 	struct swcnblk_mgr *swcnblk;
 	struct swcnblk_ring *ring;
 	VOLA_SWCNBLK_RING *ringhd;
-	int rxpos, index, rval = 0;
+	int rxpos, rval = 0;
+	u32 index, wr, rd;
 	unsigned long flags;
 
 	SWCNBLK_GET_BLK_MGR(dst, channel, swcnblk);
@@ -778,23 +869,58 @@ int swcnblk_receive(u8 dst, u8 channel,
 	/* multi-receiver may cause recv failure */
 	spin_lock_irqsave(&ring->r_rxlock, flags);
 
-	if (ringhd->rxblk_wrptr != ringhd->rxblk_rdptr &&
-	    swcnblk->state == SWCNBLK_STATE_READY) {
-		rxpos = swcnblk_get_ringpos(ringhd->rxblk_rdptr,
-					    ringhd->rxblk_count);
-		blk->addr = ring->r_rxblks[rxpos].addr -
-			    swcnblk->mapped_smem_addr +
+	/* one snapshot of the peer-written wrptr and block descriptor */
+	wr = ringhd->rxblk_wrptr;
+	rd = ringhd->rxblk_rdptr;
+	/* read the descriptor only after the pointer */
+	rmb();
+	if (wr != rd && swcnblk->state == SWCNBLK_STATE_READY) {
+		u32 baddr, blen, tries;
+
+		if (wr - rd > swcnblk->rxblknum) {
+			pr_err_ratelimited("swcnblk_receive %d-%d: bad rx ring occupancy %u (wr=%u rd=%u)\n",
+					   dst, channel, wr - rd, wr, rd);
+			/* resynchronise: drop what the peer claims to have sent */
+			ringhd->rxblk_rdptr = wr;
+			rval = -EIO;
+			goto unlock_recv;
+		}
+		/*
+		 * Skip bad descriptors: the peer only signals on empty to
+		 * non-empty, so give up only when nothing valid is left.
+		 */
+		rval = -EIO;
+		for (tries = 0; tries < swcnblk->rxblknum && rd != wr;
+		     tries++, rd++) {
+			rxpos = swcnblk_get_ringpos(rd, swcnblk->rxblknum);
+			baddr = ring->r_rxblks[rxpos].addr;
+			blen = ring->r_rxblks[rxpos].length;
+			/* finish reading the descriptor before giving the slot back */
+			mb();
+			ringhd->rxblk_rdptr = rd + 1;
+			/* clamp, so the block still returns to the pool */
+			if (blen > swcnblk->rxblksz)
+				blen = swcnblk->rxblksz;
+			if (swcnblk_peer_blk(baddr, blen, swcnblk->rxblk_base,
+					     swcnblk->rxblknum, swcnblk->rxblksz,
+					     &index)) {
+				pr_err_ratelimited("swcnblk_receive %d-%d: bad rx block 0x%x len %u dropped\n",
+						   dst, channel, baddr, blen);
+				continue;
+			}
+			blk->addr = baddr - swcnblk->mapped_smem_addr +
 			    swcnblk->smem_blk_virt;
-		blk->length = ring->r_rxblks[rxpos].length;
-		ringhd->rxblk_rdptr = ringhd->rxblk_rdptr + 1;
-		pr_debug("swcnblk_receive: channel=%d, rxpos=%d, addr=%p, len=%d\n",
-			 channel, rxpos, blk->addr, blk->length);
-		index = swcnblk_get_index((blk->addr - ring->rxblk_virt),
-					  swcnblk->rxblksz);
-		ring->rxrecord[index] = SWCNBLK_BLK_STATE_PENDING;
+			blk->length = blen;
+			pr_debug("swcnblk_receive: channel=%d, rxpos=%d, addr=%p, len=%d\n",
+				 channel, rxpos, blk->addr, blk->length);
+			ring->rxrecord[index] = SWCNBLK_BLK_STATE_PENDING;
+			rval = 0;
+			break;
+		}
 	} else {
 		rval = swcnblk->state == SWCNBLK_STATE_READY ? -EAGAIN : -EIO;
 	}
+unlock_recv:
 	spin_unlock_irqrestore(&ring->r_rxlock, flags);
 #ifdef SPRD_SWCN_MEM_CACHE_EN
 	if (!rval)
@@ -866,7 +992,7 @@ int swcnblk_release(u8 dst, u8 channel, struct swcnblk_blk *blk)
 	struct smsg mevt;
 	unsigned long flags;
 	int rxpos;
-	int index;
+	u32 index;
 
 	SWCNBLK_GET_BLK_MGR(dst, channel, swcnblk);
 	if (!swcnblk || swcnblk->state != SWCNBLK_STATE_READY) {
@@ -882,13 +1008,22 @@ int swcnblk_release(u8 dst, u8 channel, struct swcnblk_blk *blk)
 	ringhd = (VOLA_SWCNBLK_RING *)(&ring->header->ring);
 	poolhd = (VOLA_SWCNBLK_RING *)(&ring->header->pool);
 
+	if (!swcnblk_ap_index(blk->addr, ring->rxblk_virt, swcnblk->rxblknum,
+			      swcnblk->rxblksz, &index)) {
+		pr_err_ratelimited("%s: swcnblk-%d-%d block %p outside the rx pool\n",
+				   __func__, dst, channel, blk->addr);
+		return -EINVAL;
+	}
+
 	spin_lock_irqsave(&ring->p_rxlock, flags);
-	rxpos = swcnblk_get_ringpos(poolhd->rxblk_wrptr, poolhd->rxblk_count);
+	rxpos = swcnblk_get_ringpos(poolhd->rxblk_wrptr, swcnblk->rxblknum);
 	ring->p_rxblks[rxpos].addr = blk->addr -
 				     swcnblk->smem_blk_virt +
 				     swcnblk->mapped_smem_addr;
-	ring->p_rxblks[rxpos].length = poolhd->rxblk_size;
+	ring->p_rxblks[rxpos].length = swcnblk->rxblksz;
+	wmb();
 	poolhd->rxblk_wrptr = poolhd->rxblk_wrptr + 1;
+	mb();
 	pr_debug("swcnblk_release: addr=%x\n", ring->p_rxblks[rxpos].addr);
 
 	if ((int)(poolhd->rxblk_wrptr - poolhd->rxblk_rdptr) == 1 &&
@@ -901,8 +1036,6 @@ int swcnblk_release(u8 dst, u8 channel, struct swcnblk_blk *blk)
 		smsg_send(dst, &mevt, -1);
 	}
 
-	index = swcnblk_get_index((blk->addr - ring->rxblk_virt),
-				  swcnblk->rxblksz);
 	ring->rxrecord[index] = SWCNBLK_BLK_STATE_DONE;
 
 	spin_unlock_irqrestore(&ring->p_rxlock, flags);

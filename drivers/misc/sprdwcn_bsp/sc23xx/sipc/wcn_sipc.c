@@ -253,6 +253,17 @@ static void wcn_sipc_sblk_recv(struct sipc_chn_info *sipc_chn)
 		       sipc_chn_tostr(sipc_chn->chn, 0));
 
 	while (!sblock_receive(sipc_chn->dst, sipc_chn->chn, &blk, 0)) {
+		if (blk.length <= SIPC_SBLOCK_HEAD_RESERV) {
+			/* peer length: nothing left after the reserved header */
+			pr_err_ratelimited("sblk[%d] short block len %u dropped\n",
+					   sipc_chn->chn, blk.length);
+			ret = sblock_release(sipc_chn->dst, sipc_chn->chn,
+					     &blk);
+			if (ret)
+				WCN_ERR("release swcnblk[%d] err:%d\n",
+					sipc_chn->chn, ret);
+			continue;
+		}
 		length = blk.length - SIPC_SBLOCK_HEAD_RESERV;
 		WCN_DEBUG("sblk length %d", length);
 		wcn_sipc_recv(sipc_chn,

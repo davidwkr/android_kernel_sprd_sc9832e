@@ -54,7 +54,7 @@
 /* debugging macros */
 #define SIPX_INFO(x...)		pr_info("SIPX: " x)
 #define SIPX_DEBUG(x...)	pr_debug("SIPX: " x)
-#define SIPX_ERR(x...)		pr_err("SIPX: [E] " x)
+#define SIPX_ERR(x...)		pr_err_ratelimited("SIPX: [E] " x)
 
 /* #define UL_TEST */
 
@@ -81,24 +81,62 @@ static inline void SIPX_PARSE_DESC(u16 desc, u32 *length, u16 *offset)
 	*offset = (desc >> 11) & 0x1F;
 }
 
+/*
+ * The fifo infos, fifo entries and descriptors live in shared memory the
+ * peer can write. Ring/pool sizes and block sizes come from the AP-side
+ * copies in struct sipx_pool/sipx_ring (taken when the AP initialised
+ * them); a peer-written index/offset/length is only used after
+ * sipx_peer_item_ok() accepted it. A pool or ring holds exactly
+ * fifo_size blocks.
+ */
+static bool sipx_peer_item_ok(u32 index, u32 offset, u32 length,
+			      u32 count, u32 blk_size)
+{
+	return index < count && (u64)offset + length <= blk_size;
+}
+
 static int sipx_get_item_from_pool(struct sipx_pool *pool, struct sblock *blk)
 {
 	unsigned long flags;
 	int pos;
 	int ret = 0;
+	u32 wr, rd, index;
 
 	/* multi-gotter may cause got failure */
 	spin_lock_irqsave(&pool->lock, flags);
-	if (pool->fifo_info->fifo_rdptr != pool->fifo_info->fifo_wrptr) {
-		pos = sblock_get_ringpos(pool->fifo_info->fifo_rdptr,
-					 pool->fifo_size);
-		blk->index = pool->fifo_buf[pos].index;
+	/* one snapshot of the peer-written wrptr and entry */
+	wr = pool->fifo_info->fifo_wrptr;
+	rd = pool->fifo_info->fifo_rdptr;
+	/* read the entry only after the pointer */
+	rmb();
+	if (rd != wr) {
+		if (wr - rd > pool->fifo_size) {
+			SIPX_ERR("%s: bad pool occupancy %u (wr=%u rd=%u)\n",
+				 __func__, wr - rd, wr, rd);
+			/* drop everything the peer claims to have returned */
+			pool->fifo_info->fifo_rdptr = wr;
+			ret = -EIO;
+			goto out;
+		}
+		pos = sblock_get_ringpos(rd, pool->fifo_size);
+		index = pool->fifo_buf[pos].index;
+		/* finish reading the entry before giving the slot back */
+		mb();
+		pool->fifo_info->fifo_rdptr = rd + 1;
+		if (!sipx_peer_item_ok(index, 0, 0, pool->fifo_size,
+				       pool->blk_size)) {
+			SIPX_ERR("bad pool block index %u dropped\n",
+					   index);
+			ret = -EIO;
+			goto out;
+		}
+		blk->index = index;
 		blk->addr = pool->blks_buf +  blk->index * pool->blk_size;
 		blk->length = pool->blk_size;
-		pool->fifo_info->fifo_rdptr++;
 	} else {
 		ret = -EAGAIN;
 	}
+out:
 
 	spin_unlock_irqrestore(&pool->lock, flags);
 
@@ -119,6 +157,7 @@ static int sipx_put_item_back_to_pool(struct sipx_pool *pool,
 		last_rdptr = pool->fifo_info->fifo_rdptr - 1;
 		pos = sblock_get_ringpos(last_rdptr, pool->fifo_size);
 		pool->fifo_buf[pos].index = blk->index;
+		wmb();
 		pool->fifo_info->fifo_rdptr = last_rdptr;
 	} else {
 		ret = -1;
@@ -149,7 +188,10 @@ static int sipx_put_item_into_pool(struct sipx_pool *pool, struct sblock *blk)
 		 * (*(u32*)(&pool->fifo_buf[pos])) = *((u32*)&item);
 		 */
 		(*(u32 *)(&pool->fifo_buf[pos])) = item;
+		/* entry visible before the pointer, pointer before any peek */
+		wmb();
 		pool->fifo_info->fifo_wrptr = wr + 1;
+		mb();
 	} else {
 		SIPX_ERR("%s fail: wr:0x%x, rd:0x%x, size:%d\n",
 			 __func__, wr, rd, pool->fifo_size);
@@ -191,12 +233,15 @@ static int sipx_put_item_to_ring(struct sipx_ring *ring, struct sblock *blk,
 	/* force compiler do one 4-bytes operation */
 	/* ring->fifo_buf[pos] = item; */
 	(*(u32 *)(&ring->fifo_buf[pos])) = (*(u32 *)&item);
+	/* entry visible before the pointer, pointer before the rdptr peek */
+	wmb();
 	ring->fifo_info->fifo_wrptr++;
+	mb();
 
 	cnt = (int)(ring->fifo_info->fifo_wrptr - ring->fifo_info->fifo_rdptr);
 	if (cnt == 1)
 		*yell = 1;
-	else if (cnt >= ring->fifo_info->fifo_size)
+	else if (cnt >= ring->fifo_size)
 		*full = 1;
 
 	spin_unlock_irqrestore(&ring->lock, flags);
@@ -209,34 +254,78 @@ static int sipx_get_item_from_ring(struct sipx_ring *ring, struct sblock *blk)
 	unsigned long flags;
 	int pos;
 	int ret = 0;
-	u32 wr, rd;
+	u32 wr, rd, length;
+	u16 offset;
 	struct sipx_blk_item item;
 
 	spin_lock_irqsave(&ring->lock, flags);
 
+	/* one snapshot of the peer-written wrptr and entry */
 	wr = ring->fifo_info->fifo_wrptr;
 	rd = ring->fifo_info->fifo_rdptr;
+	/* read the entry only after the pointer */
+	rmb();
 
 	if (wr == rd) {
 		ret = -ENODATA;
+	} else if (wr - rd > ring->fifo_size) {
+		SIPX_ERR("%s: bad ring occupancy %u (wr=%u rd=%u)\n",
+			 __func__, wr - rd, wr, rd);
+		/* resynchronise: drop what the peer claims to have sent */
+		ring->fifo_info->fifo_rdptr = wr;
+		ret = -EIO;
 	} else {
-		pos = sblock_get_ringpos(rd, ring->fifo_size);
-		item = ring->fifo_buf[pos];
-		/* force compiler do one 4-bytes operation */
-		/* item = ring->fifo_buf[pos]; */
-		(*(u32 *)&item) = (*(u32 *)(&ring->fifo_buf[pos]));
+		u32 tries;
 
-		SIPX_PARSE_DESC(item.desc, &blk->length, &blk->offset);
-		blk->index = item.index;
-		blk->addr = ring->blks_buf +  (blk->index * ring->blk_size) +
-			blk->offset;
+		/*
+		 * Skip bad entries: the peer only signals on empty to
+		 * non-empty, so give up only when nothing valid is left.
+		 */
+		ret = -EIO;
+		for (tries = 0; tries < ring->fifo_size && rd != wr;
+		     tries++, rd++) {
+			pos = sblock_get_ringpos(rd, ring->fifo_size);
+			/* force compiler do one 4-bytes operation */
+			(*(u32 *)&item) = (*(u32 *)(&ring->fifo_buf[pos]));
 
-		ring->fifo_info->fifo_rdptr = rd + 1;
+			/* finish reading the entry before giving the slot back */
+			mb();
+			ring->fifo_info->fifo_rdptr = rd + 1;
+			SIPX_PARSE_DESC(item.desc, &length, &offset);
+			if (!sipx_peer_item_ok(item.index, offset, length,
+					       ring->fifo_size,
+					       ring->blk_size)) {
+				SIPX_ERR("bad ring item index %u off %u len %u dropped\n",
+					 item.index, offset, length);
+				/*
+				 * A valid index names a block the AP owns:
+				 * return it, or the pool runs dry. A bad
+				 * index owns nothing and is just dropped.
+				 */
+				if (item.index < ring->fifo_size) {
+					struct sblock back = {0};
+
+					back.index = item.index;
+					sipx_put_item_into_pool(ring->pool,
+								&back);
+				}
+				continue;
+			}
+			blk->length = length;
+			blk->offset = offset;
+			blk->index = item.index;
+			blk->addr = ring->blks_buf +
+				((u32)blk->index * ring->blk_size) +
+				blk->offset;
+
 #ifdef CONFIG_SPRD_SIPC_MEM_CACHE_EN
-		SIPC_DATA_TO_SKB_CACHE_INV(blk->addr, blk->addr + blk->length);
+			SIPC_DATA_TO_SKB_CACHE_INV(blk->addr,
+						   blk->addr + blk->length);
 #endif
+			ret = 0;
+			break;
+		}
 	}
-
 	spin_unlock_irqrestore(&ring->lock, flags);
 
 	return ret;
@@ -254,12 +343,57 @@ static int sipx_get_ring_item_cnt(struct sipx_ring *ring)
 	return ret;
 }
 
+/*
+ * Move everything left in a ring back to its pool. The producer's wrptr is
+ * peer-written for the dl rings and the consumer's rdptr for the ul rings:
+ * never loop more than the ring can hold, and only move indexes that name a
+ * block of the pool.
+ */
+static void sipx_drain_ring(struct sipx_ring *ring, struct sipx_pool *pool,
+			    const char *name)
+{
+	volatile struct sipx_fifo_info *fifo_info = ring->fifo_info;
+	struct sblock blk = {0};
+	unsigned long flags;
+	u32 wr, rd, cnt;
+	int pos;
+
+	spin_lock_irqsave(&ring->lock, flags);
+	wr = fifo_info->fifo_wrptr;
+	rd = fifo_info->fifo_rdptr;
+	/* read the entries only after the pointer */
+	rmb();
+	cnt = wr - rd;
+	if (cnt > ring->fifo_size) {
+		SIPX_ERR("%s: bad %s occupancy %u (wr=%u rd=%u)\n",
+			 __func__, name, cnt, wr, rd);
+		/* drop the entries: moving them would duplicate pool indexes */
+		cnt = 0;
+	}
+
+	while (cnt--) {
+		SIPX_INFO("%s %s 0x%p, wrptr: 0x%x, rdptr:0x%x\n",
+			  __func__, name, (void *)fifo_info, wr, rd);
+
+		pos = sblock_get_ringpos(rd, ring->fifo_size);
+		blk.index = ring->fifo_buf[pos].index;
+		rd++;
+
+		if (blk.index < ring->fifo_size)
+			sipx_put_item_into_pool(pool, &blk);
+		else
+			SIPX_ERR("%s: bad %s block index %u dropped\n",
+				 __func__, name, blk.index);
+	}
+	/* finish reading the entries before giving the slots back */
+	mb();
+	fifo_info->fifo_rdptr = wr;
+	spin_unlock_irqrestore(&ring->lock, flags);
+}
+
 static int sipx_recover_channel(struct sipx_mgr *sipx,
 				struct sipx_channel *sipx_chan)
 {
-	volatile struct sipx_fifo_info *fifo_info;
-	unsigned long flags;
-	int pos;
 	struct sblock blk;
 
 	sipx_chan->state = SBLOCK_STATE_IDLE;
@@ -270,98 +404,23 @@ static int sipx_recover_channel(struct sipx_mgr *sipx,
 
 		blk = sipx_chan->dl_record_blk;
 		if (IS_DL_BLK_ACK(sipx, &blk))
-			sipx_put_item_into_pool(sipx->dl_pool, &blk);
-		else
 			sipx_put_item_into_pool(sipx->dl_ack_pool, &blk);
+		else
+			sipx_put_item_into_pool(sipx->dl_pool, &blk);
 
 		sipx_chan->dl_record_flag = 0;
 	}
 
 	/* clean dl ring blks */
-	fifo_info = sipx_chan->dl_ring->fifo_info;
-
-	spin_lock_irqsave(&sipx_chan->dl_ring->lock, flags);
-
-	while (fifo_info->fifo_wrptr != fifo_info->fifo_rdptr) {
-		SIPX_INFO("%s %s 0x%p, wrptr: 0x%x, rdptr:0x%x\n",
-			  __func__, "dl_ring fifo_info:",
-			  (void *)fifo_info,
-			  (unsigned int)fifo_info->fifo_wrptr,
-			  (unsigned int)fifo_info->fifo_rdptr);
-
-		pos = sblock_get_ringpos(fifo_info->fifo_rdptr,
-					 sipx_chan->dl_ring->fifo_size);
-		blk.index = sipx_chan->dl_ring->fifo_buf[pos].index;
-
-		fifo_info->fifo_rdptr++;
-
-		sipx_put_item_into_pool(sipx->dl_pool, &blk);
-	}
-	spin_unlock_irqrestore(&sipx_chan->dl_ring->lock, flags);
-
+	sipx_drain_ring(sipx_chan->dl_ring, sipx->dl_pool, "dl_ring");
 	/* clean dl ack ring blks */
-	fifo_info = sipx_chan->dl_ack_ring->fifo_info;
-
-	spin_lock_irqsave(&sipx_chan->dl_ack_ring->lock, flags);
-
-	while (fifo_info->fifo_wrptr != fifo_info->fifo_rdptr) {
-		SIPX_INFO("%s %s0x%p, wrptr:0x%x, rdptr:0x%x\n",
-			  __func__, "dl_ack_ring fifo_info:",
-			  (void *)fifo_info,
-			  (unsigned int)fifo_info->fifo_wrptr,
-			  (unsigned int)fifo_info->fifo_rdptr);
-
-		pos = sblock_get_ringpos(fifo_info->fifo_rdptr,
-					 sipx_chan->dl_ack_ring->fifo_size);
-		blk.index = sipx_chan->dl_ack_ring->fifo_buf[pos].index;
-
-		fifo_info->fifo_rdptr++;
-
-		sipx_put_item_into_pool(sipx->dl_ack_pool, &blk);
-	}
-	spin_unlock_irqrestore(&sipx_chan->dl_ack_ring->lock, flags);
-
+	sipx_drain_ring(sipx_chan->dl_ack_ring, sipx->dl_ack_pool,
+			"dl_ack_ring");
 	/* clean ul ring blks */
-	fifo_info = sipx_chan->ul_ring->fifo_info;
-
-	spin_lock_irqsave(&sipx_chan->ul_ring->lock, flags);
-	while (fifo_info->fifo_wrptr != fifo_info->fifo_rdptr) {
-		SIPX_INFO("%s %s0x%p, wrptr:0x%x, rdptr:0x%x\n",
-			  __func__, "ul_ring fifo_info:",
-			  (void *)fifo_info,
-			  (unsigned int)fifo_info->fifo_wrptr,
-			  (unsigned int)fifo_info->fifo_rdptr);
-
-		pos = sblock_get_ringpos(fifo_info->fifo_rdptr,
-					 sipx_chan->ul_ring->fifo_size);
-		blk.index = sipx_chan->ul_ring->fifo_buf[pos].index;
-
-		fifo_info->fifo_rdptr++;
-
-		sipx_put_item_into_pool(sipx->ul_pool, &blk);
-	}
-	spin_unlock_irqrestore(&sipx_chan->ul_ring->lock, flags);
-
+	sipx_drain_ring(sipx_chan->ul_ring, sipx->ul_pool, "ul_ring");
 	/* clean ul ack ring blks */
-	fifo_info = sipx_chan->ul_ack_ring->fifo_info;
-
-	spin_lock_irqsave(&sipx_chan->ul_ack_ring->lock, flags);
-	while (fifo_info->fifo_wrptr != fifo_info->fifo_rdptr) {
-		SIPX_INFO("%s %s0x%p, wrptr:0x%x, rdptr:0x%x\n",
-			  __func__, "ul_ack_ring fifo_info:",
-			  (void *)fifo_info,
-			  (unsigned int)fifo_info->fifo_wrptr,
-			  (unsigned int)fifo_info->fifo_rdptr);
-
-		pos = sblock_get_ringpos(fifo_info->fifo_rdptr,
-					 sipx_chan->ul_ack_ring->fifo_size);
-		blk.index = sipx_chan->ul_ack_ring->fifo_buf[pos].index;
-
-		fifo_info->fifo_rdptr++;
-
-		sipx_put_item_into_pool(sipx->ul_ack_pool, &blk);
-	}
-	spin_unlock_irqrestore(&sipx_chan->ul_ack_ring->lock, flags);
+	sipx_drain_ring(sipx_chan->ul_ack_ring, sipx->ul_ack_pool,
+			"ul_ack_ring");
 
 	/* clean ul record blk */
 	if (sipx_chan->ul_record_flag) {
@@ -534,6 +593,7 @@ static int create_sipx_pool_ctrl(struct sipx_pool **out,
 				 volatile struct sipx_fifo_info *fifo_info,
 				 void *fifo_virt,
 				 void *blk_virt,
+				 u32 fifo_size, u32 blk_size,
 				 struct sipx_mgr *sipx)
 {
 	struct sipx_pool *pool = NULL;
@@ -547,9 +607,9 @@ static int create_sipx_pool_ctrl(struct sipx_pool **out,
 
 	pool->fifo_info = fifo_info;
 	pool->fifo_buf = fifo_virt;
-	pool->fifo_size = fifo_info->fifo_size;
+	pool->fifo_size = fifo_size;
 	pool->blks_buf = blk_virt;
-	pool->blk_size = fifo_info->blk_size;
+	pool->blk_size = blk_size;
 	pool->sipx = sipx;
 
 	if (blk_virt) {
@@ -732,12 +792,14 @@ static int create_sipx_mgr(struct sipx_mgr **out, struct sipx_init_data *pdata)
 				    fifo_info,
 				    sipx->smem_virt + offset_dl_fifo,
 				    sipx->smem_cached_virt + offset_dl_blk,
+				    sipx->dl_pool_size, sipx->blk_size,
 				    sipx);
 #else
 	ret = create_sipx_pool_ctrl(&sipx->dl_pool,
 				    fifo_info,
 				    sipx->smem_virt + offset_dl_fifo,
 				    sipx->smem_virt + offset_dl_blk,
+				    sipx->dl_pool_size, sipx->blk_size,
 				    sipx);
 #endif
 
@@ -758,12 +820,14 @@ static int create_sipx_mgr(struct sipx_mgr **out, struct sipx_init_data *pdata)
 				    fifo_info,
 				    sipx->smem_virt + offset_dl_ack_fifo,
 				    sipx->smem_cached_virt + offset_dl_ack_blk,
+				    sipx->dl_ack_pool_size, sipx->ack_blk_size,
 				    sipx);
 #else
 	ret = create_sipx_pool_ctrl(&sipx->dl_ack_pool,
 				    fifo_info,
 				    sipx->smem_virt + offset_dl_ack_fifo,
 				    sipx->smem_virt + offset_dl_ack_blk,
+				    sipx->dl_ack_pool_size, sipx->ack_blk_size,
 				    sipx);
 #endif
 
@@ -787,11 +851,13 @@ static int create_sipx_mgr(struct sipx_mgr **out, struct sipx_init_data *pdata)
 				    fifo_info,
 				    sipx->smem_virt + offset_ul_fifo,
 				    sipx->smem_cached_virt + offset_ul_blk,
+				    sipx->ul_pool_size, sipx->blk_size,
 				    sipx);
 #else
 	ret = create_sipx_pool_ctrl(&sipx->ul_pool, fifo_info,
 				    sipx->smem_virt + offset_ul_fifo,
 				    sipx->smem_virt + offset_ul_blk,
+				    sipx->ul_pool_size, sipx->blk_size,
 				    sipx);
 #endif
 	if (ret)
@@ -812,12 +878,14 @@ static int create_sipx_mgr(struct sipx_mgr **out, struct sipx_init_data *pdata)
 				    fifo_info,
 				    sipx->smem_virt + offset_ul_ack_fifo,
 				    sipx->smem_cached_virt + offset_ul_ack_blk,
+				    sipx->ul_ack_pool_size, sipx->ack_blk_size,
 				    sipx);
 #else
 	ret = create_sipx_pool_ctrl(&sipx->ul_ack_pool,
 				    fifo_info,
 				    sipx->smem_virt + offset_ul_ack_fifo,
 				    sipx->smem_virt + offset_ul_ack_blk,
+				    sipx->ul_ack_pool_size, sipx->ack_blk_size,
 				    sipx);
 #endif
 	if (ret)
@@ -1371,6 +1439,7 @@ static int create_sipx_ring_ctrl(struct sipx_ring **out,
 				 volatile struct sipx_fifo_info *fifo_info,
 				 void *fifo_virt,
 				 void *blk_virt,
+				 u32 fifo_size, u32 blk_size,
 				 struct sipx_mgr *sipx)
 {
 	struct sipx_ring *ring = NULL;
@@ -1383,10 +1452,11 @@ static int create_sipx_ring_ctrl(struct sipx_ring **out,
 
 	ring->fifo_info = fifo_info;
 	ring->fifo_buf = fifo_virt;
-	ring->fifo_size = fifo_info->fifo_size;
+	ring->fifo_size = fifo_size;
 	ring->blks_buf = blk_virt;
-	ring->blk_size = fifo_info->blk_size;
+	ring->blk_size = blk_size;
 	ring->sipx = sipx;
+	ring->pool = NULL;
 
 	spin_lock_init(&ring->lock);
 
@@ -1415,6 +1485,7 @@ static int init_sipx_channel_fifos(struct sipx_mgr *sipx,
 	ret = create_sipx_ring_ctrl(&sipx_chan->dl_ring, fifo_info,
 				    sipx_chan->smem_virt + offset,
 				    sipx->dl_pool->blks_buf,
+				    sipx->dl_pool_size, sipx->blk_size,
 				    sipx);
 	if (ret)
 		return ret;
@@ -1438,6 +1509,7 @@ static int init_sipx_channel_fifos(struct sipx_mgr *sipx,
 	ret = create_sipx_ring_ctrl(&sipx_chan->dl_ack_ring, fifo_info,
 				    sipx_chan->smem_virt + offset,
 				    sipx->dl_ack_pool->blks_buf,
+				    sipx->dl_ack_pool_size, sipx->ack_blk_size,
 				    sipx);
 	if (ret)
 		return ret;
@@ -1465,6 +1537,7 @@ static int init_sipx_channel_fifos(struct sipx_mgr *sipx,
 				    fifo_info,
 				    sipx_chan->smem_virt + offset,
 				    sipx->ul_pool->blks_buf,
+				    sipx->ul_pool_size, sipx->blk_size,
 				    sipx);
 	if (ret)
 		return ret;
@@ -1497,7 +1570,15 @@ static int init_sipx_channel_fifos(struct sipx_mgr *sipx,
 	ret = create_sipx_ring_ctrl(&sipx_chan->ul_ack_ring, fifo_info,
 				    sipx_chan->smem_virt + offset,
 				    sipx->ul_ack_pool->blks_buf,
+				    sipx->ul_ack_pool_size, sipx->ack_blk_size,
 				    sipx);
+	if (!ret) {
+		/* the pool each ring's blocks belong to */
+		sipx_chan->dl_ring->pool = sipx->dl_pool;
+		sipx_chan->dl_ack_ring->pool = sipx->dl_ack_pool;
+		sipx_chan->ul_ring->pool = sipx->ul_pool;
+		sipx_chan->ul_ack_ring->pool = sipx->ul_ack_pool;
+	}
 
 	return ret;
 }

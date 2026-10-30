@@ -114,6 +114,7 @@ struct sipx_ring {
 	/* lock for sipx-ring */
 	spinlock_t lock;
 
+	struct sipx_pool *pool; /* pool the ring blocks belong to */
 	struct sipx_mgr *sipx;
 };
 

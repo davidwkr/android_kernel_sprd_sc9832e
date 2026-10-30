@@ -589,6 +589,16 @@ static void sprdwl_sipc_msg_receive(int channel)
 	int ret;
 
 	while (!swcnblk_receive(WLAN_CP_ID, channel, &blk, 0)) {
+		if (blk.length <= SPRDWL_SIPC_HEAD_RESERV) {
+			/* peer length: nothing left after the reserved header */
+			pr_err_ratelimited("swcnblk[%d] short block len %u dropped\n",
+					   channel, blk.length);
+			ret = swcnblk_release(WLAN_CP_ID, channel, &blk);
+			if (ret)
+				pr_err("release swcnblk[%d] err:%d\n",
+				       channel, ret);
+			continue;
+		}
 		length = blk.length - SPRDWL_SIPC_HEAD_RESERV;
 		sprdwl_sipc_rx_handle((u8 *)blk.addr +
 				      SPRDWL_SIPC_HEAD_RESERV, length);
