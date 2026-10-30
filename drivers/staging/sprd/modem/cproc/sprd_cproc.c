@@ -406,7 +406,8 @@ static ssize_t cproc_proc_read(struct file *filp,
 	} else if ((flag & BE_MNDUMP) != 0) {
 		static struct cproc_dump_info *s_cur_info;
 		u8 head[sizeof(struct cproc_dump_info) + 32];
-		int len, total = 0, offset = 0;
+		int len, total = 0;
+		loff_t offset = 0;
 		ssize_t written = 0;
 
 		if (!s_cur_info && *ppos)
@@ -435,6 +436,11 @@ static ssize_t cproc_proc_read(struct file *filp,
 
 			if (*ppos > len) {
 				offset = *ppos - len;
+				/* ppos is user-seekable: stay inside the dump */
+				if (offset > s_cur_info->size) {
+					*ppos = 0;
+					return total ? total : -EINVAL;
+				}
 			} else {
 				if (*ppos + count > len)
 					written = len - *ppos;

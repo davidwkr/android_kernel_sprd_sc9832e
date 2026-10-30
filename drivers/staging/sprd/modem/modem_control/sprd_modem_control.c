@@ -150,7 +150,8 @@ static ssize_t mini_dump_read(struct cproc_proc_entry *entry,
 {
 	static struct cproc_dump_info *s_cur_info;
 	u8 head[sizeof(struct cproc_dump_info) + 32];
-	int len, index, total = 0, offset = 0;
+	int len, index, total = 0;
+	loff_t offset = 0;
 	ssize_t written = 0;
 	void *vmem;
 	struct cproc_segment *seg;
@@ -187,6 +188,11 @@ static ssize_t mini_dump_read(struct cproc_proc_entry *entry,
 
 		if (*ppos > len) {
 			offset = *ppos - len;
+			/* ppos is user-seekable: stay inside the dump */
+			if (offset > s_cur_info->size) {
+				*ppos = 0;
+				return total ? total : -EINVAL;
+			}
 		} else {
 			if (*ppos + count > len)
 				written = len - *ppos;
