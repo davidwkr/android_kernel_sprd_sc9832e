@@ -165,7 +165,7 @@ Sources: UNISOC security bulletins 2023-01, 2023-03, 2023-05 and 2024-02 (SC9832
 
 | CVE | Component | Applies? | Status | Note |
 |---|---|---|---|---|
-| CVE-2022-39116, CVE-2022-39118 | sprd_sysdump | yes (CONFIG_SPRD_SYSDUMP=y) | fixed, "sysdump: bound sprd_sysdump write..." | 5-byte stack buffer, terminator written at [count]. Confident match. |
+| CVE-2022-39116, CVE-2022-39118 | sprd_sysdump | yes (CONFIG_SPRD_SYSDUMP=y) | fixed (defect), attribution probable (description match), "sysdump: bound sprd_sysdump write..." | 5-byte stack buffer, terminator written at [count]. The bug is real; that it is the bulletin bug rests on the description only. |
 | CVE-2022-47488 | spipe (sipc sbuf) | yes | probable, "sipc: sbuf: bound ring indexes..." and "sipc: spool: validate file offset..." | Peer-written rdptr could push txsize past the ring; int truncation of count; unchecked bufid; spool lseek offset. Defensive, match unproven. |
 | CVE-2022-48385 | cp_dump | yes (cproc "mem" dump) | probable, "cproc: reject negative seek offsets..." and "cproc: bound mini_dump segment offset..." | Negative lseek offset, and an int-truncated mini_dump offset after a large lseek, mapped physical memory below the modem region. |
 | CVE-2022-48389 | modem control device | yes (cproc mini_dump) | probable, same cproc commit | sprintf into a fixed stack buffer from shared-memory names. |
@@ -182,4 +182,10 @@ Sources: UNISOC security bulletins 2023-01, 2023-03, 2023-05 and 2024-02 (SC9832
 | CVE-2022-47460 | GPU device | yes | not UNISOC code | Mali use-after-free, see the Mali section. |
 | (no CVE assigned, Aug 2026) | Modem VoLTE chain | n/a | firmware | Modem side, no kernel patch possible. It makes peer-written shared-memory values (sbuf/sblock pointers) untrusted, which is why the sbuf bounds fixes matter. |
 
-Not fixed, noted from the audit: `sblock_receive()` trusts the peer-supplied block address and length when computing `rxrecord` indexes and the `spool_read()` copy size; ION_SPRD_CUSTOM_PHYS returns physical addresses to any ion client by design. The debugfs/status dump in sbuf.c still reads ring sizes from the peer-writable header (read-only, debug). The ion dma-buf reference window above is also unfixed. All are hardening work, not clear bugs.
+Concrete residual defects (real bugs in this tree, independent of CVE attribution, still open):
+- ion: `sprd_ion_get_buffer()` and `sprd_ion_get_sg_table()` return an `ion_buffer`/`sg_table` pointer after dropping the fd's dma-buf reference, and the pointer is then stored by many in-tree callers (camera cpp lite_r1p0/r2p0/r4p0, cpp r1p0, isp g2v3, dcam_if_r5p0 statistics, cam_iommu, vsp) and used later through `sprd_ion_get_sg()`, `sprd_ion_set_dma()` and `sprd_ion_unmap_dma()`. A concurrent close of the fd can free the buffer (use-after-free; candidate for CVE-2023-49672). A correct fix means every caller keeps a dma-buf reference for the lifetime of its mapping, which is too invasive to do blind. `sprd_ion_get_phys_addr()` and `sprd_ion_is_reserved()` are fixed: they keep the reference while the buffer is used.
+- sbuf/sblock: `sblock_receive()` trusts the peer-supplied block address and length when computing `rxrecord` indexes, and `spool_read()` copies `blk.length` bytes from `blk.addr`. A compromised modem can drive out-of-bounds reads and writes there.
+- sbuf: the debugfs/status dump still reads ring sizes and pointers from the peer-writable header (debug only).
+- ION_SPRD_CUSTOM_PHYS returns physical addresses to any ion client.
+
+Uncertain attribution (separate from the above): the "probable" rows are matched from one-line bulletin text only; a fix there does not prove the bulletin bug is closed.
