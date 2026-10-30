@@ -433,6 +433,16 @@ def check_header(h, d):
             raise Error('header.json: missing or bad %s' % k)
     if 'extra_offset' in h and not isinstance(h['extra_offset'], int):
         raise Error('header.json: bad extra_offset')
+    pg = h['page_size']
+    if pg < 2048 or pg & (pg - 1):
+        raise Error('header.json: implausible page_size %d' % pg)
+    if h['id_recipe'] == 'raw':
+        try:
+            raw = bytes.fromhex(h.get('id_raw', ''))
+        except ValueError:
+            raise Error('header.json: bad id_raw')
+        if len(raw) != 32:
+            raise Error('header.json: id_raw must be 32 bytes')
     vb = os.path.exists(os.path.join(d, FILES['vbmeta']))
     avb = h.get('avb')
     if avb is None:
@@ -445,8 +455,12 @@ def check_header(h, d):
     for k in AVB_INT:
         if not isinstance(avb.get(k), int):
             raise Error('header.json: missing or bad avb.%s' % k)
-    if not isinstance(avb.get('footer_tail'), str):
-        raise Error('header.json: missing avb.footer_tail')
+    try:
+        tail = bytes.fromhex(avb.get('footer_tail'))
+    except (TypeError, ValueError):
+        raise Error('header.json: missing or bad avb.footer_tail')
+    if len(tail) != 28:
+        raise Error('header.json: avb.footer_tail must be 28 bytes')
     if not vb:
         raise Error('header.json has an avb section but %s is missing; '
                     'unpack again' % FILES['vbmeta'])
@@ -538,13 +552,20 @@ def cmd_pack(a):
             voff = avb['vbmeta_offset']
         else:
             voff = align(end, AVB_ALIGN)
+        if voff < end or voff % AVB_ALIGN:
+            raise Error('vbmeta offset 0x%x overlaps the image (end 0x%x) or '
+                        'is not %d-aligned' % (voff, end, AVB_ALIGN))
         if voff + len(vb) > pad_to - 64:
             raise Error('no room for the AVB vbmeta blob')
+        if os.path.exists(extra_p):
+            eo, el = h['extra_offset'], len(read_file(extra_p))
+            if voff < eo + el and eo < voff + len(vb):
+                raise Error('vbmeta blob overlaps the saved trailing data')
         out[voff:voff + len(vb)] = vb
         out[-64:] = AVB_FOOTER.pack(
             AVB_FOOTER_MAGIC, avb['major'], avb['minor'], end, voff,
             len(vb),
-            bytes.fromhex(avb['footer_tail'])[:28])
+            bytes.fromhex(avb['footer_tail']))
         st, d, note = avb_hash_state(vb, out, end)
         if st != 'ok':
             print('warning: AVB hash descriptor (partition %r) %s for this '
@@ -552,6 +573,23 @@ def cmd_pack(a):
                   'recovery test, reuse the stock recovery vbmeta.bin.' %
                   (d['name'] if d else '?', st + (' (%s)' % note if note else '')),
                   file=sys.stderr)
+    # self-check: the result must parse back to exactly what was asked for
+    ph, lay, pend = parse(bytes(out))
+    for f in ('kernel_addr', 'ramdisk_addr', 'second_addr', 'tags_addr',
+              'page_size', 'os_version'):
+        if ph[f] != h[f]:
+            raise Error('self-check: %s mismatch' % f)
+    for key, data in (('kernel', k), ('ramdisk', r), ('second', s),
+                      ('dt', dt)):
+        o, n = lay[key]
+        if n != len(data) or out[o:o + n] != data:
+            raise Error('self-check: %s section mismatch' % key)
+    if pend != end:
+        raise Error('self-check: image end mismatch')
+    if avb and not a.no_avb:
+        fa = find_avb(bytes(out), end)
+        if not fa or fa[0] != voff or fa[1] != len(vb) or fa[2] != end:
+            raise Error('self-check: AVB footer does not describe the image')
     write_file(a.out, bytes(out))
     print('packed %s: kernel %d ramdisk %d dt %d, image end 0x%x, total %d, '
           'id %s' % (a.out, len(k), len(r), len(dt), end, len(out),
