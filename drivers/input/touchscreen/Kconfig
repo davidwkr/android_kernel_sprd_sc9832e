@@ -149,7 +149,6 @@ config TOUCHSCREEN_CST9217
 	depends on I2C
 	depends on INPUT
 	depends on OF && GPIOLIB
-	default y
 	help
 	  Say Y here if you have a Hynitron CST9217 touch panel described
 	  by a "hynitron,hyn_ts" device tree node, as found on the DW100U
