@@ -56,11 +56,13 @@ python3 -I tools/sprd_bootimg.py unpack boot.img dir/
 python3 -I tools/sprd_bootimg.py pack dir/ new.img --kernel Image [--ramdisk FILE] [--dt FILE]
 ```
 
-- Layout: header page, kernel, ramdisk, DT table (each padded to 2048), zero fill, then the AVB vbmeta blob at the next 4096 boundary and the 64-byte AVB footer at the end of the 36700160-byte partition. `dt_size` is the header word after `page_size`.
-- The header id is SHA-1 over kernel, ramdisk, second (each followed by its size) and the DT table with its size, as in AOSP `mkbootimg` v0. `info` checks it; `pack` recomputes it.
-- `pack` with no substitutions reproduces the stock image byte for byte (checked on DM63, DW100U silver and one other DW100U stock dump, MT107, MT108 and DM82). With a new kernel the AVB blob moves to the new image end and the footer is updated, but its hash descriptor is stale: this only boots with the bootloader unlocked (orange).
-- The built `Image` is about 23 MB against 17 MB stock. It fits (about 25 MB used of 35 MB, and below the ramdisk address `0x05400000`). `pack` refuses a kernel whose runtime size reaches the ramdisk address.
-- Test procedure: flash the result to `recovery` only, as described in `TODO.md` section 7.
+- Layout: header page, kernel, ramdisk, DT table (each padded to 2048), zero fill, then the AVB vbmeta blob at the next 4096 boundary and the 64-byte AVB footer at the end of the partition (36700160 bytes for `boot`). `dt_size` is the header word after `page_size`, and the id includes the DT table: both follow the vendor (CAF-style) `mkbootimg` v0.
+- The header id is SHA-1 over kernel, ramdisk, second (each followed by its size) and the DT table with its size. `info` checks it; `pack` recomputes it.
+- Byte-for-byte check: unpack then pack with no substitutions reproduces all 6 stock dumps: DM63, DW100U silver (Magisk-patched ramdisk), DW100U (second stock dump, `sfd_tool/dw100u/boot.img`, older kernel build, unpatched ramdisk), MT107, MT108, DM82.
+- AVB: the stock vbmeta blobs are signed (SHA256_RSA2048) with a hash descriptor for partition `boot`. With a changed image `pack` moves the blob to the new image end, rewrites the footer (keeping its version fields) and warns when the descriptor hash no longer matches. A stale hash is the normal state of a modified image on an unlocked (orange) device (the Magisk-patched silver dump already has one and boots), so the footer is kept by default. `--no-avb` drops it; do not use it for the first test.
+- Footer position: pass `--partition-size N` with the real size of the target partition. Without it `pack` assumes the stock `boot` size and warns. The partition XMLs of MT107, MT108 and DM82 list `recovery` at 35 MB (36700160 bytes, same as `boot`); the DM63 and DW100U sizes are not recorded here, read them from the device first.
+- The built `Image` is about 23 MB against 17 MB stock. On a DM63 copy it uses about 25.7 MB of 35 MB. `pack` refuses a kernel where `kernel_addr + text_offset + max(image_size, file size)` reaches the ramdisk address `0x05400000`. These header addresses may not be the real SPRD U-Boot load addresses, so the check is a sanity limit only.
+- Recovery test (see `TODO.md` section 7): read the `recovery` partition size, preferably dump the stock `recovery` (needs the owner's OK, it is device access), unpack it, and reuse its `vbmeta.bin` (partition `recovery`, recovery key) with our kernel, the boot ramdisk and the DT table: copy that `vbmeta.bin` into the unpacked boot directory, then `pack DIR recovery-test.img --partition-size SIZE --kernel Image`.
 
 ### Partitions (same on all three)
 

@@ -19,8 +19,9 @@
 #   AVB vbmeta blob at align(image_end, 4096), AVB footer in the last 64
 #   bytes of the partition
 #
-# The header id is SHA-1 over kernel, ramdisk, second (each followed by its
-# size as le32) and, when dt_size is non-zero, the dt table plus its size.
+# dt_size and the id recipe below follow the vendor (CAF-style) mkbootimg v0:
+# the id is SHA-1 over kernel, ramdisk, second (each followed by its size as
+# le32) and, when dt_size is non-zero, the dt table plus its size.
 # The recipe is detected at unpack and stored in header.json.
 #
 # Only the python3 standard library is used. Input images are treated as
@@ -150,9 +151,50 @@ def find_avb(img, end):
     if f[0] != AVB_FOOTER_MAGIC:
         return None
     orig, voff, vsz = f[3], f[4], f[5]
-    if voff < end or voff + vsz > len(img) - 64 or img[voff:voff + 4] != b'AVB0':
+    if orig > voff or voff < end or voff + vsz > len(img) - 64 or img[voff:voff + 4] != b'AVB0':
         return None
     return voff, vsz, orig
+
+
+def avb_hash_desc(vb):
+    """First hash descriptor of a vbmeta blob, or None."""
+    if len(vb) < 256 or vb[:4] != b'AVB0':
+        return None
+    auth, aux = struct.unpack_from('>QQ', vb, 12)
+    doff, dsz = struct.unpack_from('>QQ', vb, 96)
+    p = 256 + auth + doff
+    end = p + dsz
+    if end > len(vb):
+        return None
+    while p + 16 <= end:
+        tag, n = struct.unpack_from('>QQ', vb, p)
+        if tag == 2 and n >= 116:
+            isz = struct.unpack_from('>Q', vb, p + 16)[0]
+            algo = vb[p + 24:p + 56].rstrip(b'\0').decode('ascii', 'replace')
+            nl, sl, dl = struct.unpack_from('>III', vb, p + 56)
+            q = p + 132
+            if q + nl + sl + dl > end:
+                return None
+            return dict(image_size=isz, algo=algo,
+                        name=vb[q:q + nl].decode('ascii', 'replace'),
+                        salt=vb[q + nl:q + nl + sl],
+                        digest=vb[q + nl + sl:q + nl + sl + dl])
+        p += 16 + align(n, 8)
+    return None
+
+
+def avb_hash_state(vb, image, size):
+    """'ok', 'stale' or 'unknown' for the hash descriptor over image[:size]."""
+    d = avb_hash_desc(vb)
+    if not d:
+        return 'unknown', None
+    try:
+        m = hashlib.new(d['algo'])
+    except ValueError:
+        return 'unknown', d
+    m.update(d['salt'])
+    m.update(bytes(image[:size]))
+    return ('ok' if m.digest() == d['digest'] else 'stale'), d
 
 
 # ------------------------------------------------------------ DT / FDT ---
@@ -193,6 +235,8 @@ def fdt_root_props(b):
 def dt_entries(dt):
     if dt[:4] != DT_MAGIC:
         return None
+    if len(dt) < 12:
+        raise Error('DT table too short')
     ver, cnt = struct.unpack_from('<II', dt, 4)
     if cnt > 256 or 12 + cnt * DT_ENTRY.size > len(dt):
         raise Error('bad DT table header')
@@ -260,6 +304,9 @@ def cmd_info(a):
     if avb:
         print('avb            vbmeta at 0x%x size %d, footer original size %d '
               '(image end 0x%x)' % (avb[0], avb[1], avb[2], end))
+        st, d = avb_hash_state(img[avb[0]:avb[0] + avb[1]], img, avb[2])
+        print('avb hash       %s (partition %r, %s)' %
+              (st, d['name'] if d else '?', d['algo'] if d else '?'))
     # id
     bid = bytes.fromhex(h['id_raw'])
     rec = detect_recipe(bid, k, r, s, dt)
@@ -301,7 +348,9 @@ def cmd_unpack(a):
     if avb:
         voff, vsz, orig = avb
         write_file(os.path.join(a.dir, FILES['vbmeta']), img[voff:voff + vsz])
-        h['avb'] = dict(vbmeta_offset=voff, vbmeta_size=vsz,
+        fv = AVB_FOOTER.unpack(img[-64:])
+        h['avb'] = dict(major=fv[1], minor=fv[2],
+                        vbmeta_offset=voff, vbmeta_size=vsz,
                         original_image_size=orig,
                         footer_tail=img[-28:].hex())
         rest[voff - end:voff - end + vsz] = bytes(vsz)
@@ -341,10 +390,15 @@ def cmd_pack(a):
     page = h['page_size']
 
     if len(k) >= 64 and k[56:60] == b'ARM\x64':
-        isz = struct.unpack_from('<Q', k, 16)[0]
-        if h['kernel_addr'] + isz > h['ramdisk_addr']:
-            raise Error('kernel runtime size %d overlaps the ramdisk '
-                        'address 0x%x' % (isz, h['ramdisk_addr']))
+        toff, isz = struct.unpack_from('<QQ', k, 8)
+        base = h['kernel_addr'] + toff
+        top = base + max(isz, len(k))
+        if top > h['ramdisk_addr']:
+            raise Error('kernel (text_offset 0x%x, runtime size %d, file '
+                        'size %d) ends at 0x%x, past the ramdisk address '
+                        '0x%x. Note: the header addresses may not be the '
+                        'real SPRD U-Boot load addresses.' %
+                        (toff, isz, len(k), top, h['ramdisk_addr']))
     elif a.kernel:
         print('warning: --kernel is not an uncompressed arm64 Image',
               file=sys.stderr)
@@ -369,8 +423,14 @@ def cmd_pack(a):
         out += b.ljust(align(len(b), page), b'\0')
     end = len(out)
 
-    pad_to = a.pad_to or h['image_size']
+    pad_to = a.partition_size or h['image_size']
     avb = h.get('avb')
+    if avb and not a.no_avb and not a.partition_size:
+        print('warning: no --partition-size, assuming the stock size %d. '
+              'The AVB footer goes at the end of the partition: for any '
+              'partition other than the stock boot one (e.g. recovery) '
+              'read its real size and pass --partition-size.' % pad_to,
+              file=sys.stderr)
     extra_p = os.path.join(a.dir, FILES['extra'])
     out += bytes(max(0, pad_to - end))
     if len(out) > pad_to:
@@ -391,12 +451,15 @@ def cmd_pack(a):
             raise Error('no room for the AVB vbmeta blob')
         out[voff:voff + len(vb)] = vb
         out[-64:] = AVB_FOOTER.pack(
-            AVB_FOOTER_MAGIC, 1, 0, end, voff, len(vb),
+            AVB_FOOTER_MAGIC, avb.get('major', 1), avb.get('minor', 0), end, voff,
+            len(vb),
             bytes.fromhex(avb['footer_tail'])[:28])
-        if changed:
-            print('warning: AVB hash descriptor is stale (image changed); '
-                  'only valid on an unlocked (orange) device',
-                  file=sys.stderr)
+        st, d = avb_hash_state(vb, out, end)
+        if st != 'ok':
+            print('warning: AVB hash descriptor (partition %r) %s for this '
+                  'image; only valid on an unlocked (orange) device. For a '
+                  'recovery test, reuse the stock recovery vbmeta.bin.' %
+                  (d['name'] if d else '?', st), file=sys.stderr)
     write_file(a.out, bytes(out))
     print('packed %s: kernel %d ramdisk %d dt %d, image end 0x%x, total %d, '
           'id %s' % (a.out, len(k), len(r), len(dt), end, len(out),
@@ -421,16 +484,19 @@ def main():
     p.add_argument('--kernel', help='replacement kernel Image')
     p.add_argument('--ramdisk', help='replacement ramdisk')
     p.add_argument('--dt', help='replacement SPRD DT table')
-    p.add_argument('--pad-to', type=int, default=0,
-                   help='pad the output to N bytes (default: stock size, '
-                        'normally %d)' % DEFAULT_PAD_TO)
+    p.add_argument('--partition-size', '--pad-to', dest='partition_size',
+                   type=int, default=0,
+                   help='target partition size in bytes; zero fill up to it '
+                        'and put the AVB footer at its end (default: stock '
+                        'boot size, normally %d; pass it explicitly for '
+                        'recovery)' % DEFAULT_PAD_TO)
     p.add_argument('--no-avb', action='store_true',
                    help='drop the AVB vbmeta blob and footer')
     p.set_defaults(fn=cmd_pack)
     a = ap.parse_args()
     try:
         return a.fn(a)
-    except (Error, OSError) as e:
+    except (Error, OSError, struct.error, ValueError, UnicodeError) as e:
         print('error: %s' % e, file=sys.stderr)
         return 1
 

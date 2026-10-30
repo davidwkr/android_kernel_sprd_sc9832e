@@ -128,6 +128,7 @@ Present in this tree and used: ADF display (`drivers/video/adf/sprd`, matches st
 
 ### 7. Test (safe order)
 
+- [ ] Before flashing to recovery: (a) read the `recovery` partition size first and pack with `--partition-size SIZE` (the AVB footer must sit at its end); (b) preferably dump the stock recovery partition (needs the owner's OK, device access), unpack it and reuse ITS `vbmeta.bin` (partition `recovery`, recovery key) with our kernel + boot ramdisk + DT table; (c) do not use `--no-avb` for the first test. Details in `devices/README.md`, "Repacking the boot image".
 - [ ] Flash the test image to the **recovery** partition and start it with `adb reboot recovery`. If it doesn't boot, a normal reboot uses the untouched `boot` partition.
 - [ ] Have a full partition backup and the UNISOC download tool (`sfd_tool`) ready for unbrick.
 - [ ] DW100U silver first (touch driver already present), then V13M, then DM63 (after the CST0xx port).
