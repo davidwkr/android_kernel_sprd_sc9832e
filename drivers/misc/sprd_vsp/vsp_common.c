@@ -170,7 +170,8 @@ long compat_vsp_ioctl(struct file *filp, unsigned int cmd,
 #endif
 
 int vsp_get_iova(struct vsp_dev_t *vsp_hw_dev,
-		 struct vsp_iommu_map_data *mapdata, void __user *arg)
+		 struct vsp_iommu_map_data *mapdata, void __user *arg,
+		 struct sprd_ion_pin_list *pins)
 {
 	int ret = 0;
 	struct sprd_iommu_map_data iommu_map_data;
@@ -190,7 +191,22 @@ int vsp_get_iova(struct vsp_dev_t *vsp_hw_dev,
 
 	iommu_map_data.ch_type = SPRD_IOMMU_FM_CH_RW;
 	ret = sprd_iommu_map(vsp_hw_dev->vsp_dev, &iommu_map_data);
-	sprd_ion_put(held);
+	if (ret) {
+		sprd_ion_put(held);
+	} else if (sprd_ion_pin_add(pins, iommu_map_data.iova_addr,
+				    iommu_map_data.iova_size, held)) {
+		/* keep the buffer alive while mapped, or do not map at all */
+		struct sprd_iommu_unmap_data undo = {
+			.iova_addr = iommu_map_data.iova_addr,
+			.iova_size = iommu_map_data.iova_size,
+			.ch_type = SPRD_IOMMU_FM_CH_RW,
+			.buf = NULL,
+		};
+
+		sprd_iommu_unmap(vsp_hw_dev->vsp_dev, &undo);
+		sprd_ion_put(held);
+		ret = -ENOMEM;
+	}
 	if (!ret) {
 		mapdata->iova_addr = iommu_map_data.iova_addr;
 		mapdata->size = iommu_map_data.iova_size;
@@ -212,7 +228,8 @@ int vsp_get_iova(struct vsp_dev_t *vsp_hw_dev,
 	return ret;
 }
 int vsp_free_iova(struct vsp_dev_t *vsp_hw_dev,
-		  struct vsp_iommu_map_data *ummapdata)
+		  struct vsp_iommu_map_data *ummapdata,
+		  struct sprd_ion_pin_list *pins)
 {
 	int ret = 0;
 	struct sprd_iommu_unmap_data iommu_ummap_data;
@@ -230,9 +247,12 @@ int vsp_free_iova(struct vsp_dev_t *vsp_hw_dev,
 	if (ret)
 		pr_err("vsp iommu-unmap failed ret %d addr&size 0x%lx 0x%zx\n",
 			ret, ummapdata->iova_addr, ummapdata->size);
-	else
+	else {
+		sprd_ion_pin_release(pins, ummapdata->iova_addr,
+				     ummapdata->size);
 		pr_debug("vsp iommu-unmap success iova addr 0x%lx size 0x%zx\n",
 			ummapdata->iova_addr, ummapdata->size);
+	}
 	sprd_iommu_suspend(vsp_hw_dev->vsp_dev);
 	vsp_clk_disable(vsp_hw_dev);
 

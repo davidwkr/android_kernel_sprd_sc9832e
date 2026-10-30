@@ -417,7 +417,7 @@ static long vsp_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		}
 
 		ret = vsp_get_iova(&vsp_hw_dev, &mapdata,
-					(void __user *)arg);
+					(void __user *)arg, &vsp_fp->pins);
 
 		break;
 
@@ -432,7 +432,7 @@ static long vsp_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			return -EFAULT;
 		}
 
-		ret = vsp_free_iova(&vsp_hw_dev, &ummapdata);
+		ret = vsp_free_iova(&vsp_hw_dev, &ummapdata, &vsp_fp->pins);
 
 		break;
 
@@ -828,6 +828,7 @@ static int vsp_open(struct inode *inode, struct file *filp)
 	init_waitqueue_head(&vsp_fp->wait_queue_work);
 	vsp_fp->vsp_int_status = 0;
 	vsp_fp->condition_work = 0;
+	sprd_ion_pin_init(&vsp_fp->pins);
 
 	ret = vsp_pw_on(VSP_PW_DOMAIN_VSP);
 	if (ret != 0) {
@@ -877,6 +878,7 @@ static int vsp_release(struct inode *inode, struct file *filp)
 		vsp_core_pw_off();
 	vsp_pw_off(VSP_PW_DOMAIN_VSP);
 
+	sprd_ion_pin_release_all(&vsp_fp->pins);
 	pr_info("vsp_release %p\n", vsp_fp);
 	kfree(filp->private_data);
 	filp->private_data = NULL;

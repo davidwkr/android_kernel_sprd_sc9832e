@@ -245,6 +245,88 @@ void sprd_ion_put(struct dma_buf *held)
 }
 EXPORT_SYMBOL(sprd_ion_put);
 
+struct sprd_ion_pin {
+	struct list_head node;
+	struct dma_buf *dmabuf;
+	unsigned long iova;
+	size_t size;
+};
+
+void sprd_ion_pin_init(struct sprd_ion_pin_list *list)
+{
+	INIT_LIST_HEAD(&list->head);
+	spin_lock_init(&list->lock);
+	list->count = 0;
+}
+EXPORT_SYMBOL(sprd_ion_pin_init);
+
+/* On success the list owns the caller's reference @dmabuf. */
+int sprd_ion_pin_add(struct sprd_ion_pin_list *list, unsigned long iova,
+		     size_t size, struct dma_buf *dmabuf)
+{
+	struct sprd_ion_pin *pin;
+
+	pin = kzalloc(sizeof(*pin), GFP_KERNEL);
+	if (!pin)
+		return -ENOMEM;
+	pin->dmabuf = dmabuf;
+	pin->iova = iova;
+	pin->size = size;
+
+	spin_lock(&list->lock);
+	if (list->count >= SPRD_ION_PIN_MAX) {
+		spin_unlock(&list->lock);
+		kfree(pin);
+		return -ENOSPC;
+	}
+	list_add_tail(&pin->node, &list->head);
+	list->count++;
+	spin_unlock(&list->lock);
+
+	return 0;
+}
+EXPORT_SYMBOL(sprd_ion_pin_add);
+
+void sprd_ion_pin_release(struct sprd_ion_pin_list *list, unsigned long iova,
+			  size_t size)
+{
+	struct sprd_ion_pin *pin, *found = NULL;
+
+	spin_lock(&list->lock);
+	list_for_each_entry(pin, &list->head, node) {
+		if (pin->iova == iova && pin->size == size) {
+			found = pin;
+			list_del(&pin->node);
+			list->count--;
+			break;
+		}
+	}
+	spin_unlock(&list->lock);
+
+	if (found) {
+		dma_buf_put(found->dmabuf);
+		kfree(found);
+	}
+}
+EXPORT_SYMBOL(sprd_ion_pin_release);
+
+void sprd_ion_pin_release_all(struct sprd_ion_pin_list *list)
+{
+	LIST_HEAD(release);
+	struct sprd_ion_pin *pin, *next;
+
+	spin_lock(&list->lock);
+	list_splice_init(&list->head, &release);
+	list->count = 0;
+	spin_unlock(&list->lock);
+
+	list_for_each_entry_safe(pin, next, &release, node) {
+		dma_buf_put(pin->dmabuf);
+		kfree(pin);
+	}
+}
+EXPORT_SYMBOL(sprd_ion_pin_release_all);
+
 int sprd_ion_get_sg(void *buf, struct sg_table **table)
 {
 	struct ion_buffer *buffer;

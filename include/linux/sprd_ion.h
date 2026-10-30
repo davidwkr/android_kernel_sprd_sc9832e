@@ -17,6 +17,8 @@
 #include <uapi/linux/sprd_ion.h>
 #include <linux/dma-buf.h>
 #include <linux/scatterlist.h>
+#include <linux/list.h>
+#include <linux/spinlock.h>
 
 struct ion_client *sprd_ion_client_create(const char *name);
 
@@ -43,6 +45,29 @@ int sprd_ion_get_buffer_ref(int fd, struct dma_buf *dmabuf,
 			    struct dma_buf **held);
 
 void sprd_ion_put(struct dma_buf *held);
+
+/*
+ * Per-open-file record of dma-buf references that back live IOVA mappings.
+ * A reference taken by sprd_ion_get_*_ref() is handed to the list with
+ * sprd_ion_pin_add() when the buffer is mapped for the hardware, and is
+ * dropped by sprd_ion_pin_release() at the matching unmap or by
+ * sprd_ion_pin_release_all() when the file is closed. Bounded to
+ * SPRD_ION_PIN_MAX entries.
+ */
+#define SPRD_ION_PIN_MAX 256
+
+struct sprd_ion_pin_list {
+	struct list_head head;
+	spinlock_t lock;
+	unsigned int count;
+};
+
+void sprd_ion_pin_init(struct sprd_ion_pin_list *list);
+int sprd_ion_pin_add(struct sprd_ion_pin_list *list, unsigned long iova,
+		     size_t size, struct dma_buf *dmabuf);
+void sprd_ion_pin_release(struct sprd_ion_pin_list *list, unsigned long iova,
+			  size_t size);
+void sprd_ion_pin_release_all(struct sprd_ion_pin_list *list);
 
 int sprd_ion_get_sg(void *buf, struct sg_table **table);
 

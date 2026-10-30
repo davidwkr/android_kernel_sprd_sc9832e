@@ -40,6 +40,8 @@ struct jpg_fh {
 	int is_jpg_acquired;
 	int is_clock_enabled;
 	struct jpg_dev_t *jpg_hw_dev;
+	/* dma-bufs behind live mappings of this file */
+	struct sprd_ion_pin_list pins;
 };
 
 struct sprd_jpg_cfg_data {
@@ -114,9 +116,11 @@ long compat_jpg_ioctl(struct file *filp, unsigned int cmd,
 			     unsigned long arg);
 #endif
 int jpg_get_iova(struct jpg_dev_t *jpg_hw_dev,
-		 struct jpg_iommu_map_data *mapdata, void __user *arg);
+		 struct jpg_iommu_map_data *mapdata, void __user *arg,
+		 struct sprd_ion_pin_list *pins);
 int jpg_free_iova(struct jpg_dev_t *jpg_hw_dev,
-		  struct jpg_iommu_map_data *ummapdata);
+		  struct jpg_iommu_map_data *ummapdata,
+		  struct sprd_ion_pin_list *pins);
 long jpg_ioctl(struct file *filp, unsigned int cmd, unsigned long arg);
 int sprd_jpg_pw_on(void);
 int sprd_jpg_pw_off(void);
