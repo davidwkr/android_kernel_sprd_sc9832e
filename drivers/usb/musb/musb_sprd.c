@@ -1238,8 +1238,21 @@ static void sprd_musb_idle_work(struct work_struct *work)
 		}
 		dev_info(glue->dev, "host mode idle, back to device mode\n");
 		ret = __sprd_musb_role_set(glue, false, false);
-		if (ret)
+		if (ret) {
+			/*
+			 * Failed with host still up (-EIO: boost off, wake
+			 * lock kept): put the boost back so a device that
+			 * showed up meanwhile keeps working, and retry later.
+			 */
 			dev_warn(glue->dev, "idle switch failed: %d\n", ret);
+			spin_lock_irqsave(&glue->lock, flags);
+			host = glue->dr_mode == USB_DR_MODE_HOST;
+			spin_unlock_irqrestore(&glue->lock, flags);
+			if (host) {
+				musb_sprd_set_otg_en(glue, 1);
+				sprd_musb_idle_arm(glue);
+			}
+		}
 	}
 	mutex_unlock(&glue->role_lock);
 }
@@ -1250,6 +1263,10 @@ static int sprd_musb_usb_notify(struct notifier_block *nb,
 {
 	struct usb_device *udev = data;
 	struct sprd_glue *glue = READ_ONCE(role_glue);
+
+	/* USB_BUS_ADD/REMOVE carry a struct usb_bus, not a usb_device */
+	if (action != USB_DEVICE_ADD && action != USB_DEVICE_REMOVE)
+		return NOTIFY_DONE;
 
 	if (!glue || !glue->musb || !udev->parent ||
 	    udev->bus->controller != &glue->musb->dev)
