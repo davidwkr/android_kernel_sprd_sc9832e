@@ -57,6 +57,7 @@ struct hrs3xxx_data {
 	int power_gpio;		/* < 0 when the board has no power switch */
 	unsigned int mode;	/* 0 = off, 1..3 = measurement mode */
 	bool powered;
+	bool ready;		/* input device registered; work may run */
 };
 
 static int hrs3xxx_read_reg(struct i2c_client *client, u8 reg, u8 *val)
@@ -152,7 +153,7 @@ static void hrs3xxx_work(struct work_struct *work)
 
 	/* hrs3xxx_set_mode() cancels this work without holding the lock. */
 	mutex_lock(&data->lock);
-	if (data->mode) {
+	if (data->ready && data->mode) {
 		hrs3xxx_power_on(data);	/* no-op unless resuming */
 		hrs3xxx_report(data);
 		schedule_delayed_work(&data->work,
@@ -168,10 +169,13 @@ static void hrs3xxx_set_mode(struct hrs3xxx_data *data, unsigned int mode)
 
 	mutex_lock(&data->lock);
 	if (mode) {
-		hrs3xxx_power_on(data);
 		data->mode = mode;
-		schedule_delayed_work(&data->work,
+		/* Before registration completes only remember the request. */
+		if (data->ready) {
+			hrs3xxx_power_on(data);
+			schedule_delayed_work(&data->work,
 				msecs_to_jiffies(HRS3XXX_REPORT_PERIOD_MS));
+		}
 	} else {
 		data->mode = 0;
 		hrs3xxx_power_off(data);
@@ -349,16 +353,26 @@ static int hrs3xxx_probe(struct i2c_client *client,
 	input->dev.groups = hrs3xxx_groups;
 	data->input = input;
 
+	i2c_set_clientdata(client, data);
 	ret = input_register_device(input);
 	if (ret) {
 		dev_err(dev, "cannot register input device: %d\n", ret);
-		/* An early "enable" write may already have queued the work. */
+		/* ready was never set, so no work was queued; be defensive. */
 		cancel_delayed_work_sync(&data->work);
 		input_free_device(input);
 		goto err_off;
 	}
 
-	i2c_set_clientdata(client, data);
+	/* Start anything requested through sysfs during registration. */
+	mutex_lock(&data->lock);
+	data->ready = true;
+	if (data->mode) {
+		hrs3xxx_power_on(data);
+		schedule_delayed_work(&data->work,
+				msecs_to_jiffies(HRS3XXX_REPORT_PERIOD_MS));
+	}
+	mutex_unlock(&data->lock);
+
 	return 0;
 
 err_off:
@@ -369,6 +383,10 @@ err_off:
 static int hrs3xxx_remove(struct i2c_client *client)
 {
 	struct hrs3xxx_data *data = i2c_get_clientdata(client);
+
+	mutex_lock(&data->lock);
+	data->ready = false;
+	mutex_unlock(&data->lock);
 
 	/* Keep the input device alive until the work item is stopped. */
 	input_get_device(data->input);
@@ -409,7 +427,7 @@ static int hrs3xxx_resume(struct device *dev)
 
 	mutex_lock(&data->lock);
 	/* No sleeping here: the work item powers the chip back on. */
-	if (data->mode)
+	if (data->ready && data->mode)
 		schedule_delayed_work(&data->work, 0);
 	mutex_unlock(&data->lock);
 
