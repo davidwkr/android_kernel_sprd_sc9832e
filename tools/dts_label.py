@@ -141,8 +141,10 @@ def convert(cells, name, byph):
             if (t is None or cn not in t['props'] or not t['props'][cn]
                     or not valid(name, t)):
                 return None
+            if len(t['props'][cn]) != 1:
+                return None
             k = t['props'][cn][0]
-            if i + 1 + k > len(cells):
+            if not 0 <= k <= 16 or i + 1 + k > len(cells):
                 return None
             out.append(t)
             out += ['0x%02x' % c
