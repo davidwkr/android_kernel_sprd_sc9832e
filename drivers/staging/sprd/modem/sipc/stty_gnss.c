@@ -77,7 +77,7 @@ static void stty_handler (int event, void *data)
 					tty_insert_flip_char(stty->port, buf[i],
 							     TTY_NORMAL);
 				}
-				tty_schedule_flip(stty->port);
+				tty_flip_buffer_push(stty->port);
 			}
 			mutex_unlock(&stty->stat_lock);
 		} while (cnt == STTY_MAX_DATA_LEN);
