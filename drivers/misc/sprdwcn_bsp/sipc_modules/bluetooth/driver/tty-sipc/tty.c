@@ -220,7 +220,7 @@ static void stty_handler (int event, void *data)
 					if(retry_count != 10)
 						retry_count = 10;
 				}
-				tty_schedule_flip(stty->port);
+				tty_flip_buffer_push(stty->port);
 			}
 			mutex_unlock(&(stty->stat_lock));
 		} while(cnt == STTY_MAX_DATA_LEN);
