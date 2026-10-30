@@ -266,10 +266,13 @@ def main(src, dst):
             continue
         m = CELL_PROP.match(ln)
         if m and stack and (id(stack[-1]), m.group(2)) in repl:
+            proj = emitted + len(m.group(1)) + len(m.group(2)) + 8
+            for t in repl[(id(stack[-1]), m.group(2))]:
+                proj += (len(labels[id(t)]) + 2) if isinstance(t, dict) else len(t) + 1
+                if proj > budget:
+                    raise InputError('generated output too large')
             toks = ['&' + labels[id(t)] if isinstance(t, dict) else t
                     for t in repl[(id(stack[-1]), m.group(2))]]
-            if emitted + sum(len(x) + 1 for x in toks) > budget:
-                raise InputError('generated output too large')
             ln = '%s%s = <%s>;' % (m.group(1), m.group(2), ' '.join(toks))
         emitted += len(ln) + 1
         if emitted > budget:
