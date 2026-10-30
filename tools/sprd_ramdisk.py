@@ -19,6 +19,11 @@
 #       output is recompressed with the settings that reproduce the stock
 #       compressed stream (searched), else the nearest default
 #
+#   add-rc RAMDISK OUT --fragment FILE
+#       add FILE as /init.watch_tweaks.rc (new last entry before the
+#       trailer) and append "import /init.watch_tweaks.rc" to /init.rc; all
+#       other entries stay byte-identical; a second run is a no-op
+#
 # The ramdisk is the file written by "sprd_bootimg.py unpack". Compression is
 # detected by magic: gzip and xz are handled; lz4 (legacy or frame) and
 # bzip2/lzma-alone are reported and refused.
@@ -52,6 +57,8 @@ MAX_RECORDS = 100000     # .rc lines / .modinfo records parsed
 MAX_RC_SIZE = 1 << 20
 MAX_MODULES = 16
 MAX_NOTES = 100
+MAX_FRAGMENT = 4096
+FRAGMENT = 'init.watch_tweaks.rc'
 PATH_MAX = 4096
 MAX_XZ_MEM = 128 << 20   # xz decoder memory limit
 HEX8 = re.compile(rb'[0-9A-Fa-f]{8}')
@@ -509,19 +516,35 @@ def cmd_list(a):
     return 0
 
 
-def cmd_replace(a):
-    if os.path.abspath(a.out) == os.path.abspath(a.ramdisk):
-        raise Error('OUT must differ from RAMDISK')
-    p, entries, end = load(a.ramdisk)
+def check_clean(p, entries, end, why):
     for what, t in (('data after the compressed member', p.tail),
                     ('data after the cpio trailer', p.cpio[end:])):
         if t.strip(b'\0'):
             raise Error('%s is non-zero (%d bytes): a concatenated archive '
-                        'could override the swapped modules; refusing' %
-                        (what, len(t)))
+                        'could override %s; refusing' % (what, len(t), why))
     an = anomalies(entries)
     if an:
         raise Error('ambiguous cpio names, refusing: %s' % '; '.join(an))
+
+
+def write_out(path, blob):
+    d = os.path.dirname(os.path.abspath(path))
+    fd, tmp = tempfile.mkstemp(dir=d, prefix='.sprd_ramdisk.')
+    try:
+        with os.fdopen(fd, 'wb') as f:
+            f.write(blob)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
+
+
+def cmd_replace(a):
+    if os.path.abspath(a.out) == os.path.abspath(a.ramdisk):
+        raise Error('OUT must differ from RAMDISK')
+    p, entries, end = load(a.ramdisk)
+    check_clean(p, entries, end, 'the swapped modules')
     mods = module_entries(entries)
     if len(a.module) > MAX_MODULES:
         raise Error('more than %d --module arguments' % MAX_MODULES)
@@ -639,16 +662,7 @@ def cmd_replace(a):
     blob = compress(p, out)
     if decompress(blob).cpio != out:
         raise Error('self-check: recompressed ramdisk does not decode')
-    d = os.path.dirname(os.path.abspath(a.out))
-    fd, tmp = tempfile.mkstemp(dir=d, prefix='.sprd_ramdisk.')
-    try:
-        with os.fdopen(fd, 'wb') as f:
-            f.write(blob)
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, a.out)
-    except BaseException:
-        os.unlink(tmp)
-        raise
+    write_out(a.out, blob)
     print('replaced %d module(s); cpio %d -> %d bytes; %s; wrote %s (%d '
           'bytes)' % (len(target), len(p.cpio), len(out), p.describe(),
                       a.out, len(blob)))
@@ -658,6 +672,149 @@ def cmd_replace(a):
     if not target:
         print('no replacements: compressed stream %s the stock one' %
               ('IDENTICAL to' if blob == p.raw else 'differs from'))
+    return 0
+
+
+def import_state(data):
+    """True if /init.rc holds exactly one canonical import line of the
+    fragment, False if it never mentions it; anything else is ambiguous
+    (this does not try to tokenise like init)."""
+    key = b'watch_tweaks'
+    joined = re.sub(rb'[\s\\"]', b'', data)
+    n = data.count(key)
+    if n == 0 and joined.count(key) == 0:
+        return False
+    lines = data.split(b'\n')
+    canon = b'import /' + FRAGMENT.encode()
+    ok = [i for i, l in enumerate(lines)
+          if l == canon and (i == 0 or not lines[i - 1].endswith(b'\\'))]
+    if n == 1 and joined.count(key) == 1 and len(ok) == 1:
+        return True
+    raise Error('ambiguous existing reference to %s, fix init.rc by hand' %
+                FRAGMENT)
+
+
+def read_fragment(path):
+    with open(path, 'rb') as f:
+        d = f.read(MAX_FRAGMENT + 1)
+    if len(d) > MAX_FRAGMENT:
+        raise Error('fragment over %d bytes, refusing' % MAX_FRAGMENT)
+    if not d.strip():
+        raise Error('fragment is empty')
+    if not d.endswith(b'\n'):
+        raise Error('fragment must end with a newline')
+    if any(b not in (9, 10) and not 32 <= b < 127 for b in d):
+        raise Error('fragment must be printable ASCII (tab and LF only)')
+    if not any(l.strip() and not l.lstrip().startswith(b'#')
+               for l in d.split(b'\n')):
+        raise Error('fragment has only comments')
+    return d
+
+
+def hdr_bytes(like, f):
+    up = any(c in b'ABCDEF' for c in like[6:NEWC_HDR])
+    fmt = '%08X' if up else '%08x'
+    return NEWC_MAGIC + ''.join(fmt % f[k] for k in NEWC_FIELDS).encode()
+
+
+def cmd_add_rc(a):
+    if os.path.abspath(a.out) == os.path.abspath(a.ramdisk):
+        raise Error('OUT must differ from RAMDISK')
+    frag = read_fragment(a.fragment)
+    p, entries, end = load(a.ramdisk)
+    check_clean(p, entries, end, '/init.rc')
+    rcs = [e for e in entries if norm(e.name) == 'init.rc']
+    if not rcs:
+        raise Error('ramdisk has no /init.rc; refusing')
+    rc = rcs[0]
+    if not is_reg(rc):
+        raise Error('/init.rc is not a regular file; refusing')
+    if rc.f['nlink'] != 1 or rc.f['filesize'] == 0:
+        raise Error('/init.rc is a hard link (nlink %d, size %d); not '
+                    'supported' % (rc.f['nlink'], rc.f['filesize']))
+    if rc.f['filesize'] > MAX_RC_SIZE:
+        raise Error('/init.rc over 1 MiB; refusing')
+    rcdata = p.cpio[rc.data_off:rc.data_off + rc.f['filesize']]
+    have = [e for e in entries if norm(e.name) == FRAGMENT]
+    imported = import_state(rcdata)
+    if have:
+        x = have[0]
+        same = is_reg(x) and \
+            p.cpio[x.data_off:x.data_off + x.f['filesize']] == frag
+        if not same:
+            raise Error('/%s already exists with different content or '
+                        'type; refusing' % FRAGMENT)
+        if not imported:
+            raise Error('/%s exists but /init.rc does not import it; '
+                        'refusing a half-applied ramdisk' % FRAGMENT)
+        write_out(a.out, p.raw)
+        print('already applied: /%s present and imported; wrote an '
+              'unchanged copy %s' % (FRAGMENT, a.out))
+        return 0
+    if imported:
+        raise Error('/init.rc imports /%s but the file is missing; '
+                    'refusing' % FRAGMENT)
+    if rcdata.endswith(b'\\') or rcdata.endswith(b'\\\n'):
+        raise Error('/init.rc ends with a backslash line continuation; the '
+                    'import would join the previous line; refusing')
+    newrc = rcdata + (b'' if rcdata.endswith(b'\n') else b'\n') + \
+        b'import /' + FRAGMENT.encode() + b'\n'
+    if len(newrc) > MAX_RC_SIZE:
+        raise Error('new /init.rc over 1 MiB; refusing')
+    tr = entries[-1]
+    ino = max(e.f['ino'] for e in entries) + 1
+    if ino > 0xffffffff:
+        raise Error('no free inode number')
+    name = rc.name[:len(rc.name) - len('init.rc')] + FRAGMENT
+    nb = name.encode() + b'\0'
+    f = dict(rc.f, ino=ino, nlink=1,
+             filesize=len(frag), rdevmajor=0, rdevminor=0,
+             namesize=len(nb), check=0)
+    h = hdr_bytes(p.cpio[rc.off:rc.off + NEWC_HDR], f)
+    ent = h + nb + b'\0' * (pad4(NEWC_HDR + len(nb)) - NEWC_HDR - len(nb)) \
+        + frag + b'\0' * (pad4(len(frag)) - len(frag))
+    h2 = hdr_bytes(p.cpio[rc.off:rc.off + NEWC_HDR],
+                   dict(rc.f, filesize=len(newrc)))
+    out = (p.cpio[:rc.off] + h2 + p.cpio[rc.off + NEWC_HDR:rc.data_off] +
+           newrc + b'\0' * (pad4(len(newrc)) - len(newrc)) +
+           p.cpio[pad4(rc.data_off + rc.f['filesize']):tr.off] + ent +
+           p.cpio[tr.off:])
+    if len(out) > MAX_OUT:
+        raise Error('projected cpio size over the %d MiB cap' %
+                    (MAX_OUT >> 20))
+    # self-check: the result parses; only init.rc and the new entry differ
+    e2, end2 = parse_cpio(out)
+    if len(e2) != len(entries) + 1:
+        raise Error('self-check: entry count')
+    old = iter(entries)
+    for y in e2:
+        if y is e2[-2]:
+            if y.name != name or y.f != f or \
+                    out[y.data_off:y.data_off + len(frag)] != frag:
+                raise Error('self-check: new entry wrong')
+            continue
+        x = next(old)
+        fx = dict(x.f)
+        data = p.cpio[x.data_off:x.data_off + x.f['filesize']]
+        if x is rc:
+            fx['filesize'] = len(newrc)
+            data = newrc
+        if x.name != y.name or fx != y.f or \
+                out[y.data_off:y.data_off + y.f['filesize']] != data:
+            raise Error('self-check: entry %s changed unexpectedly' %
+                        safe_name(x.name))
+    if out[end2:] != p.cpio[end:]:
+        raise Error('self-check: trailer/tail changed')
+    blob = compress(p, out)
+    if decompress(blob).cpio != out:
+        raise Error('self-check: recompressed ramdisk does not decode')
+    write_out(a.out, blob)
+    print('added /%s (%d bytes) and its import; cpio %d -> %d bytes; %s; '
+          'wrote %s (%d bytes)' % (FRAGMENT, len(frag), len(p.cpio), len(out),
+                                   p.describe(), a.out, len(blob)))
+    if p.params is None:
+        print('note: the stock compressed stream is not reproducible; the '
+              'output uses default %s settings' % p.fmt)
     return 0
 
 
@@ -680,6 +837,13 @@ def main():
     p.add_argument('--symvers', help='Module.symvers of the kernel build: '
                    'also compare the module_layout CRC in __versions')
     p.set_defaults(fn=cmd_replace)
+    p = sub.add_parser('add-rc', help='add /%s and import it from /init.rc'
+                       % FRAGMENT)
+    p.add_argument('ramdisk')
+    p.add_argument('out')
+    p.add_argument('--fragment', required=True, metavar='FILE',
+                   help='init fragment (ASCII, up to %d bytes)' % MAX_FRAGMENT)
+    p.set_defaults(fn=cmd_add_rc)
     a = ap.parse_args()
     try:
         return a.fn(a)
