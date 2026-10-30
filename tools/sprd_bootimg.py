@@ -488,6 +488,9 @@ def cmd_pack(a):
         if off + len(e) > pad_to or off < end:
             raise Error('extra trailing data does not fit')
         out[off:off + len(e)] = e
+    elif 'extra_offset' in h:
+        raise Error('missing %s (header.json records trailing data at 0x%x); '
+                    'unpack again' % (extra_p, h['extra_offset']))
     if avb and not a.no_avb:
         vb = read_file(os.path.join(a.dir, FILES['vbmeta']))
         if end == h['image_end']:
