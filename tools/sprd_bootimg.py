@@ -422,8 +422,14 @@ def cmd_pack(a):
             return read_file(p)
         if override:
             raise Error('missing file %s' % p)
+        saved = h.get('dt_size' if key == 'dt' else key + '_size', 0)
+        if saved:
+            raise Error('missing %s (header.json says %d bytes); unpack again '
+                        'or pass it explicitly' % (p, saved))
         return b''
     k = part('kernel', a.kernel)
+    if not k:
+        raise Error('empty kernel')
     r = part('ramdisk', a.ramdisk)
     s = part('second', None)
     dt = part('dt', a.dt)
