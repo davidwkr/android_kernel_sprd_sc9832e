@@ -33,6 +33,8 @@
 #include "ion.h"
 
 struct ion_buffer *ion_handle_buffer(struct ion_handle *handle);
+/* NULL unless @dmabuf was exported by ion */
+struct ion_buffer *ion_dma_buf_to_buffer(struct dma_buf *dmabuf);
 
 /**
  * allocation flags - the ion buffer needn't to clear zero.

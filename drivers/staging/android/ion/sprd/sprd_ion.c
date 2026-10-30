@@ -404,7 +404,7 @@ static long sprd_ion_ioctl(struct ion_client *client, unsigned int cmd,
 				return PTR_ERR(dmabuf);
 			}
 
-			buffer = dmabuf->priv;
+			buffer = ion_dma_buf_to_buffer(dmabuf);
 			if (!buffer || !buffer->heap || !buffer->sg_table ||
 			    !buffer->heap->device) {
 				dma_buf_put(dmabuf);
@@ -454,7 +454,12 @@ static long sprd_ion_ioctl(struct ion_client *client, unsigned int cmd,
 			return PTR_ERR(dmabuf);
 		}
 
-		buffer = dmabuf->priv;
+		buffer = ion_dma_buf_to_buffer(dmabuf);
+		if (!buffer || !buffer->heap || !buffer->sg_table ||
+		    !buffer->heap->device) {
+			dma_buf_put(dmabuf);
+			return -EINVAL;
+		}
 		heap = buffer->heap;
 
 		dma_sync_sg_for_cpu(heap->device, buffer->sg_table->sgl,
