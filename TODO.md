@@ -173,11 +173,11 @@ Specs from the stock boot dumps only (no unit examined): [`devices/mt107/SPEC.md
 | `sprd_aod_idle` | applies (CO5300) | **no** (not a CO5300) | applies (CO5300) |
 
 - [ ] Read on each unit (or a U-Boot log with the `lcd_id` line): exact `lcd_id`, which touch chip answers, which heart-rate chip, accelerometer.
-- [ ] Per-device config fragments (`mt107.fragment`, `mt108.fragment`, `dm82.fragment`) with the touch, HRS and AOD options that apply.
-- [ ] `hrs3xxx`: accept the HRS3300 chip ID as well (it only accepts the HRS3918, ID `0x27`); check the register differences.
+- [x] Per-device config fragments (`mt107.fragment`, `mt108.fragment`, `dm82.fragment`): touch (cst0xx + hyn where the DT lists both), HRS, AOD (MT107/DM82), sc7a22 and QMA6981. Compatibles checked against the of_match tables (all match); probe error paths of both touch drivers use devm GPIO/regulator, so a non-fitted chip releases the shared GPIOs. Build-checked only.
+- [x] `hrs3xxx`: accepts the HRS3300 chip ID `0x21` too (`HEARTRATE_HRS3300`, `chipinfo` reports `hrs3300`). Probe, standby and ABI only; HRS3300 measurement (ENABLE/PDRIVER setup, data registers) is not implemented and nothing is verified on a unit.
 - [ ] Betterlife touch (`btl_ts`, 0x2d): port a driver only if a unit has that chip.
 - [ ] `bd1xxx_hr` heart rate, `och1970` and `msp891` sensors: no driver in this tree; port only if fitted and wanted.
-- [ ] `sprd_aod_idle`: MT107 / DM82 only; check the touch match table covers the fitted chip.
+- [x] `sprd_aod_idle`: MT107 / DM82 only (in their fragments); the match table covers `cst0xx_ts` and `hyn_ts`, so either fitted chip works.
 - [ ] USB role switch on `gpios` cable-detect boards (MT108, DM82): not reviewed for that path (the glue's Type-C notifier is not used there); test before enabling `watch_otg.fragment`.
 - [ ] Charge CV override: the driver already caps at each unit's `chg-end-vol` (4395 mV on MT107/MT108).
 - [ ] MT107 camera: no ACK on i2c-0 (hardware, see the sfd_tool notes); nothing to do in the kernel.

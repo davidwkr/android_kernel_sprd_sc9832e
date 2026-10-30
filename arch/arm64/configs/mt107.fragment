@@ -1,0 +1,13 @@
+# MT107 (CO5300 412x502): see devices/mt107/SPEC.md. Merge on top of the
+# device config. The DT lists three touch candidates, two with drivers here (cst0xx_ts 0x38, hyn_ts 0x5a,
+# sharing the reset/irq GPIOs); the one that answers probes, the other
+# fails probe and releases its GPIOs. Not needed: btl_ts, bd1xxx_hr (no
+# driver in tree). watch_otg.fragment is deliberately not enabled.
+CONFIG_TOUCHSCREEN_CST0XX=y
+CONFIG_TOUCHSCREEN_CST9217=y
+CONFIG_INPUT_SENSORS_HRS3XXX=y
+CONFIG_HEARTRATE_HRS3918=y
+CONFIG_SPRD_AOD_IDLE=y
+CONFIG_SENSORS_SC7A22=y
+# "QST,qmax981" matches qma6981.c
+CONFIG_INPUT_QMA6981_I2C=y

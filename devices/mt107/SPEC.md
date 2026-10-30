@@ -187,3 +187,7 @@ Enabled in `stock.config` but missing from this source (`kgap.py`): `INPUT_FINGE
 6. **Modules / ramdisk:** rebuild `mali.ko`, `sprdbt_tty.ko`, `sprd_fm.ko`, `sprdwl_ng.ko` for the new kernel; the ramdisk was not unpacked for this analysis, so the module list is assumed to match the DM63.
 7. **Camera:** the open problem is hardware (no ACK on i2c-0 per `MT107_CAMERA.md`); no kernel gap known. The stock boot chain (`uboot`, `splloader`, `trustos`, `boot`) remains to be restored to rule out software.
 8. **Unverified:** stock firmware build, which touch / HR / accelerometer is fitted, panel id, and the module set. This needs a connected unit or the cmdline from the U-Boot log (`uboot_log.bin` was not read).
+
+## Config fragment
+
+`arch/arm64/configs/mt107.fragment`: both touch drivers (`TOUCHSCREEN_CST0XX`, `TOUCHSCREEN_CST9217`, whichever chip is fitted probes), `hrs3xxx` (HRS3918), `SPRD_AOD_IDLE` (CO5300 panel), `sc7a22`, `QMA6981_I2C` (for `qmax981`). The DT compatibles (`cst0xx,cst0xx_ts`, `hynitron,hyn_ts`, `QST,qmax981`, `sprd,sc7a22`, `tyhx,hrs3xxx`) all match the tree drivers. `watch_otg.fragment` is not included. Build-checked only, not run on a unit.

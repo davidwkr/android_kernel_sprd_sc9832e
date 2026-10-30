@@ -121,6 +121,7 @@ unsigned char step_count_delay = 0;
 #endif
 
 // macro define
+#define QMAX981_MIN_DELAY	10	/* ms, lower bound of the poll period */
 #define delay_to_jiffies(d) ((d)?msecs_to_jiffies(d):1)
 #define actual_delay(d)     (jiffies_to_msecs(delay_to_jiffies(d)))
 
@@ -172,6 +173,7 @@ struct qmax981_data {
 	struct delayed_work work;
 	unsigned char product_code;
 	unsigned char resolution;
+	bool dt_pdata;			/* platform_data allocated by this driver */
 };
 
 /******************************
@@ -559,7 +561,7 @@ static void qmax981_work_func(struct work_struct *work)
 {
 	static struct qmax981acc acc = { 0 };
 	struct qmax981_data *qmax981 = container_of((struct delayed_work *)work, struct qmax981_data, work);
-	unsigned long delay = msecs_to_jiffies(atomic_read(&qmax981->delay));
+	unsigned long delay = msecs_to_jiffies(max_t(int, atomic_read(&qmax981->delay), QMAX981_MIN_DELAY));
 
 	int pre_enable_acc = atomic_read(&qmax981->enable);
 
@@ -593,7 +595,7 @@ static void qmax981_work_func(struct work_struct *work)
 	mutex_unlock(&qmax981->value_mutex);
 #ifdef QMAX981_ACC_STEP_COUNT
 	if (pre_enable_acc == 0)
-		delay = msecs_to_jiffies(atomic_read(&qmax981->delay)/10);  // step counter use slow mode
+		delay = msecs_to_jiffies(max_t(int, atomic_read(&qmax981->delay) / 10, QMAX981_MIN_DELAY));  // step counter use slow mode
 #endif
 	schedule_delayed_work(&qmax981->work, delay);
 }
@@ -649,8 +651,8 @@ static void qmax981_input_deinit(struct qmax981_data *qmax981)
 	LOG_INFO("%s called\n", __func__);
 #endif
 
+	/* unregistering drops the last reference: no input_free_device() */
 	input_unregister_device(dev);
-	input_free_device(dev);
 }
 
 static ssize_t qmax981_register_store(struct device *dev,
@@ -665,7 +667,8 @@ static ssize_t qmax981_register_store(struct device *dev,
 	LOG_INFO("%s called\n", __func__);
 #endif
 
-	sscanf(buf, "%d %d", &address, &value);
+	if (sscanf(buf, "%d %d", &address, &value) != 2)
+		return -EINVAL;
 	if (0 != qmax981_smbus_write_byte(qmax981->client, (unsigned char)address,
 				(unsigned char *)&value))
 		return -EINVAL;
@@ -1049,6 +1052,8 @@ static void qmax981_set_delay(struct device *dev, int delay)
 
 	LOG_INFO("delay=%d\n", delay);
 
+	if (delay < QMAX981_MIN_DELAY)
+		delay = QMAX981_MIN_DELAY;
 	atomic_set(&qmax981->delay, delay);
 	mutex_lock(&qmax981->enable_mutex);
 
@@ -1070,6 +1075,8 @@ static ssize_t qmax981_delay_store(struct device *dev,
 	LOG_INFO("delay=%ld\n", delay);
 	if (delay > QMAX981_MAX_DELAY)
 		delay = QMAX981_MAX_DELAY;
+	if (delay < QMAX981_MIN_DELAY)
+		delay = QMAX981_MIN_DELAY;
 	atomic_set(&qmax981->delay, delay);
 
 	return count;
@@ -1288,6 +1295,9 @@ static int qmax981_open(struct inode *inode, struct file *file)
 		return err;
 	}
 
+	if (!qmax981_client || !i2c_get_clientdata(qmax981_client))
+		return -ENODEV;
+
 	file->private_data = i2c_get_clientdata(qmax981_client);
 
 	return 0;
@@ -1310,6 +1320,22 @@ static const struct file_operations qmax981_fops = {
 	.unlocked_ioctl = qmax981_ioctl,
 };
 
+static struct miscdevice qmax981_device;
+static struct class *gsensor_class;
+static struct device *gsensor_cmd_dev;
+
+static void qmax981_destroy_gsensor_dev(void)
+{
+	if (!gsensor_cmd_dev)
+		return;
+	device_remove_file(gsensor_cmd_dev, &dev_attr_delay_acc);
+	device_remove_file(gsensor_cmd_dev, &dev_attr_gsensor);
+	device_destroy(gsensor_class, 0);
+	class_destroy(gsensor_class);
+	gsensor_cmd_dev = NULL;
+	gsensor_class = NULL;
+}
+
 static int qmax981_remove(struct i2c_client *client)
 {
 	struct qmax981_data *qmax981 = i2c_get_clientdata(client);
@@ -1318,10 +1344,19 @@ static int qmax981_remove(struct i2c_client *client)
 	LOG_INFO("%s called\n", __func__);
 #endif
 
-	qmax981_set_enable(&client->dev, 0);
-
+	/* remove every entry point first, then stop the self-rearming work */
+	qmax981_destroy_gsensor_dev();
+	misc_deregister(&qmax981_device);
 	sysfs_remove_group(&qmax981->input->dev.kobj, &qmax981_attribute_group);
+	qmax981_set_enable(&client->dev, 0);
+	cancel_delayed_work_sync(&qmax981->work);
 	qmax981_input_deinit(qmax981);
+	g_qmax981_data = NULL;
+	qmax981_client = NULL;
+	if (qmax981->dt_pdata) {
+		kfree(client->dev.platform_data);	/* allocated by the DT parser */
+		client->dev.platform_data = NULL;
+	}
 	kfree(qmax981);
 
 	return 0;
@@ -1370,18 +1405,19 @@ static int qmax981_i2c_probe(struct i2c_client *client,
 	struct qmax981_data *qmax981 = NULL;
 	struct QMAX981_acc_platform_data *pdata = client->dev.platform_data;
 	int err = 0;
-	char buf = 0 ;
-	struct class *gsensor_class;
-	struct device *gsensor_cmd_dev;
+	char buf[16] = { 0 };	/* chip id string "XX-XX\n" */
 	struct device_node *np;
+	bool dt_pdata = false;
 
 	LOG_INFO("%s: probe start.\n", QMAX981_DEV_NAME);
 #ifdef CONFIG_OF
 		np = client->dev.of_node;
 		if (np && !pdata) {
 			pdata = QMAX981_acc_parse_dt(&client->dev);
-			if (pdata)
+			if (pdata) {
 				client->dev.platform_data = pdata;
+				dt_pdata = true;
+			}
 			if (!pdata) {
 				err = -ENOMEM;
 				goto exit_alloc_platform_data_failed;
@@ -1394,10 +1430,11 @@ static int qmax981_i2c_probe(struct i2c_client *client,
 	if (!qmax981) {
 		LOG_ERR("can't allocate memory for qmax981_data!\n");
 		err = -ENOMEM;
-		return err;
+		goto exit_free_pdata;
 	}
 
 	qmax981->product_code = 0;
+	qmax981->dt_pdata = dt_pdata;
 
 	mutex_init(&qmax981->enable_mutex);
 	mutex_init(&qmax981->value_mutex);
@@ -1405,9 +1442,8 @@ static int qmax981_i2c_probe(struct i2c_client *client,
 	/* setup i2c client */
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
 		LOG_ERR("%s: i2c function not support!\n", __func__);
-		kfree(qmax981);
 		err = -ENODEV;
-		return err;
+		goto exit_free_data;
 	}
 
 	pdata = client->dev.platform_data;
@@ -1426,18 +1462,19 @@ static int qmax981_i2c_probe(struct i2c_client *client,
 	}
 
 	qmax981->client = client;
-	qmax981_client = client;
 	i2c_set_clientdata(client, qmax981);
-	g_qmax981_data = qmax981;
-
 
 	dev_info(&client->dev, "%s found\n", id->name);
 
-	err = qmax981_read_chip_id(client, &buf);
+	err = qmax981_read_chip_id(client, buf);
 	if (err < 0) {
 		LOG_INFO("%s: qmax981 read id fail!\n", __func__);
-		return err;
+		goto exit_free_data;
 	}
+
+	/* the globals are only published once the chip answered */
+	qmax981_client = client;
+	g_qmax981_data = qmax981;
 
 	qmax981_init(qmax981);
 #ifdef QMAX981_ACC_STEP_COUNT
@@ -1448,42 +1485,85 @@ static int qmax981_i2c_probe(struct i2c_client *client,
 	err = qmax981_input_init(qmax981);
 	if (err < 0) {
 		LOG_ERR("%s: input init fail!\n", __func__);
-		kfree(qmax981);
-		return err;
+		goto exit_clear_globals;
 	}
 
 	err = sysfs_create_group(&qmax981->input->dev.kobj, &qmax981_attribute_group);
 	if (err < 0) {
 		LOG_ERR("%s: create group fail!\n", __func__);
-		qmax981_input_deinit(qmax981);
-		kfree(qmax981);
-		return err;
-	}
-
-	err = misc_register(&qmax981_device);
-	if (err) {
-		LOG_ERR("%s: create register fail!\n", __func__);
-	sysfs_remove_group(&qmax981->input->dev.kobj, &qmax981_attribute_group);
-		qmax981_input_deinit(qmax981);
-		kfree(qmax981);
-		return err;
+		goto exit_input_deinit;
 	}
 
 	gsensor_class = class_create(THIS_MODULE, "xr-gsensor");//client->name
-	if (IS_ERR(gsensor_class))
+	if (IS_ERR(gsensor_class)) {
+		err = PTR_ERR(gsensor_class);
 		LOG_INFO("Failed to create class(xr-gsensor)!\n");
+		gsensor_class = NULL;
+		goto exit_remove_group;
+	}
 	gsensor_cmd_dev = device_create(gsensor_class, NULL, 0, NULL, "device");
-	if (IS_ERR(gsensor_cmd_dev))
+	if (IS_ERR(gsensor_cmd_dev)) {
+		err = PTR_ERR(gsensor_cmd_dev);
 		LOG_INFO("Failed to create device(gsensor_cmd_dev)!\n");
+		gsensor_cmd_dev = NULL;
+		goto exit_class_destroy;
+	}
 	 /* /sys/class/xr-gsensor/device/gsensor */
-	if (device_create_file(gsensor_cmd_dev, &dev_attr_gsensor) < 0)
-	    LOG_INFO("Failed to create device file(%s)!\n", dev_attr_gsensor.attr.name);
+	err = device_create_file(gsensor_cmd_dev, &dev_attr_gsensor);
+	if (err < 0) {
+		LOG_INFO("Failed to create device file(%s)!\n", dev_attr_gsensor.attr.name);
+		goto exit_device_destroy;
+	}
 	/* /sys/class/xr-gsensor/device/delay_acc */
-	if (device_create_file(gsensor_cmd_dev, &dev_attr_delay_acc) < 0)
-	    LOG_INFO("Failed to create device file(%s)!\n", dev_attr_delay_acc.attr.name);
+	err = device_create_file(gsensor_cmd_dev, &dev_attr_delay_acc);
+	if (err < 0) {
+		LOG_INFO("Failed to create device file(%s)!\n", dev_attr_delay_acc.attr.name);
+		goto exit_remove_gsensor_file;
+	}
+
+	/* last: the misc device is the only interface an fd can hold across a
+	 * failed probe (misc_deregister() does not wait for open files), so
+	 * nothing fallible may come after it
+	 */
+	err = misc_register(&qmax981_device);
+	if (err) {
+		LOG_ERR("%s: create register fail!\n", __func__);
+		goto exit_remove_delay_file;
+	}
+
+	return 0;
+
+exit_remove_delay_file:
+	device_remove_file(gsensor_cmd_dev, &dev_attr_delay_acc);
+exit_remove_gsensor_file:
+	device_remove_file(gsensor_cmd_dev, &dev_attr_gsensor);
+exit_device_destroy:
+	device_destroy(gsensor_class, 0);
+	gsensor_cmd_dev = NULL;
+exit_class_destroy:
+	class_destroy(gsensor_class);
+	gsensor_class = NULL;
+exit_remove_group:
+	sysfs_remove_group(&qmax981->input->dev.kobj, &qmax981_attribute_group);
+	/* interfaces are gone: standby and make sure no work stays queued */
+	qmax981_set_mode(client, QMAX981_MODE_STANDBY);
+	atomic_set(&qmax981->enable, 0);
+	cancel_delayed_work_sync(&qmax981->work);
+exit_input_deinit:
+	qmax981_input_deinit(qmax981);
+exit_clear_globals:
+	g_qmax981_data = NULL;
+	qmax981_client = NULL;
+exit_free_data:
+	i2c_set_clientdata(client, NULL);
+	kfree(qmax981);
+exit_free_pdata:
+	if (dt_pdata) {
+		kfree(client->dev.platform_data);	/* allocated by the DT parser */
+		client->dev.platform_data = NULL;
+	}
 exit_alloc_platform_data_failed:
 	return err;
-
 }
 
 static int qmax981_i2c_remove(struct i2c_client *client)
@@ -1514,6 +1594,10 @@ static struct i2c_driver qmax981_driver = {
 		.name = QMAX981_DEV_NAME,
 		.owner = THIS_MODULE,
 		.of_match_table = qmax981_acc_of_match,
+		/* no sysfs unbind: misc_deregister() does not wait for open
+		 * files, so an fd kept open across remove() would use freed data
+		 */
+		.suppress_bind_attrs = true,
 	},
 	.probe    = qmax981_i2c_probe,
 	.remove   = qmax981_i2c_remove,

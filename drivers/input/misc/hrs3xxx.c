@@ -1,5 +1,5 @@
 /*
- * TYHX HRS3xxx family (HX3918 "hrs3918") heart-rate sensor driver.
+ * TYHX HRS3xxx family (HX3918 "hrs3918", HRS3300) heart-rate sensor driver.
  *
  * Provides the kernel interface the vendor Android sensors HAL expects:
  *
@@ -39,6 +39,7 @@
 #define HRS3XXX_REG_ID		0x00
 #define HRS3XXX_REG_ENABLE	0x01
 
+#define HRS3XXX_ID_HRS3300	0x21
 #define HRS3XXX_ID_HRS3918	0x27
 
 #define HRS3XXX_MODE_MAX	3	/* accepted values of "enable": 0..3 */
@@ -246,6 +247,13 @@ static const char *hrs3xxx_chip_name(u8 id)
 {
 	if (IS_ENABLED(CONFIG_HEARTRATE_HRS3918) && id == HRS3XXX_ID_HRS3918)
 		return "hrs3918";
+	/*
+	 * HRS3300: ENABLE (0x01) is the same register and 0 is also its
+	 * disabled state, so the power sequencing here is shared. Only the
+	 * ID is checked; no measurement path exists for either chip yet.
+	 */
+	if (IS_ENABLED(CONFIG_HEARTRATE_HRS3300) && id == HRS3XXX_ID_HRS3300)
+		return "hrs3300";
 
 	return NULL;
 }
