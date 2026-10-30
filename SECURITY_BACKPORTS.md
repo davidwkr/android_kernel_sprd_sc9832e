@@ -167,12 +167,12 @@ Sources: UNISOC security bulletins 2023-01, 2023-03, 2023-05 and 2024-02 (SC9832
 |---|---|---|---|---|
 | CVE-2022-39116, CVE-2022-39118 | sprd_sysdump | yes (CONFIG_SPRD_SYSDUMP=y) | fixed, "sysdump: bound sprd_sysdump write..." | 5-byte stack buffer, terminator written at [count]. Confident match. |
 | CVE-2022-47488 | spipe (sipc sbuf) | yes | probable, "sipc: sbuf: bound ring indexes..." and "sipc: spool: validate file offset..." | Peer-written rdptr could push txsize past the ring; int truncation of count; unchecked bufid; spool lseek offset. Defensive, match unproven. |
-| CVE-2022-48385 | cp_dump | yes (cproc "mem" dump) | probable, "cproc: reject negative seek offsets..." | Negative lseek offset mapped physical memory below the modem region. |
+| CVE-2022-48385 | cp_dump | yes (cproc "mem" dump) | probable, "cproc: reject negative seek offsets..." and "cproc: bound mini_dump segment offset..." | Negative lseek offset, and an int-truncated mini_dump offset after a large lseek, mapped physical memory below the modem region. |
 | CVE-2022-48389 | modem control device | yes (cproc mini_dump) | probable, same cproc commit | sprintf into a fixed stack buffer from shared-memory names. |
 | CVE-2022-48380, CVE-2022-48381 | modem control device | partly | not located | "Resource exhaustion / OOB write"; no matching code found in the built cproc. sprd_modem_control.c is not built on this config (hardened anyway, "modem_control: bound mini_dump..."). |
 | CVE-2023-49667, CVE-2023-49668, CVE-2023-49669, CVE-2023-49670 | cp_dump | yes | probable, covered by the cproc commit | Same code as CVE-2022-48385; no separate bug found. |
-| CVE-2023-49671 | ion | yes | probable, "ion: check dma-buf is an ion buffer..." | Type confusion on non-ion dma-bufs in INVALIDATE and MSYNC. Match unproven. |
-| CVE-2023-49672 | ion (use-after-free, logic error) | yes | not located | No specific path identified. A separate hardening commit stops ION_SPRD_CUSTOM_MAP_KERNEL leaking a kernel address. |
+| CVE-2023-49671 | ion | yes | probable, "ion: check dma-buf is an ion buffer..." and "ion: check ion dma-buf in sprd_ion helpers..." | Type confusion on non-ion dma-bufs in INVALIDATE, MSYNC and the exported helpers. Match unproven. |
+| CVE-2023-49672 | ion (use-after-free, logic error) | yes | not located (candidate, not fixed) | Best candidate: `get_ion_buffer()` in sprd_ion.c drops the dma-buf reference before callers use the returned ion_buffer (concurrent close frees it). Fixing needs an API change for out-of-tree callers. Separate hardening commits stop ION_SPRD_CUSTOM_MAP_KERNEL leaking a kernel address and add is-ion checks to the helpers. |
 | CVE-2022-48239, CVE-2022-48240 | camera driver | yes (CONFIG_SPRD_CAMERA=y) | not located | Description names no ioctl; not audited line by line. |
 | CVE-2022-48237, CVE-2022-48238 | Image Filter | unknown | not located | No matching module found in the tree. |
 | CVE-2022-47469, CVE-2022-47470, CVE-2022-47486 | ext4fsfilter | no | not applicable | Driver not present in this tree. |
@@ -182,4 +182,4 @@ Sources: UNISOC security bulletins 2023-01, 2023-03, 2023-05 and 2024-02 (SC9832
 | CVE-2022-47460 | GPU device | yes | not UNISOC code | Mali use-after-free, see the Mali section. |
 | (no CVE assigned, Aug 2026) | Modem VoLTE chain | n/a | firmware | Modem side, no kernel patch possible. It makes peer-written shared-memory values (sbuf/sblock pointers) untrusted, which is why the sbuf bounds fixes matter. |
 
-Not fixed, noted from the audit: `sblock_receive()` trusts the peer-supplied block address and length when computing `rxrecord` indexes and the `spool_read()` copy size; ION_SPRD_CUSTOM_PHYS returns physical addresses to any ion client by design. Both are hardening work, not clear bugs.
+Not fixed, noted from the audit: `sblock_receive()` trusts the peer-supplied block address and length when computing `rxrecord` indexes and the `spool_read()` copy size; ION_SPRD_CUSTOM_PHYS returns physical addresses to any ion client by design. The debugfs/status dump in sbuf.c still reads ring sizes from the peer-writable header (read-only, debug). The ion dma-buf reference window above is also unfixed. All are hardening work, not clear bugs.
