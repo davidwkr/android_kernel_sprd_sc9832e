@@ -2,9 +2,10 @@
 
 Goal: build this tree (UNISOC SC9832E / SL8541E, Linux 4.4.147, from LineageOS 17.1) for the DW100Ultra (two hardware variants) and the DM63 smartwatches, which ship Android 8.1 on a vendor 4.4.83 kernel.
 
-State as of 2026-10-29: analysis done, nothing built or flashed yet.
+State as of 2026-10-30: everything below marked done is merged into `security-backports` and builds; **nothing has been flashed or run on a watch yet**. Current status and handover: [`STATUS.md`](STATUS.md).
 
 Hand-over documents:
+- [`STATUS.md`](STATUS.md): what is done, branches, build commands, what is open.
 - [`devices/README.md`](devices/README.md): common platform, boot image format, partitions.
 - [`devices/dw100u-silver/SPEC.md`](devices/dw100u-silver/SPEC.md), [`devices/dw100u-v13m/SPEC.md`](devices/dw100u-v13m/SPEC.md), [`devices/dm63/SPEC.md`](devices/dm63/SPEC.md): per-device specs, with the stock kernel config (`stock.config`) and device tree (`stock.dts`) next to each.
 - [`KERNEL_TWEAKS.md`](KERNEL_TWEAKS.md): battery, flash-write and GNSS changes, with the measurement method.
@@ -108,15 +109,15 @@ Present in this tree and used: ADF display (`drivers/video/adf/sprd`, matches st
 
 ### 4. Missing drivers
 
-- [ ] **CST0xx touch (DM63).** Hynitron family; check whether `hynitron_ts` handles the CST0xx protocol and add the `cst0xx,cst0xx_ts` compatible, otherwise port an open-source CST0xx/CST8xx driver. Without this the DM63 has no touch.
-- [ ] **HRS3xxx heart rate (both).** Port a TYHX HRS3300/HRS3xxx driver, matching the stock input device name `heartrate` and its sysfs/ioctl interface so the vendor heart-rate HAL keeps working (check the HAL in `/vendor` for what it opens).
+- [x] **CST0xx touch (DM63).** Done: `cst0xx_ts` (type B, late PM so a wake tap is not lost), `dm63_touch.fragment`; the DW100U `hyn_ts` driver rewritten (`dw100u_touch.fragment`). Not tested on hardware. Original item: Hynitron family; check whether `hynitron_ts` handles the CST0xx protocol and add the `cst0xx,cst0xx_ts` compatible, otherwise port an open-source CST0xx/CST8xx driver. Without this the DM63 has no touch.
+- [~] **HRS3xxx heart rate (both).** Done: input device `heartrate`, sysfs `enable` / `chipinfo` (`watch_hrs.fragment`). It reports no heart rate: the HR/SpO2 algorithm is closed vendor code (next step: GPL source request to the vendor). Original item: Port a TYHX HRS3300/HRS3xxx driver, matching the stock input device name `heartrate` and its sysfs/ioctl interface so the vendor heart-rate HAL keeps working (check the HAL in `/vendor` for what it opens).
 - [x] `aod_dtap` input device on the DM63 (from the custom `aod_idle` module): ported in tree as `CONFIG_SPRD_AOD_IDLE` (`drivers/video/adf/sprd/drv/sprd_aod_idle.c`, fragment `dm63_aod.fragment`); builds as `=m` and `=y`. **Not yet tested on hardware** (see `KERNEL_TWEAKS.md`, Display/AOD). Open: confirm generic vs DCS write path on the CO5300, userspace `insmod` name.
 - [ ] Fingerprint, fall-off: decide after checking whether anything on the watches uses them.
 
 ### 5. Modules
 
-- [ ] Ramdisk modules loaded at boot: `mali.ko`, `sprdwl_ng.ko`, `sprd_fm.ko`, `sprdbt_tty.ko`. Build them from this tree (or build them in) for the new kernel.
-- [ ] Custom out-of-tree modules: `aod_idle.ko` (DM63, AOD idle + `aod_dtap`; **ported in tree as `sprd_aod_idle`, `dm63_aod.fragment`, needs hardware test**), `batt_idle.ko` (DM63, SC2721 charger CV override, loaded by `/system/etc/init/batt_idle.rc`), `wearit_aod` (DW100U, Magisk module). Find their sources and rebuild them against this kernel.
+- [x] Ramdisk modules loaded at boot: `mali.ko`, `sprdwl_ng.ko`, `sprd_fm.ko`, `sprdbt_tty.ko`: all four build against this tree (commands in STATUS.md). Build them from this tree (or build them in) for the new kernel.
+- [ ] Custom out-of-tree modules: `aod_idle.ko` (DM63, AOD idle + `aod_dtap`; **ported in tree as `sprd_aod_idle`, `dm63_aod.fragment`, needs hardware test**), `batt_idle.ko` (DM63, SC2721 charger CV override, loaded by `/system/etc/init/batt_idle.rc`; **replaced by `cv_override_mv` in `sprd_2721_charge`**, see section 8), `wearit_aod` (DW100U, Magisk module). Find their sources and rebuild them against this kernel.
 - [ ] Check `/vendor/lib/modules` and `/system/lib/modules` on each watch for any other `.ko` loaded at boot.
 
 ### 6. Boot image
@@ -149,19 +150,19 @@ Present in this tree and used: ADF display (`drivers/video/adf/sprd`, matches st
 
 Details, measurements and code pointers in [`KERNEL_TWEAKS.md`](KERNEL_TWEAKS.md). Summary:
 
-- [ ] GNSS: short per-channel sbuf rx wakelock for the GNSS channel (stock holds 500 ms per burst: about 88 % awake during a GPS session); wake-enabled receive interrupt. Engine stop analysed (core, rail and WCN domain do power down on `gnss_power_enable=0`; no bug on the normal path) and `gnss_engine_state` sysfs added: **hardware test pending** (steps in KERNEL_TWEAKS.md). Open: failed GNSS start leaves the core powered (documented, not fixed).
+- [x] GNSS: short per-channel sbuf rx wakelock (done: 100 ms max, released about 20 ms after the HAL drained the ring; **hardware test pending**) for the GNSS channel (stock holds 500 ms per burst: about 88 % awake during a GPS session); wake-enabled receive interrupt. Engine stop analysed (core, rail and WCN domain do power down on `gnss_power_enable=0`; no bug on the normal path) and `gnss_engine_state` sysfs added: **hardware test pending** (steps in KERNEL_TWEAKS.md). Open: failed GNSS start leaves the core powered (documented, not fixed).
 - [ ] Flash writes: `dirty_expire_centisecs` / `dirty_writeback_centisecs` 3000 in the ramdisk `init.rc` (replaces the userspace workarounds); test without f2fs online `discard`; check f2fs background GC; no periodic kernel writes.
-- [ ] Battery: find the suspend failures (about 40 % of attempts fail on stock), audit wakeup sources (BT 5 s, FM 1 s holds), CPU governor and hotplug limits with the screen off, `cluster_pd` residency.
-- [~] Charging: DM63 `batt_idle` CV override into the charger driver (done on `tweaks/charge-cv`: `cv_override_mv` module parameter / `sprd,cv-override-microvolt`, off by default; not tested on hardware; gauge resync not ported); per-unit battery profiles stay in each unit's DT.
+- [~] Battery (done: BT rx hold 200 ms, PM print thread off by default; suspend failures traced to userspace alarms, see KERNEL_TWEAKS.md section 3): find the suspend failures (about 40 % of attempts fail on stock), audit wakeup sources (BT 5 s, FM 1 s holds), CPU governor and hotplug limits with the screen off, `cluster_pd` residency.
+- [~] Charging: DM63 `batt_idle` CV override into the charger driver (merged: `cv_override_mv` module parameter / `sprd,cv-override-microvolt`, off by default, never above min(request, `chg-end-vol`, override); not tested on hardware; open: fuel-gauge resync not ported, SELinux write check); per-unit battery profiles stay in each unit's DT.
 
 ### 9. Security backports
 
 Plan in [`SECURITY_BACKPORTS.md`](SECURITY_BACKPORTS.md). Order:
-- [ ] Mali GPU fixes (r28p0; exploited-in-the-wild CVEs).
-- [ ] TCP SACK, `af_unix` GC, `seq_file`, epoll cherry-picks.
-- [ ] Stable merge to 4.4.302 (via AOSP `android-4.4-q`).
-- [ ] CIP 4.4 post-302 fixes, UNISOC bulletins.
-- [ ] Hardening config.
+- [~] Mali GPU fixes (r28p0; exploited-in-the-wild CVEs): CVE-2022-38181 and CVE-2023-4211 done; CVE-2021-28663/28664 and CVE-2022-36449 need Arm's fixes.
+- [x] TCP SACK, `af_unix` GC, `seq_file`, epoll cherry-picks (plus `fget` and three binder fixes).
+- [x] Stable merge to 4.4.302 (per-release diffs from the stable tags; f2fs excluded from 4.4.172 on).
+- [x] CIP 4.4 post-302 fixes (about 1257), UNISOC bulletins (fixes where the code could be located; table in SECURITY_BACKPORTS.md). Found on the way: USB RNDIS DoS in the stock kernel (fixed, `470aacefb`; reported to the security team, pending).
+- [x] Hardening config (`watch_hardening.fragment`; `watch_release.fragment` not ready until SELinux runs enforcing).
 
 ## Open decisions
 

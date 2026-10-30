@@ -21,7 +21,7 @@ Grep-level checks for well-known fixes. They indicate, they don't prove: a fix c
 
 ## Progress (branch `security-backports`)
 
-Applied from the 4.4 stable versions (github.com/gregkh/linux, tags v4.4.182–v4.4.294). Each commit keeps the original author and its `commit <sha> upstream.` line. Hand-adapted ones say `[ backport: ... ]` in the message. **None is compile-tested yet** (no cross-compiler installed).
+Applied from the 4.4 stable versions (github.com/gregkh/linux, tags v4.4.182–v4.4.294). Each commit keeps the original author and its `commit <sha> upstream.` line. Hand-adapted ones say `[ backport: ... ]` in the message. All of it builds with GCC 16.2 (see the build note below); nothing has run on a watch. Current state of all security work: [`STATUS.md`](STATUS.md).
 
 | Fix | CVE | Commits | Adapted? |
 |---|---|---|---|
@@ -35,6 +35,17 @@ Applied from the 4.4 stable versions (github.com/gregkh/linux, tags v4.4.182–v
 | Mali: `process_mm` reference held for the context lifetime, tracking page no longer sets it | CVE-2023-4211 | 1 | port of the ChromiumOS Bifrost fix to r28p0 (4.4: `mm_count` instead of `mmgrab`) |
 
 The core-kernel commits and `mali.ko` compile with GCC 16.2 (`sprd_sharkle_defconfig`, Mali built as an external module). Nothing has run on a watch yet. The two Mali fixes need review and a GPU test with the vendor r21p0 user space.
+
+### Bugs found during review and fixed in this tree
+
+Not upstream fixes; found while reviewing the merges above.
+
+| Commit | Area | Bug |
+|---|---|---|
+| `470aacefb` | USB RNDIS gadget (`rndis_rm_hdr()`) | 32-bit wrap of `data_offset + data_len + 8`: a USB host sending `MessageLength=0, DataOffset=0xfffffff8` makes the receive loop clone skbs forever (DoS while RNDIS tethering is on). **Present in the stock firmware**; to be reported to the security team. |
+| `f1c3dc049` | musb host (`musb_advance_schedule()`) | `qh->is_ready` written through a possibly freed `qh` after `musb_giveback()`; also left over in the upstream fix 33d7e3723. |
+| `9b8774cc4` | `read_pnet_rcu()` / `write_pnet()` | Follow-up to the `dev_net_rcu()` backport: RCU load and publish semantics (only with `CONFIG_NET_NS=y`). |
+| `fb18c4753` | SIPC sbuf | Peer notification decided on fresh pointers; a snapshot-only test could lose a wakeup and hang a modem channel. |
 
 ### Stable merge 4.4.148 → 4.4.302 (done)
 
