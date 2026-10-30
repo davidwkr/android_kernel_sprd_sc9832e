@@ -88,6 +88,11 @@ others() { git -C "$1" ls-files --others -z -- . 2>/dev/null; }
 for i in 0 1 2; do
   d=$(printf '%s\n' "$MALI" "$BT" "$FM" | sed -n "$((i+1))p")
   others "$d" > "$SNAP/$i"
+  [ -d "$d/.tmp_versions" ] && touch "$SNAP/$i.tmpv"
+  if tr '\0' '\n' < "$SNAP/$i" | grep -qE '\.(ko|o)$'; then
+    echo "warning: $d already has untracked build artifacts (from an earlier" \
+         "interrupted run?); they are kept, remove them by hand" >&2
+  fi
 done
 clean_dirs() {
   local i d f
@@ -105,6 +110,7 @@ for p in sys.stdin.buffer.read().split(b"\0"):
         except OSError:
             pass
 ' "$SNAP/$i" "$d" || true
+    [ -e "$SNAP/$i.tmpv" ] || rmdir "$d/.tmp_versions" 2>/dev/null || true
   done
   rm -rf "$SNAP"
 }
