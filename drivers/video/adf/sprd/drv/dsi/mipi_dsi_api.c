@@ -548,6 +548,7 @@ int mipi_dsi_dcs_write(struct sprd_dsi *dsi,
 
 	return mipi_dsi_wr_pkt(dsi, 0, type, param, len);
 }
+EXPORT_SYMBOL_GPL(mipi_dsi_dcs_write);
 
 int mipi_dsi_dcs_read(struct sprd_dsi *dsi, u8 param,
 				u8 *buf, u8 count)

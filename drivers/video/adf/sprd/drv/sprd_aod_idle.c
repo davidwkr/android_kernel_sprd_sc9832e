@@ -41,6 +41,7 @@
 #include <linux/sysfs.h>
 #include <linux/workqueue.h>
 
+#include "disp_notify.h"
 #include "sprd_panel.h"
 #include "sprd_dsi.h"
 #include "dsi/mipi_dsi_api.h"
@@ -126,10 +127,19 @@ static struct sprd_dsi *dsi_ctx(void)
 	return dev_get_drvdata(pd->intf);
 }
 
-/* the panel's init/sleep/brightness sequences all use generic writes */
+/*
+ * DCS short writes, like the stock module. It picked DCS or generic from the
+ * byte at panel_info + 0x08 (non-zero = DCS). In this tree that offset is
+ * panel_info.type (u8, SPRD_PANEL_TYPE_MIPI = 2), so the stock module always
+ * took the DCS branch for a MIPI panel. 0x38/0x39/0x51 are DCS commands (the
+ * mt107 AOD path uses 0x38/0x39 the same way); the init/brightness tables use
+ * generic types (0x23/0x29, mipi_dsi_gen_write), which the CO5300 accepts as
+ * well, but DCS is what ran on the watch. If the idle read-back does not show
+ * 0xdc on hardware, try mipi_dsi_gen_write() here.
+ */
 static int send(struct sprd_dsi *dsi, u8 *buf, u16 len, unsigned int wait_ms)
 {
-	int ret = mipi_dsi_gen_write(dsi, buf, len);
+	int ret = mipi_dsi_dcs_write(dsi, buf, len);
 
 	if (wait_ms)
 		msleep(wait_ms);
@@ -171,6 +181,19 @@ static int bl_resend_locked(void)
 	return bd->ops->update_status(bd);
 }
 
+/*
+ * The panel is power-cycled and re-initialised by panel_suspend()/resume(),
+ * which leaves it in normal mode. Forget idle_state on DISPC_STOP/RUN so
+ * status and the touch filter do not claim idle while the panel is not.
+ * Userspace may still see idle=0 fail with -EIO while the panel is powered
+ * down (refused, nothing sent); that is harmless, it only needs to retry
+ * after unblank if it wants the idle brightness path's restore. Only atomics
+ * here: this runs from the panel runtime PM callbacks.
+ */
+static int aod_disp_event(struct notifier_block *nb, unsigned long action,
+			  void *data);
+static struct notifier_block aod_nb = { .notifier_call = aod_disp_event };
+
 /* policy changes bump this; the filter (the only writer of the tap history)
  * drops its history when it sees a new generation */
 static atomic_t policy_gen = ATOMIC_INIT(0);
@@ -179,6 +202,15 @@ static void set_idle_state(int on)
 {
 	WRITE_ONCE(idle_state, on);
 	atomic_inc(&policy_gen);
+}
+
+static int aod_disp_event(struct notifier_block *nb, unsigned long action,
+			  void *data)
+{
+	if ((action == DISP_EVENT_DISPC_STOP ||
+	     action == DISP_EVENT_DISPC_RUN) && READ_ONCE(idle_state))
+		set_idle_state(0);
+	return NOTIFY_DONE;
 }
 
 static int set_idle(int on)
@@ -342,6 +374,8 @@ static bool dtap_filter(struct input_handle *handle, unsigned int type,
 		    READ_ONCE(dtap_ms)) {
 			dtap_have_last = false;
 			n_dtaps++;
+			/* cover the work item until userspace takes the key */
+			__pm_wakeup_event(dtap_ws, 200);
 			schedule_work(&dtap_work);
 		} else {
 			dtap_last = now;
@@ -371,6 +405,10 @@ static int dtap_connect(struct input_handler *handler, struct input_dev *dev,
 	if (dtap_handle_used)
 		return -EBUSY;
 	memset(h, 0, sizeof(*h));
+	/* new device: drop any half-seen contact (runs before events flow) */
+	frame = -1;
+	contact = -1;
+	contact_ending = false;
 	h->dev = dev;
 	h->handler = handler;
 	h->name = "aod_dtap";
@@ -556,14 +594,22 @@ static int __init sprd_aod_idle_init(void)
 	int ret;
 
 	pd = sprd_panel_get(SPRD_MAINLCD_ID);
-	if (!pd || !pd->panel || !pd->intf || !dev_get_drvdata(pd->intf) ||
-	    !pd->dev.parent) {
+	if (!pd || !pd->panel || !pd->intf || !pd->intf->driver ||
+	    !dev_get_drvdata(pd->intf) || !pd->dev.parent) {
 		pr_err("no MIPI panel\n");
 		return -ENODEV;
 	}
 	if (pd->panel->type != SPRD_PANEL_TYPE_MIPI) {
 		pr_err("panel is not MIPI DSI\n");
 		return -ENODEV;
+	}
+	/*
+	 * The ESD check reads DCS 0x0a and expects the normal-mode value;
+	 * in idle mode it reads 0xdc and would trigger ESD recovery.
+	 */
+	if (pd->panel->esd_check_en && pd->panel->esd_reg == DCS_GET_POWER_MODE) {
+		pr_err("panel ESD check reads 0x0a, incompatible with idle mode\n");
+		return -EINVAL;
 	}
 	bd = sprd_panel_oled_backlight();
 	if (!bd)
@@ -577,6 +623,7 @@ static int __init sprd_aod_idle_init(void)
 		kobject_put(aod_kobj);
 		return ret;
 	}
+	disp_notifier_register(&aod_nb);
 	if (dtap_init())
 		pr_warn("double tap to wake unavailable\n");
 	pr_info("panel %s, powered=%d\n", pd->panel->lcd_name ?
@@ -586,6 +633,7 @@ static int __init sprd_aod_idle_init(void)
 
 static void __exit sprd_aod_idle_exit(void)
 {
+	disp_notifier_unregister(&aod_nb);
 	dtap_exit();
 	sysfs_remove_group(aod_kobj, &aod_group);
 	kobject_put(aod_kobj);

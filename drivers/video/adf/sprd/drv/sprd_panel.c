@@ -721,8 +721,9 @@ static int oled_backlight_init(struct panel_device *pd)
 
 /*
  * Accessors for sprd_aod_idle (panel idle mode / AOD). The panel table and
- * the OLED backlight are file-local, so expose them read-only instead of
- * letting the module reach into them.
+ * the OLED backlight are file-local; hand out the pointers instead of making
+ * them global. The caller gets the live objects (it must send DSI commands
+ * and take the backlight update_lock itself), so this is not a read-only view.
  */
 struct panel_device *sprd_panel_get(int id)
 {
