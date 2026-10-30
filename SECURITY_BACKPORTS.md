@@ -78,7 +78,7 @@ Skipped because the code is not built (about 4700 commits, not listed one by one
 New Kconfig option from the series: `BPF_UNPRIV_DEFAULT_OFF` (default n here, from "bpf: Add kconfig knob for disabling unpriv bpf by default"); consider `y`, or set `kernel.unprivileged_bpf_disabled=1`, in the hardening pass.
 
 Hand-resolved or adapted (all carry a `[ backport: ... ]` note):
-- `net: add dev_net_rcu() helper` (prerequisite of the ipv4/ipv6/arp/ndisc RCU fixes): `possible_net_t.net` is not `__rcu` here, `read_pnet_rcu()` returns it plainly.
+- `net: add dev_net_rcu() helper` (prerequisite of the ipv4/ipv6/arp/ndisc RCU fixes): `possible_net_t.net` is not `__rcu` here, so `read_pnet_rcu()` uses `lockless_dereference()` (the load `rcu_dereference()` does) and `write_pnet()` publishes with `smp_store_release()`, like `rcu_assign_pointer()`. Only matters with `CONFIG_NET_NS=y`.
 - `rtnetlink: Reject negative ifindexes in RTM_NEWLINK`: dropped the `NL_SET_ERR_MSG()` (no extack in 4.4); the CIP `Revert` that follows was applied by hand (the setlink variant stays, as in CIP).
 - `audit: fix potential integer overflow in audit_log_n_string()` and `lib/ts_kmp: fix integer overflow ...`: operand types made `size_t` (4.4 `check_*_overflow()` needs identical types, otherwise a compiler warning).
 - `bpf: fix overflow in prog accounting`: `bpf.h` stubs merged with the vendor `bpf_prog_get_type_path()` stub.
