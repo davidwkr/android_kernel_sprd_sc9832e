@@ -238,7 +238,7 @@ static int cst0xx_resume(struct device *dev)
 	if (device_may_wakeup(dev))
 		disable_irq_wake(ts->irq);
 
-	/* the I2C adapter, our parent, is already resumed */
+	/* all resume_noirq callbacks, including the adapter's, have run */
 	mutex_lock(&ts->lock);
 	ts->suspended = false;
 	if (ts->pending) {
@@ -250,7 +250,9 @@ static int cst0xx_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(cst0xx_pm_ops, cst0xx_suspend, cst0xx_resume);
+static const struct dev_pm_ops cst0xx_pm_ops = {
+	SET_LATE_SYSTEM_SLEEP_PM_OPS(cst0xx_suspend, cst0xx_resume)
+};
 
 static void cst0xx_disable_regulator(void *data)
 {
