@@ -1857,6 +1857,28 @@ int sprdfgu_reset(void)
 	return 0;
 }
 
+/*
+ * Capacity (0.1 %, 0..1000) the battery's DT OCV table gives for @ocv_mv, the
+ * same table the gauge itself uses (sprdfgu_vol2capacity). *at_full is set
+ * when @ocv_mv is at or above the table's full point (first entry). Returns
+ * -ENODEV when the gauge is not coulomb-counting from this table (voltage-only
+ * or OCV-mode fgu, no table), where there is nothing to resync.
+ */
+int sprdfgu_ocv_to_capacity(uint32_t ocv_mv, bool *at_full)
+{
+	struct sprd_battery_platform_data *pd = sprdfgu_data.pdata;
+	int cap;
+
+	if (!pd || !pd->ocv_tab || pd->ocv_tab_size < 2 ||
+	    pd->only_vol_mode || pd->fgu_mode)
+		return -ENODEV;
+	cap = sprdfgu_vol2capacity(ocv_mv);
+	if (at_full)
+		*at_full = ocv_mv >= pd->ocv_tab[0].x;
+	return clamp(cap, 0, FULL_CAP);
+}
+EXPORT_SYMBOL_GPL(sprdfgu_ocv_to_capacity);
+
 int sprdfgu_force_set_soc(unsigned int cap)
 {
 	SPRD_FGU_DEBUG("set soc to:%d\n", cap);

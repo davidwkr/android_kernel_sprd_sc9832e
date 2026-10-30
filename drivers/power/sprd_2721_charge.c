@@ -28,6 +28,7 @@
 #include <linux/of_irq.h>
 #include <linux/mutex.h>
 #include <linux/moduleparam.h>
+#include <linux/workqueue.h>
 #include <linux/mfd/sprd/pmic_glb_reg.h>
 #include "sprd_charge_helper.h"
 #include "sprd_2721_charge.h"
@@ -100,14 +101,21 @@ static void sprdchg_set_chg_ovp(uint32_t ovp_vol)
 		BIT_CHGR_CC_EN);
 }
 
+static DEFINE_MUTEX(cv_lock);	/* serialises END_V + CV_V register writes */
+
 static void sprdchg_set_chg_cur(uint32_t chg_current)
 {
 	uint32_t temp;
 
-	if (bat_drv_data == NULL)
+	/* cv_lock: battery_gone() clears bat_drv_data under it */
+	mutex_lock(&cv_lock);
+	if (bat_drv_data == NULL) {
+		mutex_unlock(&cv_lock);
 		return;
+	}
 	if (bat_drv_data->bat_info.chg_current_type_limit < chg_current)
 		bat_drv_data->bat_info.chg_current_type_limit = chg_current;
+	mutex_unlock(&cv_lock);
 
 	if (chg_current > SPRDBAT_CHG_CUR_LEVEL_MAX)
 		chg_current = SPRDBAT_CHG_CUR_LEVEL_MAX;
@@ -230,20 +238,21 @@ static uint32_t sprdchg_cccv_cal(uint32_t chg_end_vol_pure)
 #define CV_OVERRIDE_MIN_MV	4000
 #define CV_OVERRIDE_MAX_MV	4400
 
-static DEFINE_MUTEX(cv_lock);	/* serialises END_V + CV_V register writes */
 static unsigned int cv_override_mv;	/* 0 = off */
 static unsigned int cv_last_req_mv;	/* last CV requested by sprdbat */
+/* bumped under cv_lock on every change of cv_last_req_mv / cv_override_mv */
+static unsigned int cv_gen;
 
 static unsigned int sprdchg_cv_effective(unsigned int req)
 {
 	unsigned int ov = READ_ONCE(cv_override_mv);
+	struct sprdbat_drivier_data *b = READ_ONCE(bat_drv_data);
 
 	if (!ov)
 		return req;
-	if (bat_drv_data && bat_drv_data->pdata &&
-	    bat_drv_data->pdata->chg_end_vol_pure &&
-	    ov > bat_drv_data->pdata->chg_end_vol_pure)
-		ov = bat_drv_data->pdata->chg_end_vol_pure;
+	if (b && b->pdata && b->pdata->chg_end_vol_pure &&
+	    ov > b->pdata->chg_end_vol_pure)
+		ov = b->pdata->chg_end_vol_pure;
 	return min(req, ov);
 }
 
@@ -401,6 +410,8 @@ static void sprdchg_program_cccv(unsigned int req)
 static void sprdchg_set_cccvpoint(unsigned int cvpoint)
 {
 	mutex_lock(&cv_lock);
+	if (cv_last_req_mv != cvpoint)
+		cv_gen++;
 	cv_last_req_mv = cvpoint;
 	sprdchg_program_cccv(cvpoint);
 	mutex_unlock(&cv_lock);
@@ -422,6 +433,8 @@ static int sprdchg_cv_override_apply(unsigned int mv)
 			return -EINVAL;
 		}
 	}
+	if (cv_override_mv != mv)
+		cv_gen++;
 	cv_override_mv = mv;
 	/* reprogram now if a charge has already requested a CV */
 	if (cv_last_req_mv && reg_map) {
@@ -434,12 +447,19 @@ static int sprdchg_cv_override_apply(unsigned int mv)
 	return 0;
 }
 
+static void gr_update(void);
+
 static int cv_override_set(const char *val, const struct kernel_param *kp)
 {
 	unsigned int mv;
 	int ret = kstrtouint(val, 0, &mv);
 
-	return ret ? ret : sprdchg_cv_override_apply(mv);
+	if (ret)
+		return ret;
+	ret = sprdchg_cv_override_apply(mv);
+	if (!ret)
+		gr_update();
+	return ret;
 }
 
 static const struct kernel_param_ops cv_override_ops = {
@@ -479,6 +499,387 @@ static const struct kernel_param_ops cv_status_ops = {
 	.get = cv_status_get,
 };
 module_param_cb(cv_status, &cv_status_ops, NULL, 0444);
+
+/*
+ * Optional fuel-gauge resync while the CV override holds the battery.
+ *
+ * While the override holds, the charger never reports "full", so sprdbat
+ * never gives the gauge its 100 % anchor (sprdfgu_force_set_soc(1000)) and
+ * the coulomb count drifts. At the hold point the battery is relaxed and its
+ * OCV is meaningful, so after a rest the gauge is reset from the battery's
+ * OCV table when the reported capacity is off by too much.
+ *
+ * Off by default (gauge_resync=0) and only ever acts when ALL of these hold,
+ * re-checked every GR_POLL_S seconds:
+ *  - gauge_resync=1, cv_override_mv set and actually lowering the stock CV
+ *    request (the override is holding), not unreachable;
+ *  - sprdbat reports CHARGING with a charger online (never discharging, never
+ *    full, never without a charger);
+ *  - |battery current| <= gauge_resync_relax_ma and the gauge OCV is within
+ *    gauge_resync_hold_mv of the hold voltage, continuously for
+ *    gauge_resync_rest_s (awake polls only; any failed check, a change of
+ *    the hold voltage or a gap between polls above 2 x GR_POLL_S, e.g. suspend,
+ *    restarts it);
+ *  - the OCV-table capacity differs from the raw gauge SOC
+ *    (sprdfgu_read_soc, not the rate-limited UI value) by at least
+ *    gauge_resync_pct points;
+ *  - the OCV-table capacity is not 100 % unless the OCV is at the table's
+ *    full point, and is not 0 %;
+ *  - at least gauge_resync_gap_s since the last resync (floor 1800 s).
+ * The gauge is then set with sprdfgu_force_set_soc() to the capacity from
+ * sprdfgu_ocv_to_capacity() (the gauge's own OCV table) and the event is
+ * logged. The thresholds are read-only at runtime (cmdline, range checked).
+ * The UI capacity then follows through sprdbat's usual rate limiting.
+ */
+#define GR_POLL_S		60
+#define GR_GAP_FLOOR_S		1800
+
+static DEFINE_MUTEX(gr_lock);
+static bool gauge_resync;			/* 0 = off */
+static unsigned int gr_rest_s = 600;
+static unsigned int gr_relax_ma = 30;
+static unsigned int gr_hold_mv = 60;
+static unsigned int gr_pct = 5;
+static unsigned int gr_gap_s = GR_GAP_FLOOR_S;
+
+/* state, under gr_lock */
+static unsigned int gr_relaxed_s, gr_last_hold_mv, gr_count, gr_last_gen;
+static s64 gr_rest_start_ms;		/* boottime of the first qualifying sample, 0 = none */
+static unsigned long gr_last_j;
+static bool gr_done_once;
+static int gr_ocv = -1, gr_cur, gr_cap = -1, gr_ui_cap = -1, gr_ocv_soc = -1;
+static s64 gr_last_poll_ms;		/* boottime of the previous poll, 0 = none */
+/*
+ * Built-in module parameters are applied from the kernel command line before
+ * workqueues and timers exist: until probe has finished the setters only store
+ * values and nothing is queued.
+ */
+static bool gr_ready;
+static int gr_from = -1, gr_to = -1;
+static const char *gr_reason = "off";
+
+static void gr_work_fn(struct work_struct *w);
+static DECLARE_DELAYED_WORK(gr_work, gr_work_fn);
+
+/* CV the override holds the battery at, or 0 when it is not holding */
+static unsigned int gr_hold_target_mv(void)
+{
+	unsigned int ov = READ_ONCE(cv_override_mv);
+	unsigned int req = READ_ONCE(cv_last_req_mv);
+	unsigned int eff;
+
+	if (!ov || !req || !cv_cal_known || cv_unreachable)
+		return 0;
+	eff = sprdchg_cv_effective(req);
+	return eff < req ? eff : 0;
+}
+
+/* any invalidation: forget the rest so far (gr_lock held) */
+static void gr_idle(const char *why)
+{
+	gr_relaxed_s = 0;
+	gr_rest_start_ms = 0;
+	gr_ocv_soc = -1;
+	gr_reason = why;
+}
+
+/*
+ * Lock order (outer to inner): gr_lock, battery lock (bat_drv_data->lock),
+ * cv_lock, gauge lock (inside sprdfgu_force_set_soc). sprdbat already takes
+ * its lock before cv_lock and the gauge lock; nothing takes gr_lock while
+ * holding one of the others.
+ */
+
+/* one evaluation; gr_lock held */
+static void gr_step(void)
+{
+	struct sprdbat_drivier_data *b = READ_ONCE(bat_drv_data);
+	unsigned int hold, gen;
+	bool full = false;
+	int ocv, cur, cap, soc, raw, werr;
+	s64 now = ktime_to_ms(ktime_get_boottime());
+
+	/* hold target and generation are one consistent snapshot */
+	mutex_lock(&cv_lock);
+	hold = gr_hold_target_mv();
+	gen = cv_gen;
+	mutex_unlock(&cv_lock);
+
+	/* rest must be continuous: a gap (suspend, freeze) restarts it */
+	if (gr_last_poll_ms && now - gr_last_poll_ms > 2 * GR_POLL_S * 1000LL) {
+		gr_relaxed_s = 0;
+		gr_rest_start_ms = 0;
+	}
+	gr_last_poll_ms = now ? now : 1;
+
+	if (!READ_ONCE(gr_ready)) {
+		gr_idle("off");
+		return;
+	}
+	if (!b || !b->pdata) {
+		gr_idle("no_battery");
+		return;
+	}
+	if (!hold) {
+		gr_idle("no_hold");
+		return;
+	}
+	if (READ_ONCE(b->bat_info.module_state) != POWER_SUPPLY_STATUS_CHARGING ||
+	    !(READ_ONCE(b->bat_info.usb_online) ||
+	      READ_ONCE(b->bat_info.ac_online))) {
+		gr_idle("not_charging");
+		return;
+	}
+	cap = READ_ONCE(b->bat_info.capacity);	/* UI value, rate limited */
+	gr_ui_cap = cap == (int)~0U ? -1 : cap;
+	cur = sprdfgu_read_batcurrent();
+	ocv = (int)sprdfgu_read_vbat_ocv();
+	gr_ocv = ocv;
+	gr_cur = cur;
+	/* any CV/override change since the last poll restarts the rest, even A->B->A */
+	if (hold != gr_last_hold_mv || gen != gr_last_gen) {
+		gr_last_hold_mv = hold;
+		gr_last_gen = gen;
+		gr_relaxed_s = 0;
+		gr_rest_start_ms = 0;
+	}
+	if (abs(cur) > (int)gr_relax_ma ||
+	    abs(ocv - (int)hold) > (int)gr_hold_mv) {
+		gr_idle("not_relaxed");
+		return;
+	}
+	soc = sprdfgu_ocv_to_capacity(ocv, &full);	/* 0.1 % */
+	raw = soc < 0 ? -1 : sprdfgu_read_soc();	/* gauge SOC, 0.1 %; not a pure read, see sprdfgu_read_soc() */
+	gr_cap = raw;
+	if (soc < 0 || raw < 0 || gr_ui_cap < 0) {
+		gr_idle("gauge_unsupported");
+		return;
+	}
+	gr_ocv_soc = soc;
+	/* time actually observed since the first qualifying sample */
+	if (!gr_rest_start_ms)
+		gr_rest_start_ms = now ? now : 1;
+	gr_relaxed_s = (now - gr_rest_start_ms) / 1000;
+	if (gr_relaxed_s < gr_rest_s) {
+		gr_reason = "resting";
+		return;
+	}
+	if (abs(soc - raw) < (int)gr_pct * 10) {
+		gr_reason = "in_agreement";
+		return;
+	}
+	if (soc <= 0 || (soc >= 1000 && !full)) {
+		gr_reason = "ocv_soc_rejected";
+		return;
+	}
+	if (gr_done_once &&
+	    time_before(jiffies, gr_last_j + gr_gap_s * HZ)) {
+		gr_reason = "ratelimited";
+		return;
+	}
+	/*
+	 * Final eligibility check and the write are done together under the
+	 * battery lock (plug/unplug and state changes) and cv_lock (every CV
+	 * and override change), so none of them can happen in between. The
+	 * disable paths (gauge_resync=0, remove) clear their flag first and then
+	 * wait for this work with gr_lock/cancel_delayed_work_sync().
+	 */
+	mutex_lock(&b->lock);
+	mutex_lock(&cv_lock);
+	if (!READ_ONCE(gauge_resync) || !READ_ONCE(gr_ready) ||
+	    READ_ONCE(b->bat_info.module_state) != POWER_SUPPLY_STATUS_CHARGING ||
+	    !(READ_ONCE(b->bat_info.usb_online) ||
+	      READ_ONCE(b->bat_info.ac_online)) ||
+	    cv_gen != gen || gr_hold_target_mv() != hold) {
+		mutex_unlock(&cv_lock);
+		mutex_unlock(&b->lock);
+		gr_idle("not_holding");
+		return;
+	}
+	werr = sprdfgu_force_set_soc(soc);
+	mutex_unlock(&cv_lock);
+	mutex_unlock(&b->lock);
+	if (werr) {
+		gr_reason = "set_failed";
+		return;
+	}
+	gr_last_j = jiffies;
+	gr_done_once = true;
+	gr_from = gr_cap;
+	gr_to = soc;
+	gr_count++;
+	gr_relaxed_s = 0;
+	gr_rest_start_ms = 0;
+	gr_reason = "resynced";
+	pr_info("sprdchg: gauge resync %d.%d%% -> %d.%d%% (ui %d%%, ocv %d mV, %d mA, hold %u mV)\n",
+		raw / 10, raw % 10, soc / 10, soc % 10, gr_ui_cap, ocv, cur,
+		hold);
+}
+
+static void gr_work_fn(struct work_struct *w)
+{
+	bool again;
+
+	mutex_lock(&gr_lock);
+	gr_step();
+	again = READ_ONCE(gr_ready) && READ_ONCE(gauge_resync) &&
+		READ_ONCE(cv_override_mv);
+	/* freezable: never runs across system suspend/resume. Requeued under
+	 * gr_lock so that remove (clears gr_ready under gr_lock, then cancels)
+	 * cannot miss it. */
+	if (again)
+		queue_delayed_work(system_freezable_wq, &gr_work,
+				   GR_POLL_S * HZ);
+	mutex_unlock(&gr_lock);
+}
+
+/* start or stop polling to match gauge_resync and cv_override_mv */
+static void gr_update(void)
+{
+	/* readiness and enqueue are decided together under gr_lock */
+	mutex_lock(&gr_lock);
+	if (!READ_ONCE(gr_ready)) {
+		mutex_unlock(&gr_lock);
+		return;
+	}
+	if (READ_ONCE(gauge_resync) && READ_ONCE(cv_override_mv)) {
+		queue_delayed_work(system_freezable_wq, &gr_work,
+				   GR_POLL_S * HZ);
+		mutex_unlock(&gr_lock);
+		return;
+	}
+	gr_idle("off");
+	gr_last_poll_ms = 0;
+	mutex_unlock(&gr_lock);
+	cancel_delayed_work_sync(&gr_work);
+}
+
+/* charger remove: stop the polling for good */
+static void gr_shutdown(void)
+{
+	mutex_lock(&gr_lock);
+	WRITE_ONCE(gr_ready, false);
+	gr_idle("off");
+	mutex_unlock(&gr_lock);
+	cancel_delayed_work_sync(&gr_work);
+}
+
+/*
+ * Lifetime of bat_drv_data (the battery driver's devm data). Both drivers are
+ * built in and set .suppress_bind_attrs, so they are never unbound at run
+ * time. The only way the data goes away is a failed sprdbat_probe() after
+ * ic_init() published it; that path calls this op (battery_gone) before
+ * freeing. Readers use the pointer only under gr_lock (gr_step) or cv_lock
+ * (CV paths), and this takes both (gr_lock, then cv_lock, the usual order)
+ * to clear it, so no reader holds it afterwards. gr_step() holds gr_lock
+ * for a whole evaluation, so none is running on the old data either.
+ */
+static void sprdchg_battery_gone(void)
+{
+	mutex_lock(&gr_lock);
+	mutex_lock(&cv_lock);
+	WRITE_ONCE(bat_drv_data, NULL);
+	mutex_unlock(&cv_lock);
+	gr_idle("no_battery");
+	gr_last_poll_ms = 0;
+	mutex_unlock(&gr_lock);
+}
+
+static int gauge_resync_set(const char *val, const struct kernel_param *kp)
+{
+	bool on;
+	int ret = kstrtobool(val, &on);
+
+	if (ret)
+		return ret;
+	WRITE_ONCE(gauge_resync, on);
+	gr_update();
+	return 0;
+}
+
+static int gauge_resync_get(char *buf, const struct kernel_param *kp)
+{
+	return scnprintf(buf, PAGE_SIZE, "%c\n", READ_ONCE(gauge_resync) ? 'Y' : 'N');
+}
+
+static const struct kernel_param_ops gauge_resync_ops = {
+	.set = gauge_resync_set,
+	.get = gauge_resync_get,
+};
+module_param_cb(gauge_resync, &gauge_resync_ops, NULL, 0644);
+MODULE_PARM_DESC(gauge_resync,
+	"Resync the fuel gauge from the OCV table while cv_override_mv holds (default off)");
+
+/* thresholds: read-only at runtime, range-checked when set on the cmdline */
+struct gr_range {
+	unsigned int *val, min, max;
+};
+
+static int gr_range_set(const char *s, const struct kernel_param *kp)
+{
+	const struct gr_range *r = kp->arg;
+	unsigned int v;
+	int ret = kstrtouint(s, 0, &v);
+
+	if (ret)
+		return ret;
+	if (v < r->min || v > r->max)
+		return -EINVAL;
+	*r->val = v;
+	return 0;
+}
+
+static int gr_range_get(char *buf, const struct kernel_param *kp)
+{
+	const struct gr_range *r = kp->arg;
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", *r->val);
+}
+
+static const struct kernel_param_ops gr_range_ops = {
+	.set = gr_range_set,
+	.get = gr_range_get,
+};
+
+#define GR_PARAM(name, var, lo, hi, desc)				\
+	static const struct gr_range gr_##name##_r = { &(var), lo, hi };	\
+	module_param_cb(gauge_resync_##name, &gr_range_ops,		\
+			(void *)&gr_##name##_r, 0444);			\
+	MODULE_PARM_DESC(gauge_resync_##name, desc " (" #lo ".." #hi ", read-only)")
+
+GR_PARAM(rest_s, gr_rest_s, 600, 86400,
+	 "seconds relaxed at the hold before a resync, default 600");
+GR_PARAM(relax_ma, gr_relax_ma, 1, 100,
+	 "max |battery current| in mA counted as relaxed, default 30");
+GR_PARAM(hold_mv, gr_hold_mv, 10, 200,
+	 "OCV must be within this many mV of the hold voltage, default 60");
+GR_PARAM(pct, gr_pct, 1, 50,
+	 "min difference in capacity points to resync, default 5");
+GR_PARAM(gap_s, gr_gap_s, GR_GAP_FLOOR_S, 86400,
+	 "min seconds between resyncs, default 1800");
+
+static int gauge_resync_status_get(char *buf, const struct kernel_param *kp)
+{
+	int ret;
+
+	mutex_lock(&gr_lock);
+	ret = scnprintf(buf, PAGE_SIZE,
+		"enabled=%d state=%s ocv_mv=%d cur_ma=%d raw_cap=%d.%d ui_cap=%d ocv_soc=%d.%d relaxed_s=%u resyncs=%u last_from=%d.%d last_to=%d.%d last_ago_s=%ld\n",
+		gauge_resync, gr_reason, gr_ocv, gr_cur,
+		gr_cap < 0 ? -1 : gr_cap / 10, gr_cap < 0 ? 0 : gr_cap % 10, gr_ui_cap,
+		gr_ocv_soc < 0 ? -1 : gr_ocv_soc / 10,
+		gr_ocv_soc < 0 ? 0 : gr_ocv_soc % 10, gr_relaxed_s, gr_count,
+		gr_from < 0 ? -1 : gr_from / 10, gr_from < 0 ? 0 : gr_from % 10,
+		gr_to < 0 ? -1 : gr_to / 10, gr_to < 0 ? 0 : gr_to % 10,
+		gr_done_once ? (long)((jiffies - gr_last_j) / HZ) : -1L);
+	mutex_unlock(&gr_lock);
+	return ret;
+}
+
+static const struct kernel_param_ops gauge_resync_status_ops = {
+	.get = gauge_resync_status_get,
+};
+module_param_cb(gauge_resync_status, &gauge_resync_status_ops, NULL, 0444);
 
 int sprdchg_bc1p2_disable(int disable)
 {
@@ -540,7 +941,9 @@ static void sprdchg_chip_init(struct sprdbat_drivier_data *bdata)
 {
 	if (bdata == NULL)
 		return;
-	bat_drv_data = bdata;
+	mutex_lock(&cv_lock);
+	WRITE_ONCE(bat_drv_data, bdata);
+	mutex_unlock(&cv_lock);
 	glb_adi_write(ANA_REG_GLB_CHGR_CTRL0,
 		BIT_CHGR_CC_EN, BIT_CHGR_CC_EN);
 	chg_adi_write(ANA_REG_GLB_CHGR_CTRL0,
@@ -620,6 +1023,7 @@ static struct sprd_ext_ic_operations sprd_2721_op = {
 	.get_charging_fault =  sprdchg_get_charge_fault,
 	.get_charge_cur_ext = sprdchg_get_chg_cur,
 	.set_termina_vol_ext = sprdchg_set_cccvpoint,
+	.battery_gone = sprdchg_battery_gone,
 };
 
 static int sprd2721_get_property(struct power_supply *psy,
@@ -758,6 +1162,9 @@ static int sprdchg_2721_probe(struct platform_device *pdev)
 			ret_ptr);
 		return PTR_ERR(ret_ptr);
 	}
+	/* parameters set on the cmdline only stored values until now */
+	WRITE_ONCE(gr_ready, true);
+	gr_update();
 	SPRDCHG_DEBUG("%s probe ok\n", __func__);
 	return 0;
 }
@@ -766,6 +1173,7 @@ static int sprdchg_2721_remove(struct platform_device *pdev)
 {
 	struct sprd2721_device *sprd_2721 = platform_get_drvdata(pdev);
 
+	gr_shutdown();
 	power_supply_unregister(&sprd_2721->charger);
 	return 0;
 }
@@ -779,9 +1187,10 @@ static struct platform_driver sprdchg_2721_driver = {
 	.driver = {
 		   .name = "sc2721-charger",
 		   .of_match_table = of_match_ptr(sprdchg_2721_of_match),
+		   .suppress_bind_attrs = true,
 		   },
 	.probe = sprdchg_2721_probe,
-	.remove = sprdchg_2721_remove
+	.remove = sprdchg_2721_remove,
 };
 
 static int __init sprdchg_2721_driver_init(void)
