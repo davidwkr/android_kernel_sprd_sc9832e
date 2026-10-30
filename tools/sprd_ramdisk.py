@@ -441,7 +441,8 @@ def cmd_replace(a):
         if b in new:
             raise Error('module %s given twice' % b)
         new[b] = read_file(path)
-    rel = kernel_release(read_file(a.kernel)) if a.kernel else None
+    kimg = read_file(a.kernel) if a.kernel else None
+    rel = kernel_release(kimg) if kimg is not None else None
     want_crc = symvers_layout_crc(a.symvers) if a.symvers else None
     if a.symvers and not a.kernel:
         print('note: --symvers without --kernel; CRC still checked')
@@ -460,6 +461,10 @@ def cmd_replace(a):
         except Error as x:
             raise Error('%s: %s' % (b, x))
         diff = vermagic_diff(vm, sv, rel)
+        # the kernel's own vermagic[] (CONFIG_MODULES) is the reference for
+        # the flags too: the stock module only tells what stock expected
+        if kimg is not None and (b'\0' + vm.strip().encode() + b'\0') not in kimg:
+            diff.append('vermagic "%s" not found in the --kernel image' % vm)
         if want_crc is not None:
             got = layout_crc(ko)
             if got is None:
