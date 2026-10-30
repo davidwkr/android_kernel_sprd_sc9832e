@@ -251,5 +251,8 @@ extern struct panel_ops panel_ops_rgb;
 extern struct panel_ops panel_ops_spi;
 
 void panel_power_ctrl(struct power_sequence *seq);
+struct backlight_device;
+struct panel_device *sprd_panel_get(int id);
+struct backlight_device *sprd_panel_oled_backlight(void);
 
 #endif
