@@ -79,7 +79,7 @@ static void stty_handler (int event, void *data)
 						     buf[i],
 						     TTY_NORMAL);
 			}
-			tty_schedule_flip(stty->port);
+			tty_flip_buffer_push(stty->port);
 		}
 		mutex_unlock(&(stty->stat_lock));
 		break;
