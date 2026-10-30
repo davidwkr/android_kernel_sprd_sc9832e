@@ -497,6 +497,7 @@ int mipi_dsi_gen_write(struct sprd_dsi *dsi,
 
 	return mipi_dsi_wr_pkt(dsi, 0, type, param, len);
 }
+EXPORT_SYMBOL_GPL(mipi_dsi_gen_write);
 
 int mipi_dsi_gen_read(struct sprd_dsi *dsi,
 				 u8 *param, u16 len,
@@ -555,6 +556,7 @@ int mipi_dsi_dcs_read(struct sprd_dsi *dsi, u8 param,
 
 	return mipi_dsi_rd_pkt(dsi, 0, type, 0, param, buf, count);
 }
+EXPORT_SYMBOL_GPL(mipi_dsi_dcs_read);
 
 int mipi_dsi_force_write(struct sprd_dsi *dsi, u8 type,
 			u8 *param, u16 len)
@@ -568,6 +570,7 @@ int mipi_dsi_set_max_return_size(struct sprd_dsi *dsi, u16 size)
 
 	return mipi_dsi_wr_pkt(dsi, 0, type, (u8 *)&size, 2);
 }
+EXPORT_SYMBOL_GPL(mipi_dsi_set_max_return_size);
 
 void mipi_dsi_set_work_mode(struct sprd_dsi *dsi, u8 mode)
 {
@@ -592,6 +595,7 @@ void mipi_dsi_lp_cmd_enable(struct sprd_dsi *dsi, int enable)
 	else
 		dsi_hal_video_mode_lp_cmd_en(dsi, enable);
 }
+EXPORT_SYMBOL_GPL(mipi_dsi_lp_cmd_enable);
 
 void mipi_dsi_state_reset(struct sprd_dsi *dsi)
 {

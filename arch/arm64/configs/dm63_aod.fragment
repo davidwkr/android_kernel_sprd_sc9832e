@@ -1,0 +1,4 @@
+# DM63: panel idle mode (AOD) switch + double-tap wake (replaces the stock
+# out-of-tree aod_idle.ko). Needs dm63_touch.fragment (cst0xx_ts) for dtap.
+# Use =m to keep loading it from aod_idle.rc (insmod sprd_aod_idle.ko).
+CONFIG_SPRD_AOD_IDLE=y

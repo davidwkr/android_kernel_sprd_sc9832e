@@ -719,6 +719,25 @@ static int oled_backlight_init(struct panel_device *pd)
 	return 0;
 }
 
+/*
+ * Accessors for sprd_aod_idle (panel idle mode / AOD). The panel table and
+ * the OLED backlight are file-local, so expose them read-only instead of
+ * letting the module reach into them.
+ */
+struct panel_device *sprd_panel_get(int id)
+{
+	if (id < 0 || id >= SPRD_MAX_LCD_ID)
+		return NULL;
+	return panels[id];
+}
+EXPORT_SYMBOL_GPL(sprd_panel_get);
+
+struct backlight_device *sprd_panel_oled_backlight(void)
+{
+	return oled_bl ? oled_bl->bd : NULL;
+}
+EXPORT_SYMBOL_GPL(sprd_panel_oled_backlight);
+
 static struct panel_ops *panel_ops_attach(int type)
 {
 	switch (type) {
