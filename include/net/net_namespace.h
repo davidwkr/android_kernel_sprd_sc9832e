@@ -258,7 +258,8 @@ typedef struct {
 static inline void write_pnet(possible_net_t *pnet, struct net *net)
 {
 #ifdef CONFIG_NET_NS
-	pnet->net = net;
+	/* publish like rcu_assign_pointer(), for read_pnet_rcu() readers */
+	smp_store_release(&pnet->net, net);
 #endif
 }
 
@@ -266,6 +267,16 @@ static inline struct net *read_pnet(const possible_net_t *pnet)
 {
 #ifdef CONFIG_NET_NS
 	return pnet->net;
+#else
+	return &init_net;
+#endif
+}
+
+static inline struct net *read_pnet_rcu(const possible_net_t *pnet)
+{
+#ifdef CONFIG_NET_NS
+	/* the field is not __rcu here; same load semantics as rcu_dereference() */
+	return lockless_dereference(pnet->net);
 #else
 	return &init_net;
 #endif
