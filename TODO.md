@@ -149,7 +149,7 @@ Present in this tree and used: ADF display (`drivers/video/adf/sprd`, matches st
 
 Details, measurements and code pointers in [`KERNEL_TWEAKS.md`](KERNEL_TWEAKS.md). Summary:
 
-- [ ] GNSS: short per-channel sbuf rx wakelock for the GNSS channel (stock holds 500 ms per burst: about 88 % awake during a GPS session); wake-enabled receive interrupt; GNSS core sleep/power-down when the engine stops.
+- [ ] GNSS: short per-channel sbuf rx wakelock for the GNSS channel (stock holds 500 ms per burst: about 88 % awake during a GPS session); wake-enabled receive interrupt. Engine stop analysed (core, rail and WCN domain do power down on `gnss_power_enable=0`; no bug on the normal path) and `gnss_engine_state` sysfs added: **hardware test pending** (steps in KERNEL_TWEAKS.md). Open: failed GNSS start leaves the core powered (documented, not fixed).
 - [ ] Flash writes: `dirty_expire_centisecs` / `dirty_writeback_centisecs` 3000 in the ramdisk `init.rc` (replaces the userspace workarounds); test without f2fs online `discard`; check f2fs background GC; no periodic kernel writes.
 - [ ] Battery: find the suspend failures (about 40 % of attempts fail on stock), audit wakeup sources (BT 5 s, FM 1 s holds), CPU governor and hotplug limits with the screen off, `cluster_pd` residency.
 - [ ] Charging: DM63 `batt_idle` CV override into the charger driver; per-unit battery profiles stay in each unit's DT.
