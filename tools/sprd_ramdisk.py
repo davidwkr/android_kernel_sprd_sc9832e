@@ -244,13 +244,17 @@ def parse_cpio(c):
         ns = e.f['namesize']
         if ns < 1 or pos + NEWC_HDR + ns > len(c):
             raise Error('cpio: bad name size at %d' % pos)
-        raw = c[pos + NEWC_HDR:pos + NEWC_HDR + ns]
-        if raw[-1:] != b'\0':
+        nstart = pos + NEWC_HDR
+        if c[nstart + ns - 1:nstart + ns] != b'\0':
             raise Error('cpio: name not NUL terminated at %d' % pos)
-        # the kernel's unpacker uses the name up to the first NUL
-        e.nul = b'\0' in raw[:-1]
         e.long = ns > PATH_MAX   # the kernel skips such entries
-        e.name = raw.split(b'\0')[0].decode('utf-8', 'backslashreplace')
+        # the kernel's unpacker uses the name up to the first NUL; look at
+        # no more than PATH_MAX + 1 bytes so a huge name costs no memory
+        cut = c.find(b'\0', nstart, nstart + min(ns, PATH_MAX + 1))
+        e.nul = cut != -1 and cut < nstart + ns - 1
+        if cut == -1:
+            cut = nstart + min(ns, PATH_MAX + 1)
+        e.name = bytes(c[nstart:cut]).decode('utf-8', 'backslashreplace')
         e.data_off = pad4(pos + NEWC_HDR + ns)
         e.hdr_end = e.data_off
         end = pad4(e.data_off + e.f['filesize'])
