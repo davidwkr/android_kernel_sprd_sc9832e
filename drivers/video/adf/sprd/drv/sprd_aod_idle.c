@@ -17,7 +17,8 @@
  *   input device "aod_dtap"               KEY_WAKEUP press+release
  *
  * While idle is on, an input filter on the "cst0xx_ts" (DM63) or "hyn_ts"
- * (DW100U) touch screen swallows all contacts; two touch-downs within dtap_ms emit KEY_WAKEUP.
+ * (DW100U) touch screen swallows all contacts; two touch-downs within
+ * dtap_ms emit KEY_WAKEUP.
  *
  * DSI commands are only sent while the panel and DSI platform devices are
  * runtime active (touching a powered-down DSI host can hang the SoC); both
