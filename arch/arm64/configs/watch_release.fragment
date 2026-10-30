@@ -1,0 +1,19 @@
+# Release-only additions for the UNISOC SL8541E watches. Apply AFTER watch_hardening.fragment.
+# These remove development and measurement facilities that are used while bringing the
+# kernel up (and by the project's measurement tooling), so do not use for dev builds.
+# NOT READY: only use after the SELinux policy is fixed for enforcing and a release build
+# has booted with all services and vendor HALs checked on each device.
+
+# debugfs exposes driver internals (and some writable knobs) to root. AOSP 8.1 does not need it;
+# vendor HALs/daemons that read debugfs are not checked yet, so verify them on the device.
+# CONFIG_DEBUG_FS is not set
+# Kernel tracing (ftrace, events, atrace). Reduces attack surface and kernel size. atrace/systrace stop working.
+# CONFIG_FTRACE is not set
+# Only symbols for functions (not data) in /proc/kallsyms (kptr_restrict still applies).
+# CONFIG_KALLSYMS_ALL is not set
+# SLUB red zones/poisoning on every cache by default: heavy CPU/memory cost on a watch.
+# CONFIG_SLUB_DEBUG_ON is not set
+# CONFIG_SLUB_STATS is not set
+# Enforcing SELinux cannot be switched to permissive at runtime or by cmdline; the DM63
+# currently runs Permissive, so check policy denials before shipping this.
+# CONFIG_SECURITY_SELINUX_DEVELOP is not set
