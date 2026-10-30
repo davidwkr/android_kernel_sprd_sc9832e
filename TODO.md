@@ -96,6 +96,7 @@ Present in this tree and used: ADF display (`drivers/video/adf/sprd`, matches st
 
 ### 2. Defconfig
 
+- [x] Partly done: base config is reproducible in tree: `sprd_sharkle_defconfig` + `watch_base.fragment` (only `SPRDWL_NG=m` was missing) + `watch_hardening.fragment` + device fragments, assembled and verified by `scripts/watch_build.sh DEVICE`. The stock-config gap (options in `stock.config` that we lacked) is classified in [`devices/CONFIG_PARITY.md`](devices/CONFIG_PARITY.md); the A items (Trusty, crown, AP watchdog, `SPRD_SIPC_WCN`, `TASK_DELAY_ACCT`, `SC7A22`) are in `watch_stock_parity.fragment` / `watch_sc7a22.fragment`, still untested on a watch. Still open: the `/proc/config.gz` comparison and standalone `*_defconfig` files below (the fragments replace them for now).
 - [ ] Start from `sprd_sharkle_defconfig`, then merge the DW100U `/proc/config.gz` (resolve options this tree lacks or renamed; keep 4.4.147 defaults where the old option no longer exists).
 - [ ] Create `arch/arm64/configs/dw100u_defconfig` and `dm63_defconfig` (or one shared defconfig plus a DM63 fragment).
 - [ ] Keep Android 8.1 userspace needs: binder (non-VNDK layout), SELinux, the ADF display, `/proc/config.gz`, `CONFIG_MODULES` with the same module layout.

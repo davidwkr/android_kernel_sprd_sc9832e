@@ -1,0 +1,45 @@
+# Stock-parity options for all UNISOC SL8541E watches (DM63, DW100Ultra, MT107, MT108, DM82).
+# Merged by scripts/watch_build.sh right after watch_base and BEFORE watch_hardening, so the
+# hardening fragment always wins. Derived from devices/<dev>/stock.config (4.4.83), the stock
+# DTs and the stock ramdisk; the full classification of every stock option that our build
+# lacks (and why the rest is deliberately left out) is in devices/CONFIG_PARITY.md.
+
+# Trusty TEE (keymaster / gatekeeper on Android 8.1). All five stock DTs have the
+# android,trusty-smc-v1 node with irq, virtio and log children; the stock ramdisk has
+# /dev/trusty-ipc-dev0 in ueventd and fstab uses encryptable=footer (keys wrapped by keymaster).
+# Without these the HALs fall back to software keymaster. TRUSTY_LOG defaults to y.
+# TRUSTY_FIQ*/FIQ_GLUE is not enabled: no trusty-fiq node in the DTs and FIQ_GLUE is arm32 only.
+CONFIG_TRUSTY=y
+CONFIG_TRUSTY_VIRTIO=y
+CONFIG_TRUSTY_VIRTIO_IPC=y
+
+# Rotary crown: a "rotary-encoder" node (gpios 78/92, relative axis) is in the DM63, MT107,
+# MT108 and DM82 DTs. Probes only when the node exists, so it is inert on the DW100U.
+CONFIG_INPUT_GPIO_ROTARY_ENCODER=y
+
+# AP watchdog ("sprd,sharkl2-wdt" node in every DT): the driver arms it at probe and a
+# watchdog_feeder kthread kicks it every 3 s (panic at 9 s, reset at 12 s; stopped in suspend).
+# Without it a hung kernel is never reset.
+CONFIG_SPRD_WATCHDOG_SYS=y
+
+# Lets the sc23xx WCN sipc code re-register its sblock handler (sblock.c skips the
+# "handler already registered" -EBUSY check). Stock and lineageos_dw99_defconfig set it.
+CONFIG_SPRD_SIPC_WCN=y
+
+# Per-task delay accounting (android-recommended.config; read by taskstats clients).
+CONFIG_TASK_DELAY_ACCT=y
+
+# Backlight: every stock config has BACKLIGHT_PWM off and BACKLIGHT_SC2721_RGBLED on.
+# sprd_sharkle_defconfig has BACKLIGHT_PWM=y: its pwm-backlight driver (DT node "sprd_backlight")
+# registers the backlight name "sprd_backlight", the same name sprd_panel.c uses for the OLED
+# backlight (oled_backlight_init), so the second registration fails (return ignored) and brightness/AOD
+# can break. The OLED watches use the panel's own backlight.
+# CONFIG_BACKLIGHT_PWM is not set
+# sc2721_rgbled_bl.c matches only "sprd,sc2721-bltc-rgb", which is status "okay" only in the MT108
+# DT (ST77916 LCD, not is_oled, so no oled backlight): there it is the LCD backlight (also named
+# "sprd_backlight"). It does not probe on the other devices (node disabled), so it cannot collide.
+CONFIG_BACKLIGHT_SC2721_RGBLED=y
+
+# Boot-logo copy path of sprd_dispc.c (64-bit DMA mask, iova - 0x80000000): stock has it =y and
+# every stock DT carries video-mode panel entries; without it the first frame scans from a wrong address.
+CONFIG_DISP_LITE_R2P0=y

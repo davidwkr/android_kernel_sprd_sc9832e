@@ -6,6 +6,7 @@ Where the kernel work stands, what was reviewed, what is open. Details live in t
 - [`KERNEL_TWEAKS.md`](KERNEL_TWEAKS.md): battery, flash-write, GNSS, charging and AOD changes, with hardware test steps.
 - [`SECURITY_BACKPORTS.md`](SECURITY_BACKPORTS.md): stable and CIP merges, targeted backports, UNISOC bulletins, hardening config.
 - [`devices/`](devices/README.md): per-device specs, stock configs and device trees.
+- [`devices/CONFIG_PARITY.md`](devices/CONFIG_PARITY.md): every stock config option our builds lacked, classified (enabled, optional, kept off).
 
 **Nothing in this tree has run on a watch yet.** Everything below is built and code-reviewed only. The first booting build (TODO items 1, 2, 3, 6, 7) has not been done.
 
@@ -65,25 +66,13 @@ Each work item went through: implementation, a first code review, fixes, then an
 
 ## Build
 
-Cross compiler `aarch64-linux-gnu-` (GCC 16). Output directories sit next to the repo (`../out_sc9832e`).
+Cross compiler `aarch64-linux-gnu-` (GCC 16). Output goes outside the repo (default `../watch_out/DEVICE/`).
 
 ```sh
-# config: sharkle base + drivers, then fragments
-make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=../out_sc9832e sprd_sharkle_defconfig
-./scripts/kconfig/merge_config.sh -m -O ../out_sc9832e ../out_sc9832e/.config \
-    arch/arm64/configs/watch_hardening.fragment arch/arm64/configs/dm63_touch.fragment   # etc.
-make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=../out_sc9832e olddefconfig
-make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=../out_sc9832e -j20 Image modules
-
-# ramdisk modules, built against the same O= output (never mix configs)
-make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=../out_sc9832e M=drivers/gpu/arm/midgard/mali \
-    CONFIG_MALI_MIDGARD=m CONFIG_MALI_PLATFORM_NAME=sharkle CONFIG_MALI_BOARD_PLATFORM=sharkle modules
-make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=../out_sc9832e \
-    M=$PWD/drivers/misc/sprdwcn_bsp/sipc_modules/bluetooth/driver BSP_BOARD_UNISOC_WCN_SOCKET=sipc modules
-# same for .../sipc_modules/fm/driver; then `git clean -fq . && git clean -fqX .` in each module dir
+scripts/watch_build.sh DEVICE [OUTDIR]   # DEVICE: dm63 dw100u-silver dw100u-v13m mt107 mt108 dm82
 ```
 
-The BT/FM `M=` path must be absolute. Fragments: `watch_hardening`, `watch_release` (not ready), `dm63_touch`, `dw100u_touch`, `watch_hrs`, `dm63_aod`, `dw100u_aod`.
+The script runs `sprd_sharkle_defconfig`, merges `watch_base`, `watch_stock_parity` (stock-config options we were missing, see [`devices/CONFIG_PARITY.md`](devices/CONFIG_PARITY.md)), `watch_hardening` and the device fragments (dm63: `dm63_touch watch_hrs watch_sc7a22 dm63_aod`; dw100u-*: `dw100u_touch watch_hrs watch_sc7a22 dw100u_aod`; mt107, mt108, dm82: their own fragment), runs `olddefconfig`, checks that every fragment line took effect (fails listing mismatches), builds `Image` and modules, then builds the ramdisk modules `mali`, `sprdbt_tty`, `sprd_fm` against the same `O=` (`sprdwl_ng` is in-tree `=m`; never mix configs), cleans the module source dirs and copies `Image` + the four `.ko` + `sha256sum.txt` to `OUTDIR/DEVICE/`. `ARCH`, `CROSS_COMPILE`, `JOBS` are overridable by environment. `watch_release` (not ready) and `watch_otg` (off by default) are never merged.
 
 Last full build of `security-backports` with the hardening fragment and `SPRD_AOD_IDLE=m`: 0 errors; `mali.ko`, `sprdbt_tty.ko`, `sprd_fm.ko` build.
 
