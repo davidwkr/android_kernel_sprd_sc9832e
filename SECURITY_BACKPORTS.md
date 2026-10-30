@@ -129,7 +129,7 @@ Done as two fragments in `arch/arm64/configs/`. Apply them on top of the full wa
 | `SECCOMP_FILTER` | on | Android 8.1 needs it. |
 | `USER_NS` | off | Android 8.1 (zygote, WebView and Chrome sandbox) uses seccomp and isolated UIDs, not user namespaces. The device's stock 4.4.83 config already has it off. |
 | `LDISC_AUTOLOAD`, `LEGACY_PTYS`, `DEVMEM`, `DEVKMEM`, `PROC_KCORE`, `SECURITY_SELINUX_DISABLE` | off | Attack surface. PPP async, the only ldisc used, is built in. |
-| `RANDOMIZE_BASE` (KASLR), `UNMAP_KERNEL_AT_EL0` (KPTI) | **left as in `sprd_sharkle_defconfig` (both on)** | Not touched by the fragment. `android-base.config` requires `RANDOMIZE_BASE=y`. The bootloader inserts `/chosen/kaslr-seed` at boot and the kernel zeroes it (`kaslr.c`), so it is not visible in `stock.dts`. In this tree KASLR forces KPTI on (`unmap_kernel_at_el0()` in `cpufeature.c`). |
+| `RANDOMIZE_BASE` (KASLR), `UNMAP_KERNEL_AT_EL0` (KPTI) | **left as in `sprd_sharkle_defconfig` (both on)** | Not touched by the fragment. `android-base.config` requires `RANDOMIZE_BASE=y`. A seed would come from the bootloader, which inserts `/chosen/kaslr-seed` at boot (never in a `.dts`); the kernel zeroes the value but keeps the property (`kaslr.c`). In this tree KASLR forces KPTI on (`unmap_kernel_at_el0()` in `cpufeature.c`). |
 | `MODULE_SIG` | **off** | The vendor modules are loaded from an unsigned ramdisk and by the Wi-Fi HAL, with an unlocked bootloader. Needs a signing key process for little gain. |
 | `SLAB_FREELIST_RANDOM/HARDENED`, `REFCOUNT_FULL`, `PAGE_POISONING` | not available / not cheap | Not in this 4.4 tree (`PAGE_POISONING` is only selected by `DEBUG_PAGEALLOC`). A backport is a possible follow-up. |
 | `KEXEC` | n/a | Doesn't exist on arm64 in 4.4. |
@@ -138,7 +138,7 @@ Release fragment: `DEBUG_FS`, `FTRACE`, `KALLSYMS_ALL`, `SLUB_DEBUG_ON`, `SLUB_S
 
 SELinux must stay **enforcing** in builds that go to users. The DM63 unit currently runs Permissive. With `SECURITY_SELINUX_DEVELOP` off in the release fragment, the kernel cannot be switched to permissive, so the policy denials must be cleaned up first.
 
-Open item (KASLR/KPTI): on hardware, as root, check whether the stock kernel's `_text` (in kallsyms) changes across reboots. If no seed is passed, KASLR randomizes nothing, and dropping `RANDOMIZE_BASE` and `UNMAP_KERNEL_AT_EL0` would save the KPTI cost on the A53 (not Meltdown-affected). That is a later battery decision and a deviation from `android-base.config`.
+Open item (KASLR/KPTI): on hardware, check whether `/proc/device-tree/chosen/kaslr-seed` exists (its presence means the bootloader passes a seed), or, as root with `kptr_restrict` set to 1 (Android sets 2, which shows 0 even to root), whether `_text` in kallsyms changes across reboots. If no seed is passed, KASLR randomizes nothing, and dropping `RANDOMIZE_BASE` and `UNMAP_KERNEL_AT_EL0` would save the KPTI cost on the A53 (not Meltdown-affected). That is a later battery decision and a deviation from `android-base.config`.
 
 Build rule: every external or ramdisk `.ko` (`mali`, `sprdwl_ng`, `sprdbt_tty`, `sprd_fm`) must be rebuilt against the matching `O=` output (dev or release). Do not mix them: MODVERSIONS, the FTRACE `_mcount` calls and the `SW_TTBR0_PAN` uaccess code differ between the two.
 
