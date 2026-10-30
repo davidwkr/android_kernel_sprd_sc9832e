@@ -25,6 +25,7 @@
 int sprdfgu_init(struct sprd_battery_platform_data *pdata);
 int sprdfgu_reset(void);
 int sprdfgu_force_set_soc(unsigned int cap);
+int sprdfgu_ocv_to_capacity(uint32_t ocv_mv, bool *at_full);
 void sprdfgu_record_cap(u32 cap);
 uint32_t sprdfgu_read_capacity(void);
 unsigned int sprdfgu_only_vol_read_capacity(int val);
