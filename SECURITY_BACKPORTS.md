@@ -121,16 +121,15 @@ Done as two fragments in `arch/arm64/configs/`. Apply them on top of the full wa
 
 | Option | Choice | Why |
 |---|---|---|
-| `HARDENED_USERCOPY`, `CC_STACKPROTECTOR_STRONG`, `DEBUG_RODATA`, `DEBUG_SET_MODULE_RONX` | on | Already in the stock config. Pinned so they can't be lost. |
-| `ARM64_SW_TTBR0_PAN` | on | Stock has it off. A53 has no hardware PAN. Small uaccess cost. |
+| `HARDENED_USERCOPY`, `CC_STACKPROTECTOR_STRONG`, `DEBUG_RODATA`, `DEBUG_SET_MODULE_RONX` | on | Already set in the device's stock 4.4.83 config and in `sprd_sharkle_defconfig`. Pinned so they can't be lost. |
+| `ARM64_SW_TTBR0_PAN` | on | Off in the device's stock 4.4.83 config, on in `sprd_sharkle_defconfig`. A53 has no hardware PAN. Small uaccess cost. |
 | `DEBUG_LIST` | on | Cheap list corruption check. |
 | `SECURITY_DMESG_RESTRICT`, `SECURITY_PERF_EVENTS_RESTRICT` | on | Kernel log and perf are root-only by default. |
 | `BPF_JIT_ALWAYS_ON` | on | Removes the BPF interpreter. Only classic BPF/seccomp is used here. |
 | `SECCOMP_FILTER` | on | Android 8.1 needs it. |
-| `USER_NS` | off | Android 8.1 (zygote, WebView and Chrome sandbox) uses seccomp and isolated UIDs, not user namespaces. Stock already has it off. |
+| `USER_NS` | off | Android 8.1 (zygote, WebView and Chrome sandbox) uses seccomp and isolated UIDs, not user namespaces. The device's stock 4.4.83 config already has it off. |
 | `LDISC_AUTOLOAD`, `LEGACY_PTYS`, `DEVMEM`, `DEVKMEM`, `PROC_KCORE`, `SECURITY_SELINUX_DISABLE` | off | Attack surface. PPP async, the only ldisc used, is built in. |
-| `RANDOMIZE_BASE` (KASLR) | **off** | The vendor U-Boot passes no `/chosen/kaslr-seed` (none in the stock DT), so there would be no randomisation. In this tree KASLR also forces KPTI on (`unmap_kernel_at_el0()` in `cpufeature.c`) and makes the Image relocatable, which costs speed and battery on a CPU that doesn't need KPTI. Revisit if a seed can be injected per boot. |
-| `UNMAP_KERNEL_AT_EL0` (KPTI) | **off** | Cortex-A53 is not affected by Meltdown. |
+| `RANDOMIZE_BASE` (KASLR), `UNMAP_KERNEL_AT_EL0` (KPTI) | **left as in `sprd_sharkle_defconfig` (both on)** | Not touched by the fragment. `android-base.config` requires `RANDOMIZE_BASE=y`. The bootloader inserts `/chosen/kaslr-seed` at boot and the kernel zeroes it (`kaslr.c`), so it is not visible in `stock.dts`. In this tree KASLR forces KPTI on (`unmap_kernel_at_el0()` in `cpufeature.c`). |
 | `MODULE_SIG` | **off** | The vendor modules are loaded from an unsigned ramdisk and by the Wi-Fi HAL, with an unlocked bootloader. Needs a signing key process for little gain. |
 | `SLAB_FREELIST_RANDOM/HARDENED`, `REFCOUNT_FULL`, `PAGE_POISONING` | not available / not cheap | Not in this 4.4 tree (`PAGE_POISONING` is only selected by `DEBUG_PAGEALLOC`). A backport is a possible follow-up. |
 | `KEXEC` | n/a | Doesn't exist on arm64 in 4.4. |
@@ -139,7 +138,13 @@ Release fragment: `DEBUG_FS`, `FTRACE`, `KALLSYMS_ALL`, `SLUB_DEBUG_ON`, `SLUB_S
 
 SELinux must stay **enforcing** in builds that go to users. The DM63 unit currently runs Permissive. With `SECURITY_SELINUX_DEVELOP` off in the release fragment, the kernel cannot be switched to permissive, so the policy denials must be cleaned up first.
 
-To verify on hardware: boot with `SW_TTBR0_PAN` (vendor drivers that touch user memory), PPP/Wi-Fi/BT/GNSS paths with `LDISC_AUTOLOAD` off, and a release build with SELinux enforcing.
+Open item (KASLR/KPTI): on hardware, as root, check whether the stock kernel's `_text` (in kallsyms) changes across reboots. If no seed is passed, KASLR randomizes nothing, and dropping `RANDOMIZE_BASE` and `UNMAP_KERNEL_AT_EL0` would save the KPTI cost on the A53 (not Meltdown-affected). That is a later battery decision and a deviation from `android-base.config`.
+
+Build rule: every external or ramdisk `.ko` (`mali`, `sprdwl_ng`, `sprdbt_tty`, `sprd_fm`) must be rebuilt against the matching `O=` output (dev or release). Do not mix them: MODVERSIONS, the FTRACE `_mcount` calls and the `SW_TTBR0_PAN` uaccess code differ between the two.
+
+The release fragment also drops these options through dependencies: `DYNAMIC_DEBUG`, `IODEBUG`, `IODEBUG_BDI`, `IODEBUG_VFS`, `SPRD_CPU_USAGE`, `SPRD_EIRQSOFF`, `F2FS_STAT_FS`, plus `TRACING`, `EVENT_TRACING`, `TRACEPOINTS` and the tracers.
+
+To verify on hardware: boot with `SW_TTBR0_PAN` (vendor drivers that touch user memory); PPP/Wi-Fi/BT/GNSS paths with `LDISC_AUTOLOAD` off; seccomp policy install (zygote, mediacodec, mediaextractor) and the DHCP and packet-socket filters with `BPF_JIT_ALWAYS_ON`; a release build with SELinux enforcing.
 
 ## 7. Userspace (not this repo, for completeness)
 
