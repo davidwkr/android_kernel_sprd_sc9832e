@@ -1,0 +1,6 @@
+# Flash write batching (TODO.md section 8, KERNEL_TWEAKS.md section 2).
+# Imported last from /init.rc, so it runs after the stock "on boot" actions
+# that set dirty_expire_centisecs to 200.
+on boot
+    write /proc/sys/vm/dirty_expire_centisecs 3000
+    write /proc/sys/vm/dirty_writeback_centisecs 3000
