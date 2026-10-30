@@ -25,9 +25,10 @@ MAXF = 2 << 20
 def read(p, lim=MAXF):
     """Read at most lim bytes of a regular file; "" if not regular or larger."""
     try:
-        fd = os.open(p, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
-    except OSError:
-        fd = os.open(p, os.O_RDONLY | os.O_NONBLOCK)
+        fd = os.open(p, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    except OSError as e:
+        sys.stderr.write("rejected %s: %s\n" % (esc(p), e.strerror))
+        return ""
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             return ""
@@ -260,7 +261,11 @@ def main():
         print(__doc__)
         return 2
     cfg = load_config(argv[1])
-    root = parse_dts(read(argv[0], 16 << 20))
+    dts = read(argv[0], 16 << 20)
+    if not dts or not cfg:
+        sys.stderr.write("cannot read DTS or CONFIG as a regular file\n")
+        return 1
+    root = parse_dts(dts)
     comp = index_drivers(src)
     for n in walk(root):
         c = n.props.get("compatible")
