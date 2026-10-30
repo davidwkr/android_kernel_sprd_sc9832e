@@ -259,17 +259,119 @@ static void sprdchg_write_cccv(unsigned int cvpoint)
 }
 
 /*
- * Program the CV for a sprdbat request. The CV code rounds to the nearest
- * step (up to +3.75 mV); when the CV equals the override (the override
- * limits it, or the request is the same value), ask for 4 mV less so the
- * programmed voltage never exceeds the override.
+ * Exact model of what sprdchg_write_cccv() programs for a requested CV, as
+ * (END_V, CV code). Mirrors sprdchg_tune_endvol_cccv() (round to nearest
+ * 7.5 mV step around the efuse calibration cal, END_V range 0/1/2 =
+ * 4200/4300/4400 mV base) and the "& ~1" in sprdchg_write_cccv(). The
+ * programmed voltage is
+ *   base(END_V) + (code - cal) * 7.5 mV,  base = 4200 / 4300 / 4400
+ * (below 4200 the code is cal - round((4200 - mv) / 7.5), clamped at 0).
+ * Returns false where the stock arithmetic would wrap.
+ */
+#define CV_STEP_ROUND(d)	((int)(((d) * 10 + (ONE_CCCV_STEP_VOL >> 1)) / \
+				       ONE_CCCV_STEP_VOL))
+
+static bool sprdchg_cv_model(unsigned int mv, unsigned int cal,
+			     unsigned int *end_v, unsigned int *code)
+{
+	int cv, e = 0, c = (int)cal;
+
+	if (mv > 4400)
+		return false;
+	if (mv >= 4200) {
+		if (mv < 4300) {
+			cv = CV_STEP_ROUND(mv - 4200) + c;
+			if (cv > SPRDBAT_CCCV_MAX) {
+				e = 1;
+				cv = c - CV_STEP_ROUND(4300 - mv);
+			}
+		} else {
+			cv = CV_STEP_ROUND(mv - 4300) + c;
+			if (cv > SPRDBAT_CCCV_MAX) {
+				e = 2;
+				cv = c - CV_STEP_ROUND(4400 - mv);
+			} else {
+				e = 1;
+			}
+		}
+	} else {
+		cv = CV_STEP_ROUND(4200 - mv);
+		cv = cv > c ? 0 : c - cv;
+	}
+	if (cv < 0 || cv > SPRDBAT_CCCV_MAX)
+		return false;
+	*end_v = e;
+	*code = (unsigned int)cv & ~1U;
+	return true;
+}
+
+/* programmed voltage of (END_V, code) in 0.1 mV */
+static int sprdchg_cv_v10(unsigned int end_v, unsigned int code,
+			  unsigned int cal)
+{
+	return (4200 + 100 * (int)end_v) * 10 +
+	       ((int)code - (int)cal) * ONE_CCCV_STEP_VOL;
+}
+
+/*
+ * Highest representable CV not above target_mv (>= 3700 searched). Returns
+ * false if even the lowest one is above it.
+ */
+static bool sprdchg_cv_floor(unsigned int target_mv, unsigned int cal,
+			     unsigned int *end_v, unsigned int *code,
+			     int *v10)
+{
+	unsigned int mv, e, c;
+
+	for (mv = target_mv; mv >= 3700; mv--) {
+		if (!sprdchg_cv_model(mv, cal, &e, &c))
+			continue;
+		if (sprdchg_cv_v10(e, c, cal) <= (int)target_mv * 10) {
+			*end_v = e;
+			*code = c;
+			*v10 = sprdchg_cv_v10(e, c, cal);
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool cv_cal_known;	/* cccv_cal read at probe */
+static bool cv_unreachable;	/* last program: override not representable */
+static int cv_model_v10;	/* modelled programmed voltage, 0.1 mV */
+
+/*
+ * Program the CV for a sprdbat request. Override off: the stock path,
+ * unchanged. Override on: the highest representable CV not above
+ * min(request, chg-end-vol, override). If that is not possible (calibration
+ * unknown, or even the lowest CV is above it) the stock request is used and
+ * cv_status shows override_unreachable; the CV is never programmed above
+ * the override by choice of this code, only left at stock.
  */
 static void sprdchg_program_cccv(unsigned int req)
 {
-	unsigned int ov = READ_ONCE(cv_override_mv);
-	unsigned int eff = sprdchg_cv_effective(req);
+	unsigned int e, c;
+	int v10;
 
-	sprdchg_write_cccv(ov && eff == ov ? eff - 4 : eff);
+	if (!READ_ONCE(cv_override_mv)) {
+		cv_unreachable = false;
+		cv_model_v10 = 0;
+		sprdchg_write_cccv(req);
+		return;
+	}
+	if (!cv_cal_known ||
+	    !sprdchg_cv_floor(sprdchg_cv_effective(req), g_pdata->cccv_cal,
+			      &e, &c, &v10)) {
+		cv_unreachable = true;
+		sprdchg_write_cccv(req);
+		return;
+	}
+	cv_unreachable = false;
+	cv_model_v10 = v10;
+	chg_adi_write(ANA_REG_GLB_CHGR_CTRL0,
+		      BITS_CHGR_END_V(e), BITS_CHGR_END_V(~0U));
+	chg_adi_write(ANA_REG_GLB_CHGR_CTRL0,
+		      BITS_CHGR_CV_V(c), BITS_CHGR_CV_V(~0U));
 }
 
 static void sprdchg_set_cccvpoint(unsigned int cvpoint)
@@ -285,6 +387,17 @@ static int sprdchg_cv_override_apply(unsigned int mv)
 	if (mv && (mv < CV_OVERRIDE_MIN_MV || mv > CV_OVERRIDE_MAX_MV))
 		return -EINVAL;
 	mutex_lock(&cv_lock);
+	if (mv && cv_cal_known) {
+		unsigned int e, c;
+		int v10;
+
+		if (!sprdchg_cv_floor(mv, g_pdata->cccv_cal, &e, &c, &v10)) {
+			pr_warn("sprdchg: CV override %u mV unreachable, this unit's lowest CV is %d mV\n",
+				mv, sprdchg_cv_v10(0, 0, g_pdata->cccv_cal) / 10);
+			mutex_unlock(&cv_lock);
+			return -EINVAL;
+		}
+	}
 	cv_override_mv = mv;
 	/* reprogram now if a charge has already requested a CV */
 	if (cv_last_req_mv && reg_map) {
@@ -326,9 +439,13 @@ static int cv_status_get(char *buf, const struct kernel_param *kp)
 	}
 	val = chg_adi_read(ANA_REG_GLB_CHGR_CTRL0);
 	ret = scnprintf(buf, PAGE_SIZE,
-		"override_mv=%u requested_mv=%u target_mv=%u hw_cv_code=%u hw_end_v=%u\n",
+		"override_mv=%u requested_mv=%u target_mv=%u model_mv=%d.%d state=%s hw_cv_code=%u hw_end_v=%u\n",
 		cv_override_mv, cv_last_req_mv,
 		cv_last_req_mv ? sprdchg_cv_effective(cv_last_req_mv) : 0,
+		cv_model_v10 / 10, cv_model_v10 % 10,
+		!cv_override_mv ? "off" :
+		cv_unreachable ? "override_unreachable" :
+		!cv_cal_known ? "pending" : "ok",
 		(val >> 5) & 0x3f, (val >> 3) & 0x3);
 	mutex_unlock(&cv_lock);
 	return ret;
@@ -564,6 +681,7 @@ static int sprdchg_2721_probe(struct platform_device *pdev)
 		}
 	}
 	sprdchg_cccv_cal_get();
+	cv_cal_known = true;
 	{
 		u32 uv;
 
