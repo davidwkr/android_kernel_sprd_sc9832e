@@ -44,6 +44,7 @@ NEWC_FIELDS = ('ino', 'mode', 'uid', 'gid', 'nlink', 'mtime', 'filesize',
                'check')
 MAX_ELF_SECTIONS = 4096
 MAX_OUT = 256 << 20      # decompressed size cap (bomb guard)
+MAX_XZ_MEM = 128 << 20   # xz decoder memory limit
 HEX8 = re.compile(rb'[0-9A-Fa-f]{8}')
 
 
@@ -143,11 +144,13 @@ def unpack_gzip(d):
 
 
 def unpack_xz(d):
-    dec = lzma.LZMADecompressor(format=lzma.FORMAT_XZ)
+    dec = lzma.LZMADecompressor(format=lzma.FORMAT_XZ,
+                                 memlimit=MAX_XZ_MEM)
     try:
         out = dec.decompress(d, MAX_OUT + 1)
     except lzma.LZMAError as e:
-        raise Error('xz: %s' % e)
+        raise Error('xz: %s (decoder memory limit %d MiB)' %
+                    (e, MAX_XZ_MEM >> 20))
     if len(out) > MAX_OUT:
         raise Error('xz: output over %d MiB, refusing' % (MAX_OUT >> 20))
     if not dec.eof:
@@ -202,7 +205,7 @@ def compress(p, data):
 # ------------------------------------------------------------------ cpio --
 
 class Entry:
-    __slots__ = ('off', 'f', 'name', 'data_off', 'hdr_end')
+    __slots__ = ('off', 'f', 'name', 'data_off', 'hdr_end', 'nul')
 
 
 def parse_cpio(c):
@@ -231,7 +234,9 @@ def parse_cpio(c):
         raw = c[pos + NEWC_HDR:pos + NEWC_HDR + ns]
         if raw[-1:] != b'\0':
             raise Error('cpio: name not NUL terminated at %d' % pos)
-        e.name = raw[:-1].decode('utf-8', 'backslashreplace')
+        # the kernel's unpacker uses the name up to the first NUL
+        e.nul = b'\0' in raw[:-1]
+        e.name = raw.split(b'\0')[0].decode('utf-8', 'backslashreplace')
         e.data_off = pad4(pos + NEWC_HDR + ns)
         e.hdr_end = e.data_off
         end = pad4(e.data_off + e.f['filesize'])
@@ -248,9 +253,28 @@ def parse_cpio(c):
 
 
 def norm(name):
-    while name.startswith('./'):
-        name = name[2:]
-    return name.lstrip('/')
+    """Extraction path as the kernel would see it: no leading '/', '.' or
+    empty components. '..' is kept (see anomalies())."""
+    return '/'.join(c for c in name.split('/') if c not in ('', '.'))
+
+
+def anomalies(entries):
+    """Names the swap cannot reason about: embedded NUL, '..' component,
+    or two entries extracting to the same path."""
+    res = []
+    seen = {}
+    for e in entries:
+        if e.nul:
+            res.append('embedded NUL in name %r' % e.name)
+        n = norm(e.name)
+        if '..' in n.split('/'):
+            res.append('".." component in %r' % e.name)
+        if n and e.name != 'TRAILER!!!':
+            if n in seen:
+                res.append('duplicate path %r (%r and %r)' %
+                           (n, seen[n], e.name))
+            seen.setdefault(n, e.name)
+    return [safe_name(x) for x in res]
 
 
 def is_reg(e):
@@ -299,6 +323,10 @@ def elf_section(ko, want):
         raise Error('not an ELF file')
     if ko[4] != 2 or ko[5] != 1:
         raise Error('not a little endian ELF64 module')
+    etype, mach = struct.unpack_from('<HH', ko, 16)
+    if etype != 1 or mach != 183:
+        raise Error('not an AArch64 relocatable object (e_type %d, '
+                    'e_machine %d)' % (etype, mach))
     shoff, = struct.unpack_from('<Q', ko, 0x28)
     shentsize, shnum, shstrndx = struct.unpack_from('<HHH', ko, 0x3a)
     if shentsize != 64 or not 0 < shnum <= MAX_ELF_SECTIONS \
@@ -404,6 +432,8 @@ def cmd_list(a):
            len(p.tail)))
     kinds = {0o100000: '-', 0o040000: 'd', 0o120000: 'l', 0o020000: 'c',
              0o060000: 'b', 0o010000: 'p', 0o140000: 's'}
+    for x in anomalies(entries):
+        print('WARNING: %s' % x)
     for e in entries:
         f = e.f
         print('%s%04o %5d/%-5d %9d %s' % (
@@ -434,6 +464,9 @@ def cmd_replace(a):
             raise Error('%s is non-zero (%d bytes): a concatenated archive '
                         'could override the swapped modules; refusing' %
                         (what, len(t)))
+    an = anomalies(entries)
+    if an:
+        raise Error('ambiguous cpio names, refusing: %s' % '; '.join(an))
     mods = module_entries(entries)
     new = {}
     for path in a.module:
