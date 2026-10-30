@@ -1043,17 +1043,16 @@ MODULE_PARM_DESC(host_idle_timeout,
 		 "Seconds in host mode with no USB device before returning to device mode (0 = off)");
 
 /*
- * Boards with "gpios" cable detection (MT108, DM82) have no usb-id and, in
- * the tree, no VBUS boost: their FAN54015 sits on a disabled i2c bus and
- * the SC2721 charger ops have no otg_charge_ext, so the work item would
- * start host mode with VBUS at 0 V.  Whether another source supplies VBUS
- * is not known from the tree: "host" is refused there unless this is set
- * (then only for a self-powered hub or OTG adapter with its own supply).
+ * No board in the tree has a kernel-controlled VBUS source: the FAN54015 is
+ * under a disabled i2c bus, the SC2721 ops have no otg_charge_ext and no DT
+ * has sprd,otg-gpios, so host mode starts with VBUS at 0 V.  "host" is
+ * refused (-EOPNOTSUPP) without a supplier unless this is set, for use
+ * with a self-powered hub or an OTG adapter with its own supply.
  */
-static bool host_on_gpios_cable;
-module_param(host_on_gpios_cable, bool, 0644);
-MODULE_PARM_DESC(host_on_gpios_cable,
-		 "Allow the role switch to enter host mode on boards with gpios cable detection (no known VBUS boost, untested)");
+static bool host_without_vbus;
+module_param(host_without_vbus, bool, 0644);
+MODULE_PARM_DESC(host_without_vbus,
+		 "Allow the role switch to enter host mode although no VBUS source is known (external power needed)");
 
 static void sprd_musb_idle_arm(struct sprd_glue *glue)
 {
@@ -1210,10 +1209,9 @@ static int sprd_musb_role_set(struct sprd_glue *glue, bool host)
 {
 	int ret;
 
-	if (host && strcmp(glue->cable_detect, "typec") &&
-	    !READ_ONCE(host_on_gpios_cable)) {
-		dev_warn(glue->dev, "host mode not supported with '%s' cable detection (see host_on_gpios_cable)\n",
-			 glue->cable_detect);
+	if (host && !gpio_is_valid(glue->gpio_otg) &&
+	    !sprd_extic_otg_supported() && !READ_ONCE(host_without_vbus)) {
+		dev_warn(glue->dev, "host mode refused: no VBUS source (see host_without_vbus)\n");
 		return -EOPNOTSUPP;
 	}
 

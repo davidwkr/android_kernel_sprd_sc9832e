@@ -42,8 +42,10 @@ static inline void typec_disable_ldo(void) {}
 #ifndef CONFIG_USB_SPRD_DWC
 #if IS_ENABLED(CONFIG_BATTERY_SPRD)
 void sprd_extic_otg_power(int enable);
+bool sprd_extic_otg_supported(void);
 #else
 static inline void sprd_extic_otg_power(int enable) {}
+static inline bool sprd_extic_otg_supported(void) { return false; }
 #endif
 #endif
 
