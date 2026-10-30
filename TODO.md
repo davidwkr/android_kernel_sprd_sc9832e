@@ -155,6 +155,9 @@ Details, measurements and code pointers in [`KERNEL_TWEAKS.md`](KERNEL_TWEAKS.md
 - [ ] Flash writes: `dirty_expire_centisecs` / `dirty_writeback_centisecs` 3000 in the ramdisk `init.rc` (replaces the userspace workarounds); test without f2fs online `discard`; check f2fs background GC; no periodic kernel writes.
 - [~] Battery (done: BT rx hold 200 ms, PM print thread off by default; suspend failures traced to userspace alarms, see KERNEL_TWEAKS.md section 3): find the suspend failures (about 40 % of attempts fail on stock), audit wakeup sources (BT 5 s, FM 1 s holds), CPU governor and hotplug limits with the screen off, `cluster_pd` residency.
 - [~] Charging: DM63 `batt_idle` CV override into the charger driver (merged: `cv_override_mv` module parameter / `sprd,cv-override-microvolt`, off by default, never above min(request, `chg-end-vol`, override); not tested on hardware; open: fuel-gauge resync not ported, SELinux write check); per-unit battery profiles stay in each unit's DT.
+- [~] USB host mode: `CONFIG_USB_MUSB_SPRD_ROLE_SYSFS` (`watch_otg.fragment`) adds `/sys/kernel/otg_role/role` (host|device) to the SPRD MUSB glue, replacing the out-of-tree `otg_role.ko` (merged on `drivers/otg-role`, built, **not run on hardware**). Open: confirm the FAN54015 boost supplies VBUS on both watches; no auto-timeout (host mode blocks suspend); stock `sprd_glue` layout (notifier at 0x2c0) not identified. Steps in KERNEL_TWEAKS.md section 5.
+  - [ ] **Host mode idle timeout:** return to device mode automatically after a few minutes with no USB device enumerated (boost off, wake lock released). There is no ID pin, so this is the only way to notice the adapter was removed. Cheap; do first.
+  - [ ] **Suspend in host mode:** release the `musb-sprd` wake lock while no USB device is enumerated, so the CPU can suspend in host mode. Riskier on this vendor MUSB glue (host-mode suspend/resume); needs careful testing on hardware.
 
 ### 9. Security backports
 

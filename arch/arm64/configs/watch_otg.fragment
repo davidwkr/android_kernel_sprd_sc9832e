@@ -1,0 +1,3 @@
+# DM63 / DW100U: userspace USB host/device switch in the SPRD MUSB glue
+# (/sys/kernel/otg_role/role and role on the 20200000.usb device)
+CONFIG_USB_MUSB_SPRD_ROLE_SYSFS=y
