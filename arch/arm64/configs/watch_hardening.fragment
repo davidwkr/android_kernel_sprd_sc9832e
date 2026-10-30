@@ -1,0 +1,70 @@
+# Hardening fragment for the UNISOC SL8541E watches (DW100Ultra, DM63).
+# Linux 4.4.302, arm64, 4x Cortex-A53, Android 8.1 userspace.
+#
+# Apply on top of the full watch config (keeps debug features for development):
+#   scripts/kconfig/merge_config.sh -m -O $O $O/.config arch/arm64/configs/watch_hardening.fragment
+#   make ARCH=arm64 O=$O olddefconfig
+# Release builds also apply watch_release.fragment after this one.
+#
+# Every option below was checked against the effective .config after olddefconfig.
+
+# --- Memory corruption mitigations -------------------------------------------
+
+# Bounds-check copy_to/from_user() against slab object / stack frame size. Small cost per copy.
+CONFIG_HARDENED_USERCOPY=y
+# Stack canaries in every function that has an array or address-taken local. ~1-2% code size.
+CONFIG_CC_STACKPROTECTOR_STRONG=y
+# Kernel text/rodata read-only, data/stack non-executable (arm64 "strict RWX").
+CONFIG_DEBUG_RODATA=y
+# Same for module text/rodata (vendor modules are built from this tree, no conflict).
+CONFIG_DEBUG_SET_MODULE_RONX=y
+# Software PAN: kernel cannot dereference user pointers outside uaccess helpers
+# (A53 = ARMv8.0, no hardware PAN). Blocks ret2usr / NULL-deref style exploits. Small uaccess cost.
+CONFIG_ARM64_SW_TTBR0_PAN=y
+# Catch linked-list corruption (and turn unlink-style writes into a BUG) in slab/list users. Small cost.
+CONFIG_DEBUG_LIST=y
+
+# --- Information leaks -------------------------------------------------------
+
+# Non-root cannot read kernel log by default (Android's init.rc also sets the sysctl).
+CONFIG_SECURITY_DMESG_RESTRICT=y
+# perf_event_paranoid=3 default: unprivileged users cannot use perf_event_open().
+CONFIG_SECURITY_PERF_EVENTS_RESTRICT=y
+
+# --- Attack surface reduction ------------------------------------------------
+
+# Android 8.1 (zygote, WebView/Chrome isolated processes) uses seccomp-bpf, not user namespaces.
+# Removing USER_NS blocks unprivileged access to netfilter/mount/etc. code reachable via CLONE_NEWUSER.
+# CONFIG_USER_NS is not set
+# Do not auto-load tty line disciplines for unprivileged TIOCSETD (N_HDLC/N_GSM style bugs).
+# The only ldisc in use (PPP async) is built in, so nothing is lost.
+# CONFIG_LDISC_AUTOLOAD is not set
+# No raw physical/kernel memory access from userspace; no /proc/kcore image of the kernel.
+# CONFIG_DEVMEM is not set
+# CONFIG_DEVKMEM is not set
+# CONFIG_PROC_KCORE is not set
+# Old BSD pty interface, only /dev/ptmx (devpts) is needed on Android.
+# CONFIG_LEGACY_PTYS is not set
+# Do not allow SELinux to be disabled at runtime.
+# CONFIG_SECURITY_SELINUX_DISABLE is not set
+# Seccomp filters are required by Android 8.x; keep them.
+CONFIG_SECCOMP=y
+CONFIG_SECCOMP_FILTER=y
+# BPF always uses the JIT (no interpreter, which is a speculation gadget). Classic BPF/seccomp
+# only; this tree has no cgroup/eBPF consumers that need the interpreter.
+CONFIG_BPF_JIT=y
+CONFIG_BPF_JIT_ALWAYS_ON=y
+
+# --- Deliberately NOT enabled (see SECURITY_BACKPORTS.md section 6) ----------
+
+# KASLR: the vendor U-Boot passes no /chosen/kaslr-seed (none in stock.dts), so it would not
+# randomize anything. It also forces KPTI on for every CPU (see cpufeature.c), which costs
+# performance and battery on an A53 that is not Meltdown-affected, and makes the Image
+# PIE/relocatable. Off until a seed exists.
+# CONFIG_RANDOMIZE_BASE is not set
+# CONFIG_RANDOMIZE_MODULE_REGION_FULL is not set
+# Cortex-A53 is not affected by Meltdown. Without KASLR the runtime detection never enables it.
+# CONFIG_UNMAP_KERNEL_AT_EL0 is not set
+# Out-of-tree modules are loaded from the unsigned ramdisk and Wi-Fi HAL; signing would need a
+# key management process and gives little with an unlocked bootloader.
+# CONFIG_MODULE_SIG is not set
