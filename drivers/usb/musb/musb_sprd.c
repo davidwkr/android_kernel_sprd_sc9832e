@@ -994,6 +994,15 @@ static DEVICE_ATTR_RO(current_speed);
 static struct sprd_glue *role_glue;
 static struct kobject *role_kobj;
 
+/*
+ * NOTE: the vbus irq handler and sprd_musb_recover_work() write
+ * vbus_active / dr_mode without glue->lock (pre-existing).  The role code
+ * takes the lock for its own accesses but cannot make those atomic.
+ *
+ * NOTE: in host mode the board's own boost drives VBUS, so the VBUS GPIO
+ * cannot tell an external charger from our own 5 V.  Do not plug a charger
+ * while in host mode; write "device" first.
+ */
 static int sprd_musb_role_set(struct sprd_glue *glue, bool host)
 {
 	struct musb *musb = platform_get_drvdata(glue->musb);
@@ -1013,11 +1022,11 @@ static int sprd_musb_role_set(struct sprd_glue *glue, bool host)
 
 	spin_lock_irqsave(&glue->lock, flags);
 	if (host) {
-		if (glue->vbus_active && glue->wq_mode == USB_DR_MODE_HOST)
-			ret = 0;		/* already host or starting */
-		else if (glue->vbus_active ||
-			 glue->dr_mode == USB_DR_MODE_PERIPHERAL)
-			ret = -EBUSY;		/* device-mode cable attached */
+		if (glue->vbus_active && glue->dr_mode == USB_DR_MODE_HOST &&
+		    glue->wq_mode == USB_DR_MODE_HOST)
+			ret = 0;		/* already host */
+		else if (glue->vbus_active)
+			ret = -EBUSY;		/* cable attached or switching */
 		else if (vbus)
 			ret = -EBUSY;		/* someone else drives VBUS */
 		else if (!musb->gadget_driver)
@@ -1027,19 +1036,70 @@ static int sprd_musb_role_set(struct sprd_glue *glue, bool host)
 			glue->wq_mode = USB_DR_MODE_HOST;
 			queue = true;
 		}
-	} else if (glue->vbus_active && glue->wq_mode == USB_DR_MODE_HOST) {
+	} else if (glue->dr_mode == USB_DR_MODE_HOST ||
+		   (glue->vbus_active && glue->wq_mode == USB_DR_MODE_HOST)) {
 		glue->vbus_active = false;
 		glue->wq_mode = USB_DR_MODE_HOST;
 		queue = true;
 	}
 	spin_unlock_irqrestore(&glue->lock, flags);
 
-	if (queue) {
-		schedule_work(&glue->work);
-		/* return when the switch is done, so "device; adb" works */
-		flush_work(&glue->work);
+	if (!queue)
+		goto out;
+
+	schedule_work(&glue->work);
+	/* return when the switch is done, so "device; adb" works */
+	flush_work(&glue->work);
+
+	if (host) {
+		spin_lock_irqsave(&glue->lock, flags);
+		ret = (glue->dr_mode == USB_DR_MODE_HOST &&
+		       !pm_runtime_suspended(glue->dev)) ? 0 : -EIO;
+		spin_unlock_irqrestore(&glue->lock, flags);
+		if (ret) {
+			/* the work item failed half way: undo it */
+			spin_lock_irqsave(&glue->lock, flags);
+			glue->vbus_active = false;
+			glue->wq_mode = USB_DR_MODE_HOST;
+			spin_unlock_irqrestore(&glue->lock, flags);
+			schedule_work(&glue->work);
+			flush_work(&glue->work);
+			musb_sprd_set_otg_en(glue, 0);
+			spin_lock_irqsave(&glue->lock, flags);
+			glue->dr_mode = USB_DR_MODE_UNKNOWN;
+			spin_unlock_irqrestore(&glue->lock, flags);
+			if (wake_lock_active(&glue->wake_lock))
+				wake_unlock(&glue->wake_lock);
+		}
+		goto out;
 	}
 
+	/* the work item skips these on some of its early-exit paths */
+	musb_sprd_set_otg_en(glue, 0);
+	if (glue->dr_mode == USB_DR_MODE_HOST) {
+		ret = -EIO;
+		goto out;
+	}
+	if (wake_lock_active(&glue->wake_lock))
+		wake_unlock(&glue->wake_lock);
+
+	/*
+	 * A charger or PC plugged in during host mode was ignored by the
+	 * vbus handler (vbus_active was set).  Let VBUS settle after the
+	 * boost went off, then pick device mode up as the handler would.
+	 */
+	msleep(100);
+	if (gpio_is_valid(glue->gpio_device) &&
+	    gpio_get_value(glue->gpio_device)) {
+		spin_lock_irqsave(&glue->lock, flags);
+		glue->vbus_active = true;
+		glue->wq_mode = USB_DR_MODE_PERIPHERAL;
+		spin_unlock_irqrestore(&glue->lock, flags);
+		MUSB_DEV_MODE(musb);
+		schedule_work(&glue->work);
+		flush_work(&glue->work);
+	}
+out:
 	mutex_unlock(&glue->role_lock);
 	return ret;
 }
@@ -1077,18 +1137,20 @@ static ssize_t sprd_musb_role_show_common(struct sprd_glue *glue, char *buf)
 static ssize_t sprd_musb_role_store_common(struct sprd_glue *glue,
 					   const char *buf, size_t count)
 {
+	bool host;
 	int ret;
 
 	if (sysfs_streq(buf, "host"))
-		ret = sprd_musb_role_set(glue, true);
+		host = true;
 	else if (sysfs_streq(buf, "device"))
-		ret = sprd_musb_role_set(glue, false);
+		host = false;
 	else
 		return -EINVAL;
 
+	ret = sprd_musb_role_set(glue, host);
 	if (ret)
-		dev_warn(glue->dev, "role change to '%s' refused: %d\n",
-			 sysfs_streq(buf, "host") ? "host" : "device", ret);
+		dev_warn(glue->dev, "role change to '%s' failed: %d\n",
+			 host ? "host" : "device", ret);
 	return ret ? ret : count;
 }
 
@@ -1132,23 +1194,23 @@ static void sprd_musb_role_init(struct sprd_glue *glue)
 	role_kobj = kobject_create_and_add("otg_role", kernel_kobj);
 	if (!role_kobj)
 		return;
-	role_glue = glue;
 	if (sysfs_create_file(role_kobj, &otg_role_attr.attr)) {
-		role_glue = NULL;
 		kobject_put(role_kobj);
 		role_kobj = NULL;
+		return;
 	}
+	role_glue = glue;
 }
 
 static void sprd_musb_role_exit(struct sprd_glue *glue)
 {
-	if (role_kobj) {
+	device_remove_file(glue->dev, &dev_attr_role);
+	if (role_glue == glue) {
 		sysfs_remove_file(role_kobj, &otg_role_attr.attr);
 		kobject_put(role_kobj);
 		role_kobj = NULL;
 		role_glue = NULL;
 	}
-	device_remove_file(glue->dev, &dev_attr_role);
 	/* leave host mode so VBUS is switched off */
 	sprd_musb_role_set(glue, false);
 }
@@ -1327,9 +1389,9 @@ static int musb_sprd_remove(struct platform_device *pdev)
 	 *  - Peripheral mode: peripheral is deactivated (or never-activated)
 	 *  - OTG mode: both roles are deactivated (or never-activated)
 	 */
+	sprd_musb_role_exit(glue);
 	if (musb->dma_controller)
 		musb_dma_controller_destroy(musb->dma_controller);
-	sprd_musb_role_exit(glue);
 	sysfs_remove_groups(&glue->dev->kobj, musb_sprd_groups);
 
 	cancel_work_sync(&musb->irq_work);
