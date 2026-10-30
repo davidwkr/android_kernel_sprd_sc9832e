@@ -1113,6 +1113,26 @@ static void cpp_clear_slots(struct cpp_iommu_info *pfinfo)
 
 	for (i = 0; i < 3; i++)
 		cpp_clear_slot(pfinfo, i);
+	pfinfo->err = 0;
+}
+
+/*
+ * Unmapping failed: the mapping may still be live, so the buffer must not
+ * be freed under it. Forget the slots from @from on WITHOUT dropping their
+ * dma-buf reference (deliberate leak), so a later get_sg_table cannot
+ * release them.
+ */
+static void cpp_abandon_slots(struct cpp_iommu_info *pfinfo, int from)
+{
+	int i;
+
+	for (i = from; i < 3; i++) {
+		pfinfo->dmabuf_p[i] = NULL;
+		pfinfo->table[i] = NULL;
+		pfinfo->buf[i] = NULL;
+		pfinfo->size[i] = 0;
+		pfinfo->iova[i] = 0;
+	}
 }
 
 int cpp_get_sg_table(struct cpp_iommu_info *pfinfo)
@@ -1131,6 +1151,7 @@ int cpp_get_sg_table(struct cpp_iommu_info *pfinfo)
 			if (ret) {
 				pr_err("failed to get sg table\n");
 				cpp_clear_slots(pfinfo);
+				pfinfo->err = -EFAULT;
 				return -EFAULT;
 			}
 		}
@@ -1144,8 +1165,15 @@ int cpp_get_addr(struct cpp_iommu_info *pfinfo, enum sprd_iommu_chtype ch_type)
 	struct sprd_iommu_map_data iommu_data;
 
 	for (i = 0; i < 2; i++) {
-		if (pfinfo->size[i] <= 0)
+		if (pfinfo->size[i] <= 0) {
+			/* the first plane is always required */
+			if (i == 0) {
+				pr_err("no buffer for plane 0\n");
+				pfinfo->err = -EINVAL;
+				return -EINVAL;
+			}
 			continue;
+		}
 
 		if (sprd_iommu_attach_device(pfinfo->dev) == 0) {
 			memset(&iommu_data, 0,
@@ -1158,6 +1186,7 @@ int cpp_get_addr(struct cpp_iommu_info *pfinfo, enum sprd_iommu_chtype ch_type)
 			ret = sprd_iommu_map(pfinfo->dev, &iommu_data);
 			if (ret) {
 				pr_err("failed to get iommu kaddr %d\n", i);
+				pfinfo->err = -EFAULT;
 				return -EFAULT;
 			}
 
@@ -1201,6 +1230,7 @@ static int cpp_free_addr_unmap(struct cpp_iommu_info *pfinfo, enum sprd_iommu_ch
 			ret = sprd_iommu_unmap(pfinfo->dev, &iommu_data);
 			if (ret) {
 				pr_err("failed to free iommu %d\n", i);
+				cpp_abandon_slots(pfinfo, i);
 				return -EFAULT;
 			}
 		}

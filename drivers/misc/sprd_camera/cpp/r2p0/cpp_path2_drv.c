@@ -528,6 +528,10 @@ int cpp_path2_start(struct sprd_cpp_path2_cfg_parm *parm,
 #else
 	cpp_path2_k_set_dst_addr(p);
 #endif
+	if (p->iommu_src.err || p->iommu_dst.err) {
+		pr_err("invalid buffer address, not starting\n");
+		return -EINVAL;
+	}
 	cpp_path2_k_set_output_endian(p);
 
 	reg_mwr(p, CPP_PATH2_CFG0, CPP_PATH2_CLK_SWITCH, CPP_PATH2_CLK_SWITCH);

@@ -364,6 +364,25 @@ static void cpp_clear_slots(struct cpp_iommu_info *pfinfo)
 		cpp_clear_slot(pfinfo, i);
 }
 
+/*
+ * Unmapping failed: the mapping may still be live, so the buffer must not
+ * be freed under it. Forget the slots from @from on WITHOUT dropping their
+ * dma-buf reference (deliberate leak), so a later get_sg_table cannot
+ * release them.
+ */
+static void cpp_abandon_slots(struct cpp_iommu_info *pfinfo, int from)
+{
+	int i;
+
+	for (i = from; i < 3; i++) {
+		pfinfo->dmabuf_p[i] = NULL;
+		pfinfo->table[i] = NULL;
+		pfinfo->buf[i] = NULL;
+		pfinfo->size[i] = 0;
+		pfinfo->iova[i] = 0;
+	}
+}
+
 int cpp_get_sg_table(struct cpp_iommu_info *pfinfo)
 {
 	int i, ret;
@@ -449,6 +468,7 @@ static int cpp_free_addr_unmap(struct cpp_iommu_info *pfinfo)
 			ret = sprd_iommu_unmap(pfinfo->dev, &iommu_data);
 			if (ret) {
 				pr_err("fail to free iommu %d\n", i);
+				cpp_abandon_slots(pfinfo, i);
 				return -EFAULT;
 			}
 
