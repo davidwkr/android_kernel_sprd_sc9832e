@@ -31,6 +31,10 @@ ANY_PROP = re.compile(r'^(\t*)([\w,.#+-]+)(?: = (.*))?;$')
 NODE_OPEN = re.compile(r'^(\t*)([\w,.@+-]*|/) \{$')
 
 
+class InputError(Exception):
+    pass
+
+
 def build(lines):
     root = {'name': '', 'parent': None, 'props': {}, 'line': None}
     cur = None
@@ -43,6 +47,8 @@ def build(lines):
             cur = n
             continue
         if ln.strip() == '};':
+            if cur is None:
+                raise InputError('line %d: unbalanced "};"' % (i + 1))
             cur = cur['parent']
             continue
         m = ANY_PROP.match(ln)
@@ -50,7 +56,13 @@ def build(lines):
             cur['all'][m.group(2)] = m.group(3) or ''
         m = CELL_PROP.match(ln)
         if m and cur is not None:
-            cur['props'][m.group(2)] = [int(x, 16) for x in m.group(3).split()]
+            try:
+                cur['props'][m.group(2)] = [int(x, 16)
+                                            for x in m.group(3).split()]
+            except ValueError:
+                raise InputError('line %d: bad cell list' % (i + 1))
+    if cur is not None:
+        raise InputError('unterminated node at end of file')
     return nodes
 
 
@@ -239,4 +251,12 @@ def main(src, dst):
 
 
 if __name__ == '__main__':
-    main(sys.argv[1], sys.argv[2])
+    if len(sys.argv) != 3:
+        print(__doc__, file=sys.stderr)
+        sys.exit(2)
+    try:
+        main(sys.argv[1], sys.argv[2])
+    except (InputError, OSError, UnicodeDecodeError, ValueError, TypeError,
+            IndexError, KeyError) as e:
+        print('error: %s: %s' % (type(e).__name__, e), file=sys.stderr)
+        sys.exit(2)

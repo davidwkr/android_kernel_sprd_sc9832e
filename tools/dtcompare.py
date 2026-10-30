@@ -102,6 +102,7 @@ def parse_fdt(b):
     end = off_st + sz_st if sz_st is not None else total
     nodes, stack, o = [], [], off_st
     plen, roots, done = [0], 0, False
+    cur, haskid = [], []   # active node entries, 'had a subnode' flags
     while True:
         if o + 4 > end:
             raise ParseError('structure block ends without FDT_END')
@@ -127,23 +128,31 @@ def parse_fdt(b):
             if plen[-1] > MAX_PATH:
                 raise ParseError('node path longer than %d' % MAX_PATH)
             stack.append(name)
-            nodes.append(('/' + '/'.join(stack[1:]), []))
+            if haskid:
+                haskid[-1] = True
+            haskid.append(False)
+            cur.append((('/' + '/'.join(stack[1:])), []))
+            nodes.append(cur[-1])
         elif tag == END_NODE:
             if not stack:
                 raise ParseError('unbalanced FDT_END_NODE')
             stack.pop()
             plen.pop()
+            cur.pop()
+            haskid.pop()
             if not stack:
                 done = True
         elif tag == PROP:
             if not stack:
                 raise ParseError('property outside a node')
+            if haskid[-1]:
+                raise ParseError('property after a subnode in %s' % cur[-1][0])
             ln, nameoff = struct.unpack_from('>II', b, o)
             o += 8
             if o + ln > end or nameoff >= len(strs):
                 raise ParseError('property outside the blob')
             z = strs.index(b'\0', nameoff)
-            nodes[-1][1].append((strs[nameoff:z].decode('utf-8', 'surrogateescape'),
+            cur[-1][1].append((strs[nameoff:z].decode('utf-8', 'surrogateescape'),
                                  b[o:o + ln]))
             o = (o + ln + 3) & ~3
         elif tag == NOP:
@@ -152,7 +161,9 @@ def parse_fdt(b):
             if stack or roots != 1:
                 raise ParseError('FDT_END without exactly one complete root')
             st_end = o
-            ranges = sorted([(off_rsv, rsv_end), (off_st, st_end),
+            if st_end > end:
+                raise ParseError('structure block longer than declared')
+            ranges = sorted([(off_rsv, rsv_end), (off_st, end),
                              (off_str, off_str + sz_str)])
             if any(ranges[i][1] > ranges[i + 1][0]
                    for i in range(len(ranges) - 1)):
