@@ -320,10 +320,11 @@ static int sbuf_thread(void *data)
 						      ring->data);
 
 				wake_lock_timeout(&ring->rx_wake_lock,
-						  HZ / 2);
+						  ring->rx_wake_timeout);
 				ring->rx_wakelock_state = 1;
-				pr_debug("sbuf %s : wake_lock hz/2!\n",
-					 ring->rx_wakelock_name);
+				pr_debug("sbuf %s : wake_lock %lu jiffies!\n",
+					 ring->rx_wakelock_name,
+					 ring->rx_wake_timeout);
 
 				break;
 			default:
@@ -465,6 +466,7 @@ int sbuf_create(u8 dst, u8 channel, u32 bufnum, u32 txbufsize, u32 rxbufsize)
 		mutex_init(&ring->txlock);
 		mutex_init(&ring->rxlock);
 		ring->need_wake_lock = 1;
+		ring->rx_wake_timeout = HZ / 2;
 		ring->tx_wakelock_state = 0;
 		ring->rx_wakelock_state = 0;
 
@@ -522,6 +524,29 @@ void sbuf_set_no_need_wake_lock(u8 dst, u8 channel, u32 bufnum)
 	ring->need_wake_lock = 0;
 }
 EXPORT_SYMBOL(sbuf_set_no_need_wake_lock);
+
+void sbuf_set_rx_wakelock_timeout(u8 dst, u8 channel, u32 bufnum,
+				  unsigned int msecs)
+{
+	u8 ch_index;
+	struct sbuf_mgr *sbuf;
+
+	if (dst >= SIPC_ID_NR)
+		return;
+
+	ch_index = sipc_channel2index(channel);
+	if (ch_index == INVALID_CHANEL_INDEX) {
+		pr_err("%s:channel %d invalid!\n", __func__, channel);
+		return;
+	}
+
+	sbuf = sbufs[dst][ch_index];
+	if (!sbuf || sbuf->ringnr <= bufnum)
+		return;
+
+	sbuf->rings[bufnum].rx_wake_timeout = msecs_to_jiffies(msecs);
+}
+EXPORT_SYMBOL(sbuf_set_rx_wakelock_timeout);
 
 void sbuf_destroy(u8 dst, u8 channel)
 {

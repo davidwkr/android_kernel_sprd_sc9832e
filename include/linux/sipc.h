@@ -419,6 +419,20 @@ void *shmem_ram_vmap_cache(phys_addr_t start, size_t size);
 void sbuf_set_no_need_wake_lock(u8 dst, u8 channel, u32 bufnum);
 
 /**
+ * sbuf_set_rx_wakelock_timeout
+ *
+ * Set how long the ring's rx wake lock is held after each receive
+ * notification (default HZ / 2). Call after sbuf_create().
+ *
+ * @dst: dest processor ID
+ * @channel: channel ID
+ * @bufnum: which buffer to be set
+ * @msecs: hold time in milliseconds
+ */
+void sbuf_set_rx_wakelock_timeout(u8 dst, u8 channel, u32 bufnum,
+				  unsigned int msecs);
+
+/**
  * sbuf_create -- create pipe ring buffers on a channel
  *
  * @dst: dest processor ID

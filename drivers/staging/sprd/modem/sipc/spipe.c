@@ -23,6 +23,9 @@
 #include "../include/sipc_priv.h"
 #include "../include/spipe.h"
 
+/* rx wake lock hold for the GNSS pipe: 2 jiffies at CONFIG_HZ=100 */
+#define SPIPE_GNSS_RX_WAKE_MS	20
+
 struct spipe_device {
 	struct spipe_init_data	*init;
 	int			major;
@@ -215,6 +218,18 @@ static int spipe_probe(struct platform_device *pdev)
 		pr_err("Failed to create sbuf: %d\n", rval);
 		spipe_destroy_pdata(&init, &pdev->dev);
 		return rval;
+	}
+
+	/*
+	 * The GNSS data pipe (sttygnss0) is notified several times per
+	 * second while the engine runs; the HAL reader only needs a short
+	 * hold to get scheduled, not the default HZ / 2.
+	 */
+	if (init->dst == SIPC_ID_GNSS) {
+		for (i = 0; i < init->ringnr; i++)
+			sbuf_set_rx_wakelock_timeout(init->dst, init->channel,
+						     i,
+						     SPIPE_GNSS_RX_WAKE_MS);
 	}
 
 	spipe = devm_kzalloc(&pdev->dev,
