@@ -335,28 +335,40 @@ static void mmu_isr(void *priv)
 #endif
 
 /*
- * Drop the dma-buf references taken by the get_sg_table helper. They are
- * held from get_sg_table until free_addr (or until the next get_sg_table
- * on the same slot) so the ion buffer stays alive while it is mapped.
+ * Release the dma-buf reference of slot @i and forget everything derived
+ * from it (ion buffer/sg table, size, iova), so a later map cannot reuse a
+ * pointer whose reference is gone.
  */
-static void cpp_put_dmabufs(struct cpp_iommu_info *pfinfo)
+static void cpp_clear_slot(struct cpp_iommu_info *pfinfo, int i)
+{
+	sprd_ion_put(pfinfo->dmabuf_p[i]);
+	pfinfo->dmabuf_p[i] = NULL;
+	pfinfo->table[i] = NULL;
+	pfinfo->buf[i] = NULL;
+	pfinfo->size[i] = 0;
+	pfinfo->iova[i] = 0;
+}
+
+/*
+ * References are taken by the get_sg_table helper and held until free_addr
+ * (or until the next get_sg_table on the same pfinfo).
+ */
+static void cpp_clear_slots(struct cpp_iommu_info *pfinfo)
 {
 	int i;
 
 	if (!pfinfo)
 		return;
 
-	for (i = 0; i < 3; i++) {
-		sprd_ion_put(pfinfo->dmabuf_p[i]);
-		pfinfo->dmabuf_p[i] = NULL;
-	}
+	for (i = 0; i < 3; i++)
+		cpp_clear_slot(pfinfo, i);
 }
 
 int cpp_get_sg_table(struct cpp_iommu_info *pfinfo)
 {
 	int i, ret;
 
-	cpp_put_dmabufs(pfinfo);
+	cpp_clear_slots(pfinfo);
 
 	for (i = 0; i < 2; i++) {
 		if (pfinfo->mfd[i] > 0) {
@@ -367,7 +379,7 @@ int cpp_get_sg_table(struct cpp_iommu_info *pfinfo)
 						&pfinfo->dmabuf_p[i]);
 			if (ret) {
 				pr_err("fail to get sg table\n");
-				cpp_put_dmabufs(pfinfo);
+				cpp_clear_slots(pfinfo);
 				return -EFAULT;
 			}
 
@@ -441,6 +453,9 @@ static int cpp_free_addr_unmap(struct cpp_iommu_info *pfinfo)
 			}
 
 		}
+
+		/* unmapped (or nothing to unmap): drop this slot's reference */
+		cpp_clear_slot(pfinfo, i);
 	}
 
 	return 0;
@@ -450,7 +465,9 @@ int cpp_free_addr(struct cpp_iommu_info *pfinfo)
 {
 	int ret = cpp_free_addr_unmap(pfinfo);
 
-	cpp_put_dmabufs(pfinfo);
+	/* on failure the slots whose unmap failed keep their reference */
+	if (!ret)
+		cpp_clear_slots(pfinfo);
 
 	return ret;
 }
