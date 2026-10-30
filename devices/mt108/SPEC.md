@@ -133,3 +133,7 @@ Missing from this source and enabled in `stock.config`: `HEALTH_GOODIX`, `HEARTR
 ## Bring-up order
 
 After the DM63 (it shares `cst0xx_ts`): boot with the stock DT first, then confirm `lcd_id` from the boot log.
+
+## Config fragment
+
+`arch/arm64/configs/.fragment`: . The DT compatibles (`cst0xx,cst0xx_ts`, `hynitron,hyn_ts`, `QST,qmax981`, `sprd,sc7a22`, `tyhx,hrs3xxx`) all match the tree drivers. `watch_otg.fragment` is not included. Build-checked only, not run on a unit.

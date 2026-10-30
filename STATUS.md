@@ -89,7 +89,7 @@ Last full build of `security-backports` with the hardening fragment and `SPRD_AO
 
 ## Open
 
-- **MT107, MT108, DM82:** specs added from the stock boot dumps (TODO section 8b); per-device fragments and the missing drivers (HRS3300 ID, Betterlife touch, BD1xxx, OCH1970, MSP891) are open.
+- **MT107, MT108, DM82:** specs added from the stock boot dumps (TODO section 8b); per-device fragments `mt107/mt108/dm82.fragment` added (build-checked); the missing drivers (HRS3300 ID, Betterlife touch, BD1xxx, OCH1970, MSP891) are open.
 - **First boot** (TODO 1–3, 6, 7): defconfigs per device, stock DTBs, boot-image repack, recovery-partition test.
 - **Hardware tests** for every change above (steps in KERNEL_TWEAKS.md and SECURITY_BACKPORTS.md section 6). Most important: GNSS fixes continuous at 1 Hz with the CPU suspending; charge override on a supervised DM63; AOD idle shows power mode `0xdc`.
 - **Security, not fixed:** Mali CVE-2021-28663, CVE-2021-28664, CVE-2022-36449 (need Arm's fixes); ION `sprd_ion_get_buffer()` / `get_sg_table()` lifetime (probable CVE-2023-49672, needs camera/vsp/gsp caller changes); UNISOC camera, WCN and WLAN CVEs not located; `sblock_receive` and `spool_read` trust peer addresses.

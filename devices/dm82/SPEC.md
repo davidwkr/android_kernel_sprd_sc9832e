@@ -165,3 +165,7 @@ Config options enabled but missing from this source (`kgap.py`): `HEARTRATE_BD18
 7. **Charger**: the 1250 mAh cell uses a 650 mA charge current and 4480 mV CV. Confirm before charging on the new kernel; apply the CV override if the same wear target as the DM63 is wanted.
 8. **Modules**: `mali.ko`, `sprdbt_tty.ko`, `sprd_fm.ko`, `sprdwl_ng.ko` must be rebuilt for the new kernel (as on the others).
 9. **Ramdisk**: 1374868 bytes, not unpacked here (outside the scope: only the Image, config and DT were read).
+
+## Config fragment
+
+`arch/arm64/configs/.fragment`: . The DT compatibles (`cst0xx,cst0xx_ts`, `hynitron,hyn_ts`, `QST,qmax981`, `sprd,sc7a22`, `tyhx,hrs3xxx`) all match the tree drivers. `watch_otg.fragment` is not included. Build-checked only, not run on a unit.
