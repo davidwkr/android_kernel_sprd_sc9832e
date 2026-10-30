@@ -72,7 +72,8 @@ def write_file(path, data):
 def text_or_hex(raw):
     """NUL-padded ASCII as str, otherwise 'hex:...' (lossless either way)."""
     body = raw.rstrip(b'\0')
-    if b'\0' not in body and all(32 <= c < 127 for c in body):
+    if (b'\0' not in body and all(32 <= c < 127 for c in body)
+            and not body.startswith(b'hex:')):
         return body.decode('ascii')
     return 'hex:' + raw.hex()
 
@@ -588,6 +589,8 @@ def cmd_pack(a):
             raise Error('self-check: %s section mismatch' % key)
     if pend != end:
         raise Error('self-check: image end mismatch')
+    if bytes(out[:HDR_SIZE]) != hdr[:HDR_SIZE]:
+        raise Error('self-check: header bytes mismatch')
     if os.path.exists(extra_p):
         if out[off:off + len(e)] != e:
             raise Error('self-check: trailing data mismatch')
