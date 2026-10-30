@@ -101,14 +101,21 @@ static void sprdchg_set_chg_ovp(uint32_t ovp_vol)
 		BIT_CHGR_CC_EN);
 }
 
+static DEFINE_MUTEX(cv_lock);	/* serialises END_V + CV_V register writes */
+
 static void sprdchg_set_chg_cur(uint32_t chg_current)
 {
 	uint32_t temp;
 
-	if (bat_drv_data == NULL)
+	/* cv_lock: battery_gone() clears bat_drv_data under it */
+	mutex_lock(&cv_lock);
+	if (bat_drv_data == NULL) {
+		mutex_unlock(&cv_lock);
 		return;
+	}
 	if (bat_drv_data->bat_info.chg_current_type_limit < chg_current)
 		bat_drv_data->bat_info.chg_current_type_limit = chg_current;
+	mutex_unlock(&cv_lock);
 
 	if (chg_current > SPRDBAT_CHG_CUR_LEVEL_MAX)
 		chg_current = SPRDBAT_CHG_CUR_LEVEL_MAX;
@@ -231,7 +238,6 @@ static uint32_t sprdchg_cccv_cal(uint32_t chg_end_vol_pure)
 #define CV_OVERRIDE_MIN_MV	4000
 #define CV_OVERRIDE_MAX_MV	4400
 
-static DEFINE_MUTEX(cv_lock);	/* serialises END_V + CV_V register writes */
 static unsigned int cv_override_mv;	/* 0 = off */
 static unsigned int cv_last_req_mv;	/* last CV requested by sprdbat */
 /* bumped under cv_lock on every change of cv_last_req_mv / cv_override_mv */
@@ -588,10 +594,16 @@ static void gr_idle(const char *why)
 static void gr_step(void)
 {
 	struct sprdbat_drivier_data *b = READ_ONCE(bat_drv_data);
-	unsigned int hold = gr_hold_target_mv();
+	unsigned int hold, gen;
 	bool full = false;
 	int ocv, cur, cap, soc, raw, werr;
 	s64 now = ktime_to_ms(ktime_get_boottime());
+
+	/* hold target and generation are one consistent snapshot */
+	mutex_lock(&cv_lock);
+	hold = gr_hold_target_mv();
+	gen = cv_gen;
+	mutex_unlock(&cv_lock);
 
 	/* rest must be continuous: a gap (suspend, freeze) restarts it */
 	if (gr_last_poll_ms && now - gr_last_poll_ms > 2 * GR_POLL_S * 1000LL) {
@@ -625,9 +637,9 @@ static void gr_step(void)
 	gr_ocv = ocv;
 	gr_cur = cur;
 	/* any CV/override change since the last poll restarts the rest, even A->B->A */
-	if (hold != gr_last_hold_mv || READ_ONCE(cv_gen) != gr_last_gen) {
+	if (hold != gr_last_hold_mv || gen != gr_last_gen) {
 		gr_last_hold_mv = hold;
-		gr_last_gen = READ_ONCE(cv_gen);
+		gr_last_gen = gen;
 		gr_relaxed_s = 0;
 		gr_rest_start_ms = 0;
 	}
@@ -678,7 +690,7 @@ static void gr_step(void)
 	    READ_ONCE(b->bat_info.module_state) != POWER_SUPPLY_STATUS_CHARGING ||
 	    !(READ_ONCE(b->bat_info.usb_online) ||
 	      READ_ONCE(b->bat_info.ac_online)) ||
-	    gr_hold_target_mv() != hold) {
+	    cv_gen != gen || gr_hold_target_mv() != hold) {
 		mutex_unlock(&cv_lock);
 		mutex_unlock(&b->lock);
 		gr_idle("not_holding");

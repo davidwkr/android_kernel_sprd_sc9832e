@@ -3268,11 +3268,13 @@ static int sprdbat_probe(struct platform_device *pdev)
 err_usb_reg_notify:
 err_usb_find_name:
 	/*
-	 * ic_init() has published the data to the charger driver. Stop every
-	 * source that can run work (timer irq, plug/charge/battery works, which
-	 * may call ic_init again), then detach the charger before the data is
-	 * freed.
+	 * ic_init() has published the data to the charger driver. Order:
+	 * remove the sysfs attributes first (this waits for active stores, e.g.
+	 * STOP_CHARGE, which can call ic_init), then stop every other source of
+	 * work (timer irq, plug/charge/battery works, which may call ic_init
+	 * again), then detach the charger before the data is freed.
 	 */
+	sysfs_remove_group(&data->battery->dev.kobj, &sprd_bat_group);
 	if (sprdchg_timer_op && sprdchg_timer_op->timer_disable)
 		sprdchg_timer_op->timer_disable();
 	cancel_work_sync(&data->plug_work);
@@ -3285,6 +3287,10 @@ err_usb_find_name:
 		sprd_ext_ic_op->battery_gone();
 #ifdef CONFIG_LEDS_TRIGGERS
 	led_classdev_unregister(&data->charging_led);
+#endif
+	destroy_workqueue(data->monitor_wqueue);
+	goto err_sysfs_create_gr;	/* sysfs group already removed */
+#ifdef CONFIG_LEDS_TRIGGERS
 err_led_reg:
 #endif
 	destroy_workqueue(data->monitor_wqueue);
