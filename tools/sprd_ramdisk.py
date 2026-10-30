@@ -678,7 +678,10 @@ def cmd_replace(a):
 
 
 def read_fragment(path):
-    d = read_file(path, MAX_FRAGMENT)
+    with open(path, 'rb') as f:
+        d = f.read(MAX_FRAGMENT + 1)
+    if len(d) > MAX_FRAGMENT:
+        raise Error('fragment over %d bytes, refusing' % MAX_FRAGMENT)
     if not d.strip():
         raise Error('fragment is empty')
     if not d.endswith(b'\n'):
@@ -744,7 +747,7 @@ def cmd_add_rc(a):
         raise Error('no free inode number')
     name = rc.name[:len(rc.name) - len('init.rc')] + FRAGMENT
     nb = name.encode() + b'\0'
-    f = dict(rc.f, ino=ino, mode=0o100644, uid=0, gid=0, nlink=1,
+    f = dict(rc.f, ino=ino, nlink=1,
              filesize=len(frag), rdevmajor=0, rdevminor=0,
              namesize=len(nb), check=0)
     h = hdr_bytes(p.cpio[rc.off:rc.off + NEWC_HDR], f)

@@ -99,7 +99,8 @@ class Case(unittest.TestCase):
         with open(FRAG, 'rb') as f:
             frag = f.read()
         self.assertEqual(b['init.watch_tweaks.rc'][1], frag)
-        self.assertEqual(b['init.watch_tweaks.rc'][0][1], 0o100644)
+        self.assertEqual(b['init.watch_tweaks.rc'][0][1:6],
+                         b['init.rc'][0][1:6])   # mode uid gid nlink mtime
         self.assertEqual(b['init.rc'][1],
                          RC + b'import /init.watch_tweaks.rc\n')
         for n in oa:
@@ -145,21 +146,82 @@ class Case(unittest.TestCase):
         r = self.run_tool('add-rc', self.stock(ents), self.path('o.gz'),
                           '--fragment', FRAG)
         self.assertEqual(r.returncode, 1)
-        self.assertIn('missing', r.stderr)
-        for bad in (b'', b'on boot\n\xc3\xa9\n', b'# only\n', b'on boot'):
+        self.assertIn('imports /init.watch_tweaks.rc but the file is missing',
+                      r.stderr)
+        for bad, msg in ((b'', 'fragment is empty'),
+                         (b'on boot\n\xc3\xa9\n', 'printable ASCII'),
+                         (b'# only\n', 'only comments'),
+                         (b'on boot', 'end with a newline')):
             fr = self.put('f.rc', bad)
             r = self.run_tool('add-rc', self.stock(), self.path('o.gz'),
                               '--fragment', fr)
             self.assertEqual(r.returncode, 1, bad)
+            self.assertIn(msg, r.stderr)
         big = self.put('big.rc', b'# x\non boot\n' + b'#' * 5000 + b'\n')
         r = self.run_tool('add-rc', self.stock(), self.path('o.gz'),
                           '--fragment', big)
         self.assertEqual(r.returncode, 1)
+        self.assertIn('fragment over 4096 bytes', r.stderr)
+
+    def refused(self, src, msg, frag=FRAG):
+        out = self.path('o.gz')
+        r = self.run_tool('add-rc', src, out, '--fragment', frag)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn(msg, r.stderr)
+        self.assertFalse(os.path.exists(out))
+
+    def test_hard_linked_init_rc(self):
+        ents = [(1, 'init.rc', RC, 0o100750, 2)] + STOCK[1:]
+        self.refused(self.stock(ents), '/init.rc is a hard link (nlink 2')
+
+    def test_existing_fragment_other_content(self):
+        for data, mode in ((b'on boot\n', 0o100644), (b'', 0o120777)):
+            ents = list(STOCK)
+            ents[0] = (1, 'init.rc', RC + b'import /init.watch_tweaks.rc\n',
+                       0o100750)
+            ents.append((9, 'init.watch_tweaks.rc', data, mode))
+            self.refused(self.stock(ents), 'already exists with different '
+                      'content or type')
+
+    def test_fragment_present_not_imported(self):
+        with open(FRAG, 'rb') as f:
+            frag = f.read()
+        ents = STOCK + [(9, 'init.watch_tweaks.rc', frag, 0o100644)]
+        self.refused(self.stock(ents), 'does not import it; refusing a '
+                  'half-applied ramdisk')
+
+    def test_trailing_data(self):
+        raw = self.stock()
+        with open(raw, 'rb') as f:
+            gz = f.read()
+        c = gzip.decompress(gz)
+        # non-zero bytes after the cpio trailer (valid gzip of longer cpio)
+        co = zlib.compressobj(9, zlib.DEFLATED, -15, 8)
+        c2 = c + b'JUNK'
+        body = co.compress(c2) + co.flush()
+        a = self.put('t1.gz', gz[:10] + body +
+                     struct.pack('<II', zlib.crc32(c2), len(c2)))
+        self.refused(a, 'data after the cpio trailer is non-zero')
+        # non-zero bytes after the gzip member
+        b = self.put('t2.gz', gz + b'JUNK')
+        self.refused(b, 'data after the compressed member is non-zero')
+
+    def test_duplicate_and_dot_alias(self):
+        ents = STOCK + [(9, './init.rc', RC, 0o100750)]
+        self.refused(self.stock(ents), 'duplicate path')
+        ents = [(1, './init.rc', RC, 0o100750)] + STOCK[1:]
+        out = self.path('o.gz')
+        r = self.run_tool('add-rc', self.stock(ents), out,
+                          '--fragment', FRAG)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        b, ob = self.unpack(out)
+        self.assertEqual(ob[-2:], ['./init.watch_tweaks.rc', 'TRAILER!!!'])
 
     def test_same_path_out_refused(self):
         src = self.stock()
         r = self.run_tool('add-rc', src, src, '--fragment', FRAG)
         self.assertEqual(r.returncode, 1)
+        self.assertIn('OUT must differ', r.stderr)
 
 
 if __name__ == '__main__':
