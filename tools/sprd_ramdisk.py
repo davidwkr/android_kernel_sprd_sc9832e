@@ -43,6 +43,8 @@ NEWC_FIELDS = ('ino', 'mode', 'uid', 'gid', 'nlink', 'mtime', 'filesize',
                'devmajor', 'devminor', 'rdevmajor', 'rdevminor', 'namesize',
                'check')
 MAX_ELF_SECTIONS = 4096
+MAX_OUT = 256 << 20      # decompressed size cap (bomb guard)
+HEX8 = re.compile(rb'[0-9A-Fa-f]{8}')
 
 
 class Error(Exception):
@@ -115,9 +117,11 @@ def unpack_gzip(d):
     n = gzip_header_len(d)
     dec = zlib.decompressobj(-15)
     try:
-        out = dec.decompress(d[n:])
+        out = dec.decompress(d[n:], MAX_OUT + 1)
     except zlib.error as e:
         raise Error('gzip: %s' % e)
+    if len(out) > MAX_OUT:
+        raise Error('gzip: output over %d MiB, refusing' % (MAX_OUT >> 20))
     if not dec.eof:
         raise Error('gzip: truncated stream')
     used = len(d) - n - len(dec.unused_data)
@@ -141,16 +145,17 @@ def unpack_gzip(d):
 def unpack_xz(d):
     dec = lzma.LZMADecompressor(format=lzma.FORMAT_XZ)
     try:
-        out = dec.decompress(d)
+        out = dec.decompress(d, MAX_OUT + 1)
     except lzma.LZMAError as e:
         raise Error('xz: %s' % e)
+    if len(out) > MAX_OUT:
+        raise Error('xz: output over %d MiB, refusing' % (MAX_OUT >> 20))
     if not dec.eof:
         raise Error('xz: truncated stream')
     used = len(d) - len(dec.unused_data)
     check = d[7] & 0x0f
     p = Packed('xz', d, out, dec.unused_data)
-    for preset in (6, 9, 9 | lzma.PRESET_EXTREME, 6 | lzma.PRESET_EXTREME,
-                   0, 1, 2, 3, 4, 5, 7, 8):
+    for preset in (6, 9):
         try:
             c = lzma.compress(out, format=lzma.FORMAT_XZ, check=check,
                               preset=preset)
@@ -213,10 +218,10 @@ def parse_cpio(c):
             if h[:6] == b'070702':
                 raise Error('cpio: CRC newc (070702) not supported')
             raise Error('cpio: bad magic at %d' % pos)
-        try:
-            vals = [int(h[6 + 8 * i:14 + 8 * i], 16) for i in range(13)]
-        except ValueError:
+        fl = [h[6 + 8 * i:14 + 8 * i] for i in range(13)]
+        if not all(HEX8.fullmatch(x) for x in fl):
             raise Error('cpio: bad hex field at %d' % pos)
+        vals = [int(x, 16) for x in fl]
         e = Entry()
         e.off = pos
         e.f = dict(zip(NEWC_FIELDS, vals))
@@ -233,6 +238,8 @@ def parse_cpio(c):
         if e.data_off + e.f['filesize'] > len(c):
             raise Error('cpio: entry data past end at %d' % pos)
         out.append(e)
+        if end <= pos:
+            raise Error('cpio: entry does not advance at %d' % pos)
         pos = end
         if e.name == 'TRAILER!!!':
             return out, min(pos, len(c))
@@ -285,8 +292,9 @@ def basename(n):
 
 # ----------------------------------------------------------------- ELF ---
 
-def modinfo(ko):
-    """Return the .modinfo key=value list of a little endian ELF64 .ko."""
+def elf_section(ko, want):
+    """Return the bytes of section `want` of a little endian ELF64 .ko,
+    or None."""
     if ko[:4] != b'\x7fELF' or len(ko) < 64:
         raise Error('not an ELF file')
     if ko[4] != 2 or ko[5] != 1:
@@ -305,12 +313,58 @@ def modinfo(ko):
     for s in secs:
         nm = strtab[s[0]:strtab.find(b'\0', s[0])] if s[0] < len(strtab) \
             else b''
-        if nm == b'.modinfo':
+        if nm == want:
             if s[4] + s[5] > len(ko):
-                raise Error('bad .modinfo bounds')
-            items = ko[s[4]:s[4] + s[5]].split(b'\0')
-            return [i.decode('utf-8', 'replace') for i in items if i]
-    raise Error('no .modinfo section')
+                raise Error('bad %s bounds' % want.decode())
+            return ko[s[4]:s[4] + s[5]]
+    return None
+
+
+def modinfo(ko):
+    """Return the .modinfo key=value list."""
+    sec = elf_section(ko, b'.modinfo')
+    if sec is None:
+        raise Error('no .modinfo section')
+    return [i.decode('utf-8', 'replace') for i in sec.split(b'\0') if i]
+
+
+def layout_crc(ko):
+    """CRC of module_layout in __versions (struct modversion_info: 8 byte
+    crc, 56 byte name on 64 bit), or None."""
+    sec = elf_section(ko, b'__versions')
+    if sec is None:
+        return None
+    for o in range(0, len(sec) - 63, 64):
+        if sec[o + 8:o + 64].split(b'\0')[0] == b'module_layout':
+            return struct.unpack_from('<Q', sec, o)[0]
+    return None
+
+
+def symvers_layout_crc(path):
+    for line in read_file(path).decode('utf-8', 'replace').splitlines():
+        f = line.split('\t')
+        if len(f) >= 2 and f[1] == 'module_layout':
+            return int(f[0], 16)
+    raise Error('module_layout not in %s' % path)
+
+
+def vermagic_diff(new, stock, rel):
+    """Like the kernel's same_magic() with MODVERSIONS: the whole string
+    must match. Here the expectation is the stock module's vermagic with
+    only the release token replaced by `rel` (None: release unchecked).
+    Returns a list of mismatch descriptions."""
+    nt, st = new.split(' '), stock.split(' ')
+    bad = []
+    if rel is not None and nt[0] != rel:
+        bad.append('release "%s", kernel is "%s"' % (nt[0], rel))
+    if len(nt) != len(st):
+        bad.append('field count %d, stock %d ("%s" vs "%s")' %
+                   (len(nt), len(st), new, stock))
+        return bad
+    for k, (x, y) in enumerate(zip(nt[1:], st[1:]), 1):
+        if x != y:
+            bad.append('field %d "%s", stock "%s"' % (k, x, y))
+    return bad
 
 
 def vermagic(ko):
@@ -338,6 +392,12 @@ def load(path):
 def cmd_list(a):
     p, entries, end = load(a.ramdisk)
     print('compression: %s' % p.describe())
+    if p.tail.strip(b'\0'):
+        print('WARNING: non-zero data after the compressed member (%d '
+              'bytes): concatenated archive?' % len(p.tail))
+    if p.cpio[end:].strip(b'\0'):
+        print('WARNING: non-zero data after the cpio trailer (%d bytes): '
+              'concatenated archive?' % len(p.cpio[end:]))
     print('compressed %d bytes, cpio %d bytes, %d entries, '
           'cpio tail %d bytes, compressed tail %d bytes' %
           (len(p.raw), len(p.cpio), len(entries), len(p.cpio) - end,
@@ -368,6 +428,12 @@ def cmd_replace(a):
     if os.path.abspath(a.out) == os.path.abspath(a.ramdisk):
         raise Error('OUT must differ from RAMDISK')
     p, entries, end = load(a.ramdisk)
+    for what, t in (('data after the compressed member', p.tail),
+                    ('data after the cpio trailer', p.cpio[end:])):
+        if t.strip(b'\0'):
+            raise Error('%s is non-zero (%d bytes): a concatenated archive '
+                        'could override the swapped modules; refusing' %
+                        (what, len(t)))
     mods = module_entries(entries)
     new = {}
     for path in a.module:
@@ -376,22 +442,43 @@ def cmd_replace(a):
             raise Error('module %s given twice' % b)
         new[b] = read_file(path)
     rel = kernel_release(read_file(a.kernel)) if a.kernel else None
+    want_crc = symvers_layout_crc(a.symvers) if a.symvers else None
+    if a.symvers and not a.kernel:
+        print('note: --symvers without --kernel; CRC still checked')
     bad = 0
     for b, ko in new.items():
+        hit = [e for e in mods if basename(e.name) == b]
+        if not hit:
+            raise Error('ramdisk has no module named %s under %s' %
+                        (b, ', '.join(MODULE_DIRS)))
+        if len(hit) > 1:
+            raise Error('ambiguous: %d entries named %s' % (len(hit), b))
         try:
             vm = vermagic(ko)
+            sv = vermagic(p.cpio[hit[0].data_off:hit[0].data_off +
+                                 hit[0].f['filesize']])
         except Error as x:
             raise Error('%s: %s' % (b, x))
-        if rel is None:
-            print('%s: vermagic "%s" (no --kernel, not checked)' % (b, vm))
-        elif vm.split(' ')[0] != rel:
+        diff = vermagic_diff(vm, sv, rel)
+        if want_crc is not None:
+            got = layout_crc(ko)
+            if got is None:
+                diff.append('no module_layout CRC in __versions')
+            elif got != want_crc:
+                diff.append('module_layout CRC 0x%x, symvers 0x%x' %
+                            (got, want_crc))
+        if diff:
             bad += 1
-            print('!!! VERMAGIC MISMATCH: %s has "%s", kernel release is '
-                  '"%s"' % (b, vm, rel), file=sys.stderr)
+            for x in diff:
+                print('!!! VERMAGIC MISMATCH: %s: %s' % (b, x),
+                      file=sys.stderr)
+        elif rel is None:
+            print('%s: vermagic "%s" (no --kernel, release not checked)' %
+                  (b, vm))
         else:
-            print('%s: vermagic matches kernel release %s' % (b, rel))
+            print('%s: vermagic matches (release %s)' % (b, rel))
     if bad:
-        raise Error('%d module(s) do not match the kernel; refusing' % bad)
+        raise Error('%d module(s) do not match; refusing' % bad)
     target = {}
     for b in new:
         hit = [e for e in mods if basename(e.name) == b]
@@ -401,8 +488,12 @@ def cmd_replace(a):
         if len(hit) > 1:
             raise Error('ambiguous: %d entries named %s' % (len(hit), b))
         e = hit[0]
-        if e.f['nlink'] != 1 or e.f['filesize'] == 0:
-            raise Error('%s is a hard link; not supported' % b)
+        if e.f['filesize'] == 0:
+            raise Error('%s in the ramdisk has size 0 (the data of a hard '
+                        'link set lives in another entry); not supported' % b)
+        if e.f['nlink'] != 1:
+            raise Error('%s has nlink %d (hard link); not supported' %
+                        (b, e.f['nlink']))
         target[e.off] = new[b]
     out = bytearray()
     pos = 0
@@ -449,6 +540,7 @@ def cmd_replace(a):
     try:
         with os.fdopen(fd, 'wb') as f:
             f.write(blob)
+        os.chmod(tmp, 0o644)
         os.replace(tmp, a.out)
     except BaseException:
         os.unlink(tmp)
@@ -475,14 +567,17 @@ def main():
     p.add_argument('out')
     p.add_argument('--module', action='append', default=[], metavar='PATH',
                    help='new .ko (repeatable); basename picks the target')
-    p.add_argument('--kernel', help='kernel Image whose release must match '
-                   'each module vermagic')
+    p.add_argument('--kernel', help='kernel Image: each new module vermagic '
+                   'must equal the stock one with the release replaced by '
+                   "this Image's release")
+    p.add_argument('--symvers', help='Module.symvers of the kernel build: '
+                   'also compare the module_layout CRC in __versions')
     p.set_defaults(fn=cmd_replace)
     a = ap.parse_args()
     try:
         return a.fn(a)
     except (Error, OSError, struct.error, ValueError, UnicodeError,
-            KeyError, TypeError, lzma.LZMAError, zlib.error) as e:
+            KeyError, TypeError, lzma.LZMAError, zlib.error, MemoryError) as e:
         print('error: %s' % e, file=sys.stderr)
         return 1
 

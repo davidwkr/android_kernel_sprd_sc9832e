@@ -124,7 +124,7 @@ Present in this tree and used: ADF display (`drivers/video/adf/sprd`, matches st
 ### 6. Boot image
 
 - [x] Repack: stock ramdisk (or Magisk-patched ramdisk on the silver) + new `Image` + device DT table, same header fields as stock. `tools/sprd_bootimg.py pack DIR OUT --kernel Image` does this (size check done on a DM63 copy: 25.7 MB used of 35 MB). Not yet booted on hardware.
-- [x] Write a repack script that reproduces the stock boot image byte-for-byte from its parts first (proves the packer), then swaps the kernel and modules. Done for kernel, ramdisk and DT table (6 of 6 stock dumps identical). Module swap inside the ramdisk done: `tools/sprd_ramdisk.py replace-modules` (round trip of the decompressed cpio identical on 6 of 6 stock ramdisks; vermagic checked against the new `Image`; DM63 dry run packs and `info` is clean). Not booted on hardware. Open: strip the built modules first (unstripped they are about 22 MB).
+- [x] Write a repack script that reproduces the stock boot image byte-for-byte from its parts first (proves the packer), then swaps the kernel and modules. Done for kernel, ramdisk and DT table (6 of 6 stock dumps identical). Module swap inside the ramdisk done: `tools/sprd_ramdisk.py replace-modules` (round trip of the decompressed cpio identical on 6 of 6 stock ramdisks; vermagic checked like `same_magic()` against the new `Image`; DM63 dry run packs and `info` is clean). Not booted on hardware. Open: strip the built modules first (unstripped they are about 22 MB).
 
 ### 7. Test (safe order)
 
