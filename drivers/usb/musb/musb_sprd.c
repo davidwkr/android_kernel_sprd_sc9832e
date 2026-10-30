@@ -1048,6 +1048,12 @@ MODULE_PARM_DESC(host_idle_timeout,
  * has sprd,otg-gpios, so host mode starts with VBUS at 0 V.  "host" is
  * refused (-EOPNOTSUPP) without a supplier unless this is set, for use
  * with a self-powered hub or an OTG adapter with its own supply.
+ * The gate applies to the manual sysfs "host" write only.  The automatic
+ * paths (type-C HOST_CONN, usb-id irq, recover_work) are stock behaviour
+ * when the hardware itself detects an OTG adapter, which decides VBUS, and
+ * are left alone.  recover_work is blocked by role_busy during a role
+ * change, so neither it nor the rollback ever enters host from a "device"
+ * write; the rollback only undoes a "host" write that got past this gate.
  */
 static bool host_without_vbus;
 module_param(host_without_vbus, bool, 0644);
