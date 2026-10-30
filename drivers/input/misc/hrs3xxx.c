@@ -90,11 +90,16 @@ static int hrs3xxx_write_reg(struct i2c_client *client, u8 reg, u8 val)
 /* Must be called with data->lock held (or before the device is visible). */
 static void hrs3xxx_power_off(struct hrs3xxx_data *data)
 {
+	int ret;
+
 	if (!data->powered)
 		return;
 
 	/* Software standby first, then cut the supply if there is a switch. */
-	hrs3xxx_write_reg(data->client, HRS3XXX_REG_ENABLE, 0);
+	ret = hrs3xxx_write_reg(data->client, HRS3XXX_REG_ENABLE, 0);
+	if (ret)
+		dev_warn_ratelimited(&data->client->dev,
+				     "standby write failed: %d\n", ret);
 	msleep(HRS3XXX_STANDBY_DELAY_MS);
 
 	if (gpio_is_valid(data->power_gpio))
@@ -103,6 +108,11 @@ static void hrs3xxx_power_off(struct hrs3xxx_data *data)
 	data->powered = false;
 }
 
+/*
+ * Note: on boards without a power switch (DW100U) power_off() leaves the chip
+ * in software standby (reg 0x01 = 0) and power_on() does not wake it. A future
+ * measurement back end must write the enable register itself.
+ */
 static void hrs3xxx_power_on(struct hrs3xxx_data *data)
 {
 	if (data->powered)
@@ -139,6 +149,7 @@ static void hrs3xxx_work(struct work_struct *work)
 	/* hrs3xxx_set_mode() cancels this work without holding the lock. */
 	mutex_lock(&data->lock);
 	if (data->mode) {
+		hrs3xxx_power_on(data);	/* no-op unless resuming */
 		hrs3xxx_report(data);
 		schedule_delayed_work(&data->work,
 				msecs_to_jiffies(HRS3XXX_REPORT_PERIOD_MS));
@@ -216,6 +227,11 @@ static struct attribute *hrs3xxx_attrs[] = {
 
 static const struct attribute_group hrs3xxx_attr_group = {
 	.attrs = hrs3xxx_attrs,
+};
+
+static const struct attribute_group *hrs3xxx_groups[] = {
+	&hrs3xxx_attr_group,
+	NULL,
 };
 
 static const char *hrs3xxx_chip_name(u8 id)
@@ -325,19 +341,14 @@ static int hrs3xxx_probe(struct i2c_client *client,
 	input_set_capability(input, EV_REL, REL_HWHEEL);
 	input_set_capability(input, EV_REL, REL_MISC);
 	input_set_drvdata(input, data);
+	/* Created with the device, before the KOBJ_ADD uevent. */
+	input->dev.groups = hrs3xxx_groups;
 	data->input = input;
 
 	ret = input_register_device(input);
 	if (ret) {
 		dev_err(dev, "cannot register input device: %d\n", ret);
 		input_free_device(input);
-		goto err_off;
-	}
-
-	ret = sysfs_create_group(&input->dev.kobj, &hrs3xxx_attr_group);
-	if (ret) {
-		dev_err(dev, "cannot create sysfs group: %d\n", ret);
-		input_unregister_device(input);
 		goto err_off;
 	}
 
@@ -353,7 +364,8 @@ static int hrs3xxx_remove(struct i2c_client *client)
 {
 	struct hrs3xxx_data *data = i2c_get_clientdata(client);
 
-	sysfs_remove_group(&data->input->dev.kobj, &hrs3xxx_attr_group);
+	/* Removes the attributes and waits for in-flight stores. */
+	input_unregister_device(data->input);
 	cancel_delayed_work_sync(&data->work);
 
 	mutex_lock(&data->lock);
@@ -361,7 +373,6 @@ static int hrs3xxx_remove(struct i2c_client *client)
 	hrs3xxx_power_off(data);
 	mutex_unlock(&data->lock);
 
-	input_unregister_device(data->input);
 	return 0;
 }
 
@@ -384,11 +395,9 @@ static int hrs3xxx_resume(struct device *dev)
 	struct hrs3xxx_data *data = dev_get_drvdata(dev);
 
 	mutex_lock(&data->lock);
-	if (data->mode) {
-		hrs3xxx_power_on(data);
-		schedule_delayed_work(&data->work,
-				msecs_to_jiffies(HRS3XXX_REPORT_PERIOD_MS));
-	}
+	/* No sleeping here: the work item powers the chip back on. */
+	if (data->mode)
+		schedule_delayed_work(&data->work, 0);
 	mutex_unlock(&data->lock);
 
 	return 0;

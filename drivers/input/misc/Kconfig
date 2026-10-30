@@ -910,10 +910,10 @@ config INPUT_STK8BAXX_I2C
 	  communication, else say N.
 
 	  To compile this driver as a module, choose M here.
+
 config INPUT_SENSORS_HRS3XXX
 	tristate "TYHX HRS3xxx heart-rate sensor"
 	depends on I2C
-	default n
 	help
 	  Say Y here to support the TYHX HRS3xxx family heart-rate sensor
 	  (DT compatible "tyhx,hrs3xxx") found on some UNISOC smartwatches.
