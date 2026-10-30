@@ -75,7 +75,7 @@ Counts: 6162 CIP commits; **1257 taken** (1225 applied by `cherry-pick` incl. 2 
 
 Skipped because the code is not built (about 4700 commits, not listed one by one): other architectures (about 375 x86/powerpc/mips/s390/... and most arm), drivers not in the config (about 1150 in drivers/net, media, scsi, gpu, plus bluetooth, nfc, can, xen, atm, ...), filesystems not built (btrfs, xfs, nilfs2, ocfs2, jfs, nfs, ...), netfilter parts not built (nf_tables, ipset), sctp, dccp, tipc, vsock.
 
-New Kconfig option from the series: `BPF_UNPRIV_DEFAULT_OFF` (default n here, from "bpf: Add kconfig knob for disabling unpriv bpf by default"); consider `y`, or set `kernel.unprivileged_bpf_disabled=1`, in the hardening pass.
+New Kconfig option from the series: `BPF_UNPRIV_DEFAULT_OFF` (default n here, from "bpf: Add kconfig knob for disabling unpriv bpf by default"); set to `y` in `watch_hardening.fragment` (unprivileged `bpf()` off by default; root can re-enable it).
 
 Hand-resolved or adapted (all carry a `[ backport: ... ]` note):
 - `net: add dev_net_rcu() helper` (prerequisite of the ipv4/ipv6/arp/ndisc RCU fixes): `possible_net_t.net` is not `__rcu` here, so `read_pnet_rcu()` uses `lockless_dereference()` (the load `rcu_dereference()` does) and `write_pnet()` publishes with `smp_store_release()`, like `rcu_assign_pointer()`. Only matters with `CONFIG_NET_NS=y`.

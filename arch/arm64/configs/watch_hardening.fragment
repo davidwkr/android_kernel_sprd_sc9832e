@@ -57,6 +57,9 @@ CONFIG_SECCOMP_FILTER=y
 # only; this tree has no cgroup/eBPF consumers that need the interpreter.
 CONFIG_BPF_JIT=y
 CONFIG_BPF_JIT_ALWAYS_ON=y
+# bpf() needs CAP_SYS_ADMIN by default (unprivileged_bpf_disabled=2, root can still change
+# it). Android 8.1 only uses BPF from privileged components (from the CIP series).
+CONFIG_BPF_UNPRIV_DEFAULT_OFF=y
 
 # --- Deliberately left to the defconfig ---------------------------------------
 
