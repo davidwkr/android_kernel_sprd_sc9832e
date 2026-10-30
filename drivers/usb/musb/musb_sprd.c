@@ -196,7 +196,9 @@ static int sprd_musb_init(struct musb *musb)
 {
 	struct sprd_glue *glue = dev_get_drvdata(musb->controller->parent);
 
-	register_ext_notifier(&glue->hot_plug_nb);
+	/* only the type-C method sets a callback; the chain calls it blindly */
+	if (glue->hot_plug_nb.notifier_call)
+		register_ext_notifier(&glue->hot_plug_nb);
 
 	musb->phy = glue->phy;
 	musb->xceiv = glue->xceiv;
@@ -1040,6 +1042,24 @@ module_param(host_idle_timeout, uint, 0644);
 MODULE_PARM_DESC(host_idle_timeout,
 		 "Seconds in host mode with no USB device before returning to device mode (0 = off)");
 
+/*
+ * No board in the tree has a kernel-controlled VBUS source: the FAN54015 is
+ * under a disabled i2c bus, the SC2721 ops have no otg_charge_ext and no DT
+ * has sprd,otg-gpios, so host mode starts with VBUS at 0 V.  "host" is
+ * refused (-EOPNOTSUPP) without a supplier unless this is set, for use
+ * with a self-powered hub or an OTG adapter with its own supply.
+ * The gate applies to the manual sysfs "host" write only.  The automatic
+ * paths (type-C HOST_CONN, usb-id irq, recover_work) are stock behaviour
+ * when the hardware itself detects an OTG adapter, which decides VBUS, and
+ * are left alone.  recover_work is blocked by role_busy during a role
+ * change, so neither it nor the rollback ever enters host from a "device"
+ * write; the rollback only undoes a "host" write that got past this gate.
+ */
+static bool host_without_vbus;
+module_param(host_without_vbus, bool, 0644);
+MODULE_PARM_DESC(host_without_vbus,
+		 "Allow the role switch to enter host mode although no VBUS source is known (external power needed)");
+
 static void sprd_musb_idle_arm(struct sprd_glue *glue)
 {
 	unsigned int t = READ_ONCE(host_idle_timeout);
@@ -1194,6 +1214,12 @@ done:
 static int sprd_musb_role_set(struct sprd_glue *glue, bool host)
 {
 	int ret;
+
+	if (host && !gpio_is_valid(glue->gpio_otg) &&
+	    !sprd_extic_otg_supported() && !READ_ONCE(host_without_vbus)) {
+		dev_warn(glue->dev, "host mode refused: no VBUS source (see host_without_vbus)\n");
+		return -EOPNOTSUPP;
+	}
 
 	/* before role_lock: idle_work takes it */
 	if (!host)

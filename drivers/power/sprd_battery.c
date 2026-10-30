@@ -508,10 +508,17 @@ void sprd_extic_otg_power(int enable)
 {
 	/* disable bc1.2 while enable otg, vice versa */
 	sprdchg_bc1p2_disable(enable);
-	if (sprd_ext_ic_op->otg_charge_ext != NULL)
+	if (sprd_ext_ic_op && sprd_ext_ic_op->otg_charge_ext != NULL)
 		sprd_ext_ic_op->otg_charge_ext(enable);
 }
 EXPORT_SYMBOL_GPL(sprd_extic_otg_power);
+
+/* true if a registered charger IC can drive VBUS in host mode */
+bool sprd_extic_otg_supported(void)
+{
+	return sprd_ext_ic_op && sprd_ext_ic_op->otg_charge_ext;
+}
+EXPORT_SYMBOL_GPL(sprd_extic_otg_supported);
 
 void sprdbat_register_ext_ops(const struct sprd_ext_ic_operations *ops)
 {

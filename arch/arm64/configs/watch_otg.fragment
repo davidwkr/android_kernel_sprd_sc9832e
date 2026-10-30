@@ -1,3 +1,5 @@
 # DM63 / DW100U: userspace USB host/device switch in the SPRD MUSB glue
 # (/sys/kernel/otg_role/role and role on the 20200000.usb device)
+# No board has a kernel-controlled VBUS source: host needs an externally
+# powered adapter/hub and musb_sprd.host_without_vbus=1 (see KERNEL_TWEAKS.md 5)
 CONFIG_USB_MUSB_SPRD_ROLE_SYSFS=y
