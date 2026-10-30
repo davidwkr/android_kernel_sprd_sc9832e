@@ -115,7 +115,7 @@ SC2721 charger (`sprd,sc2721-charger`, `chg-cv-gpios`, `chg-ovi-gpios`), SC2721 
 | `heartrate,bd1xxx` | none (`INPUT_SENSORS_BD1XXX`, `HEARTRATE_BD1820`) | no: port needed only if this is the fitted HR sensor; stock `hrs3xxx` is the first candidate |
 | `sprd,sc7a22` | `drivers/input/misc/sc7a22.c` | yes |
 | `QST,qmax981` | tree has `qma6981.c`, but `INPUT_QMAX981` is not in the source | not needed (unbound on DM63/DW100U) |
-| `magnetic,och1970` | none (`SENSORS_OCH1970`) | no: port needed to use the hall sensor; DW100U SPEC says "not needed" |
+| `magnetic,och1970` | `drivers/input/misc/och1970.c` (`SENSORS_OCH1970`, in `dm82.fragment`) | basic: raw X/Y/Z input device only, no open/close/back/front key mapping; not verified on a unit |
 | `rotary-encoder` | `drivers/input/misc/rotary_encoder.c` | yes (`INPUT_GPIO_ROTARY_ENCODER`) |
 | `gpio-keys` | generic | yes |
 | `sprd,sensor-main/sub`, `sprd,flash-ocp8137` | `drivers/misc/sprd_camera/...` | yes |
@@ -161,7 +161,7 @@ Config options enabled but missing from this source (`kgap.py`): `HEARTRATE_BD18
 3. **Touch**: identify which of 0x38 / 0x2d / 0x5a answers, build the matching fragment. The `btl_ts` (BetterLife, `TOUCHSCREEN_BETTERLIFE_COB_JR`) driver is missing if 0x2d is the fitted chip. Look at `tlsc6x` only if `i2cdetect` shows nothing at those addresses.
 4. **Heart rate**: confirm `hrs3xxx` (port exists) vs `bd1xxx` (no driver).
 5. **USB gpios cable detection**: verify the code path in the MUSB driver (DM63 and DW100U take `typec`).
-6. **Hall sensor `och1970`**: no driver; only needed if the open/close/front/back keys are wanted.
+6. **Hall sensor `och1970`**: basic driver in tree (raw X/Y/Z only); the open/close/front/back key mapping is not implemented.
 7. **Charger**: the 1250 mAh cell uses a 650 mA charge current and 4480 mV CV. Confirm before charging on the new kernel; apply the CV override if the same wear target as the DM63 is wanted.
 8. **Modules**: `mali.ko`, `sprdbt_tty.ko`, `sprd_fm.ko`, `sprdwl_ng.ko` must be rebuilt for the new kernel (as on the others).
 9. **Ramdisk**: 1374868 bytes, not unpacked here (outside the scope: only the Image, config and DT were read).

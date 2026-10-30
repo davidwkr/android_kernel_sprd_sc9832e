@@ -868,6 +868,18 @@ config SENSORS_SC7A22
 	  by the Spreadtrum sensor HAL.
 
 	  To compile this driver as a module, choose M here.
+
+config SENSORS_OCH1970
+	tristate "Orient-Chip OCH1970 3-axis Hall magnetic sensor with I2C bus"
+	depends on I2C
+	default n
+	help
+	  Say Y here if you have an OCH1970 magnetic sensor on an I2C bus.
+	  The driver reports X/Y/Z as an input device and is controlled
+	  through the "enable" and "delay" sysfs attributes of the I2C
+	  device. The sensor stays in power-down mode unless enabled.
+
+	  To compile this driver as a module, choose M here.
 config INPUT_EPL259x_I2C
 	tristate "EPL259x proximity and light sensor device with I2C bus"
 	depends on I2C

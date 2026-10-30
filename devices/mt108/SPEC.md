@@ -53,7 +53,7 @@ Scanned `stock.dts` and `stock.config` for MAC / BT addresses, IMEI, serial numb
 | i2c-0 | 0x20 / 0x21 | `sensor-main` / `sensor-sub` (`sprd,sensor-main/sub`; reset gpio 45/44, pwdn 47/46) | yes (UNISOC camera) |
 | i2c-1 | 0x12 | `qmax981_acc` / `QST,qmax981` | yes: `drivers/input/misc/qma6981.c`; stock config enables `INPUT_QMAX981` (not needed if sc7a22 is the fitted part) |
 | i2c-1 | 0x18 | `sc7a22_acc` / `sprd,sc7a22` (irq gpio 93) | yes (`SENSORS_SC7A22`) |
-| i2c-2 | 0x0d | `och1970` / `magnetic,och1970` (irq gpio 55, rst gpio 54, open/rotate thresholds, axes x1/x2/z) | **no: port needed** (a magnetic open/rotate sensor, likely the crown or lid detection; `SENSORS_OCH1970` in stock config) |
+| i2c-2 | 0x0d | `och1970` / `magnetic,och1970` (irq gpio 55, rst gpio 54, open/rotate thresholds, axes x1/x2/z) | **yes, basic**: `drivers/input/misc/och1970.c` (`SENSORS_OCH1970`, in `mt108.fragment`) reports raw X/Y/Z only; the open/rotate threshold logic of the stock driver is not implemented (a magnetic open/rotate sensor, likely the crown or lid detection) |
 | i2c-2 | 0x44 | `hrs3xxx@0x44` / `tyhx,hrs3xxx` (power gpio 90) | yes: `drivers/input/misc/hrs3xxx.c` (accepts the HRS3918 id 0x27 and, since `HEARTRATE_HRS3300`, the HRS3300 id 0x21: probe and standby only, no measurement). Stock config enables `HEARTRATE_HRS3300`, **not** `HRS3918` |
 | i2c-2 | 0x38 | `bd1xxx_hr` / `heartrate,bd1xxx` (power gpio 130) | **no: port needed** (alternative heart-rate part; stock config `HEARTRATE_BD1820`, `INPUT_SENSORS_BD1XXX`) |
 | i2c-3 | 0x38 | `cst0xx_ts` / `cst0xx,cst0xx_ts` (gpios 145, 144; `vdd_name=vddsdcore`; `TP_MAX_X/Y=360`) | yes: `drivers/input/touchscreen/cst0xx_ts.c` (`TOUCHSCREEN_CST0XX`) |
@@ -122,7 +122,7 @@ Missing from this source and enabled in `stock.config`: `HEALTH_GOODIX`, `HEARTR
 
 1. Confirm hardware identity on a unit or from `uboot.bin` / `system` (not extracted): `lcd_id`, actual touch IC (CST0xx at 0x38 or Betterlife at 0x2d), heart-rate chip (HRS3300 / HRS3918 / BD1820), accelerometer (SC7A22 vs QMAX981).
 2. Heart rate: HRS3300 ID support is done (no measurement); port the BD1xxx driver only if step 1 shows that chip. The userspace HAL likely differs from the DM63/DW100U one.
-3. `och1970` magnetic sensor: port needed (no driver, no input mapping known). It is optional for a first boot.
+3. `och1970` magnetic sensor: basic driver in tree (raw X/Y/Z input device, sysfs enable/delay; no thresholds or key mapping). Optional for a first boot.
 4. Touch: bring up `cst0xx_ts` with `TP_MAX 360x360`; if the unit carries the Betterlife IC (`btl_ts` (`btl,btl_ts`) at 0x2d, same gpios), a driver is missing.
 5. Display: no driver work expected (panels are DT data). Check that the 360x360 jd9855 / st77916 / gc9b71 init data work with the ADF driver. AOD idle needs panel-specific commands.
 6. Use the MT108 `stock.dts` as the first DT (single DTB, matches the bootloader). Do not reuse DM63 / DW100U battery data: it charges to 4395 mV, 1030 mAh.

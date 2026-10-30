@@ -62,6 +62,7 @@ obj-$(CONFIG_INPUT_POWERMATE)		+= powermate.o
 obj-$(CONFIG_INPUT_PWM_BEEPER)		+= pwm-beeper.o
 obj-$(CONFIG_INPUT_QMA6981_I2C)		+= qma6981.o
 obj-$(CONFIG_SENSORS_SC7A22)		+= sc7a22.o
+obj-$(CONFIG_SENSORS_OCH1970)		+= och1970.o
 obj-$(CONFIG_INPUT_RB532_BUTTON)	+= rb532_button.o
 obj-$(CONFIG_INPUT_REGULATOR_HAPTIC)	+= regulator-haptic.o
 obj-$(CONFIG_INPUT_RETU_PWRBUTTON)	+= retu-pwrbutton.o

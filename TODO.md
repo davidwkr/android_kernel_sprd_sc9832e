@@ -181,7 +181,8 @@ Specs from the stock boot dumps only (no unit examined): [`devices/mt107/SPEC.md
 - [x] Per-device config fragments (`mt107.fragment`, `mt108.fragment`, `dm82.fragment`): touch (cst0xx + hyn where the DT lists both), HRS, AOD (MT107/DM82), sc7a22 and QMA6981. Compatibles checked against the of_match tables (all match); probe error paths of both touch drivers use devm GPIO/regulator, so a non-fitted chip releases the shared GPIOs. Build-checked only.
 - [x] `hrs3xxx`: accepts the HRS3300 chip ID `0x21` too (`HEARTRATE_HRS3300`, `chipinfo` reports `hrs3300`). Probe, standby and ABI only; HRS3300 measurement (ENABLE/PDRIVER setup, data registers) is not implemented and nothing is verified on a unit.
 - [ ] Betterlife touch (`btl_ts`, 0x2d): port a driver only if a unit has that chip.
-- [ ] `bd1xxx_hr` heart rate, `och1970` and `msp891` sensors: no driver in this tree; port only if fitted and wanted.
+- [x] `och1970` Hall magnetic sensor: new driver `drivers/input/misc/och1970.c` (`SENSORS_OCH1970`, in all three fragments), written from the public OCH1970VAD-H datasheet V1.1: chip-ID check, power-down by default, polled single measurements, input device `och1970` (ABS_X/Y/Z, raw 16 bit, 1.1 uT/LSB), sysfs `enable` / `delay` (min 10 ms). The stock HAL's device name and the open/close key logic (`linux,open` etc., thresholds) are unknown and not implemented; irq pin unused. Build-checked only, not verified on a unit.
+- [ ] `bd1xxx_hr` heart rate and `msp891` sensors: no driver in this tree; port only if fitted and wanted.
 - [x] `sprd_aod_idle`: MT107 / DM82 only (in their fragments); the match table covers `cst0xx_ts` and `hyn_ts`, so either fitted chip works.
 - [ ] USB role switch on `gpios` cable-detect boards (MT108, DM82): not reviewed for that path (the glue's Type-C notifier is not used there); test before enabling `watch_otg.fragment`.
 - [ ] Charge CV override: the driver already caps at each unit's `chg-end-vol` (4395 mV on MT107/MT108).
