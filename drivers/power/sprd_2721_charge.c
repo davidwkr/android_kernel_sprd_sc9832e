@@ -505,9 +505,11 @@ module_param_cb(cv_status, &cv_status_ops, NULL, 0444);
  *    full, never without a charger);
  *  - |battery current| <= gauge_resync_relax_ma and the gauge OCV is within
  *    gauge_resync_hold_mv of the hold voltage, continuously for
- *    gauge_resync_rest_s (the count is awake polls only; any failed check
- *    restarts it, as does a change of the hold voltage);
- *  - the OCV-table capacity differs from the reported capacity by at least
+ *    gauge_resync_rest_s (awake polls only; any failed check, a change of
+ *    the hold voltage or a gap between polls above 2 x GR_POLL_S, e.g. suspend,
+ *    restarts it);
+ *  - the OCV-table capacity differs from the raw gauge SOC
+ *    (sprdfgu_read_soc, not the rate-limited UI value) by at least
  *    gauge_resync_pct points;
  *  - the OCV-table capacity is not 100 % unless the OCV is at the table's
  *    full point, and is not 0 %;
@@ -532,7 +534,14 @@ static unsigned int gr_gap_s = GR_GAP_FLOOR_S;
 static unsigned int gr_relaxed_s, gr_last_hold_mv, gr_count;
 static unsigned long gr_last_j;
 static bool gr_done_once;
-static int gr_ocv = -1, gr_cur, gr_cap = -1, gr_ocv_soc = -1;
+static int gr_ocv = -1, gr_cur, gr_cap = -1, gr_ui_cap = -1, gr_ocv_soc = -1;
+static s64 gr_last_poll_ms;		/* boottime of the previous poll, 0 = none */
+/*
+ * Built-in module parameters are applied from the kernel command line before
+ * workqueues and timers exist: until probe has finished the setters only store
+ * values and nothing is queued.
+ */
+static bool gr_ready;
 static int gr_from = -1, gr_to = -1;
 static const char *gr_reason = "off";
 
@@ -565,7 +574,13 @@ static void gr_step(void)
 	struct sprdbat_drivier_data *b = READ_ONCE(bat_drv_data);
 	unsigned int hold = gr_hold_target_mv();
 	bool full = false;
-	int ocv, cur, cap, soc;
+	int ocv, cur, cap, soc, raw;
+	s64 now = ktime_to_ms(ktime_get_boottime());
+
+	/* rest must be continuous: a gap (suspend, freeze) restarts it */
+	if (gr_last_poll_ms && now - gr_last_poll_ms > 2 * GR_POLL_S * 1000LL)
+		gr_relaxed_s = 0;
+	gr_last_poll_ms = now ? now : 1;
 
 	if (!b || !b->pdata) {
 		gr_idle("no_battery");
@@ -581,12 +596,12 @@ static void gr_step(void)
 		gr_idle("not_charging");
 		return;
 	}
-	cap = READ_ONCE(b->bat_info.capacity);
+	cap = READ_ONCE(b->bat_info.capacity);	/* UI value, rate limited */
+	gr_ui_cap = cap == (int)~0U ? -1 : cap;
 	cur = sprdfgu_read_batcurrent();
 	ocv = (int)sprdfgu_read_vbat_ocv();
 	gr_ocv = ocv;
 	gr_cur = cur;
-	gr_cap = cap == (int)~0U ? -1 : cap;
 	if (hold != gr_last_hold_mv) {
 		gr_last_hold_mv = hold;
 		gr_relaxed_s = 0;
@@ -597,7 +612,9 @@ static void gr_step(void)
 		return;
 	}
 	soc = sprdfgu_ocv_to_capacity(ocv, &full);	/* 0.1 % */
-	if (soc < 0 || gr_cap < 0) {
+	raw = soc < 0 ? -1 : sprdfgu_read_soc();	/* gauge SOC, 0.1 % */
+	gr_cap = raw;
+	if (soc < 0 || raw < 0 || gr_ui_cap < 0) {
 		gr_idle("gauge_unsupported");
 		return;
 	}
@@ -607,7 +624,7 @@ static void gr_step(void)
 		gr_reason = "resting";
 		return;
 	}
-	if (abs(soc / 10 - gr_cap) < (int)gr_pct) {
+	if (abs(soc - raw) < (int)gr_pct * 10) {
 		gr_reason = "in_agreement";
 		return;
 	}
@@ -618,6 +635,18 @@ static void gr_step(void)
 	if (gr_done_once &&
 	    time_before(jiffies, gr_last_j + gr_gap_s * HZ)) {
 		gr_reason = "ratelimited";
+		return;
+	}
+	/*
+	 * Re-check right before the write. cv_override_mv, cv_last_req_mv and
+	 * cv_unreachable are read without cv_lock here and in gr_hold_target_mv():
+	 * benign, a stale value only delays or skips one resync.
+	 */
+	if (READ_ONCE(b->bat_info.module_state) != POWER_SUPPLY_STATUS_CHARGING ||
+	    !(READ_ONCE(b->bat_info.usb_online) ||
+	      READ_ONCE(b->bat_info.ac_online)) ||
+	    gr_hold_target_mv() != hold) {
+		gr_idle("not_holding");
 		return;
 	}
 	if (sprdfgu_force_set_soc(soc)) {
@@ -631,8 +660,9 @@ static void gr_step(void)
 	gr_count++;
 	gr_relaxed_s = 0;
 	gr_reason = "resynced";
-	pr_info("sprdchg: gauge resync %d%% -> %d.%d%% (ocv %d mV, %d mA, hold %u mV)\n",
-		gr_cap, soc / 10, soc % 10, ocv, cur, hold);
+	pr_info("sprdchg: gauge resync %d.%d%% -> %d.%d%% (ui %d%%, ocv %d mV, %d mA, hold %u mV)\n",
+		raw / 10, raw % 10, soc / 10, soc % 10, gr_ui_cap, ocv, cur,
+		hold);
 }
 
 static void gr_work_fn(struct work_struct *w)
@@ -652,6 +682,8 @@ static void gr_work_fn(struct work_struct *w)
 /* start or stop polling to match gauge_resync and cv_override_mv */
 static void gr_update(void)
 {
+	if (!READ_ONCE(gr_ready))
+		return;
 	if (READ_ONCE(gauge_resync) && READ_ONCE(cv_override_mv)) {
 		queue_delayed_work(system_freezable_wq, &gr_work,
 				   GR_POLL_S * HZ);
@@ -742,11 +774,13 @@ static int gauge_resync_status_get(char *buf, const struct kernel_param *kp)
 
 	mutex_lock(&gr_lock);
 	ret = scnprintf(buf, PAGE_SIZE,
-		"enabled=%d state=%s ocv_mv=%d cur_ma=%d cap=%d ocv_soc=%d.%d relaxed_s=%u resyncs=%u last_from=%d last_to=%d.%d last_ago_s=%ld\n",
-		gauge_resync, gr_reason, gr_ocv, gr_cur, gr_cap,
+		"enabled=%d state=%s ocv_mv=%d cur_ma=%d raw_cap=%d.%d ui_cap=%d ocv_soc=%d.%d relaxed_s=%u resyncs=%u last_from=%d.%d last_to=%d.%d last_ago_s=%ld\n",
+		gauge_resync, gr_reason, gr_ocv, gr_cur,
+		gr_cap < 0 ? -1 : gr_cap / 10, gr_cap < 0 ? 0 : gr_cap % 10, gr_ui_cap,
 		gr_ocv_soc < 0 ? -1 : gr_ocv_soc / 10,
 		gr_ocv_soc < 0 ? 0 : gr_ocv_soc % 10, gr_relaxed_s, gr_count,
-		gr_from, gr_to < 0 ? -1 : gr_to / 10, gr_to < 0 ? 0 : gr_to % 10,
+		gr_from < 0 ? -1 : gr_from / 10, gr_from < 0 ? 0 : gr_from % 10,
+		gr_to < 0 ? -1 : gr_to / 10, gr_to < 0 ? 0 : gr_to % 10,
 		gr_done_once ? (long)((jiffies - gr_last_j) / HZ) : -1L);
 	mutex_unlock(&gr_lock);
 	return ret;
@@ -1016,7 +1050,6 @@ static int sprdchg_2721_probe(struct platform_device *pdev)
 					 cv_override_mv);
 		}
 	}
-	gr_update();
 	sprdbat_register_ext_ops(&sprd_2721_op);
 	charger_desc = devm_kzalloc(&pdev->dev,
 		sizeof(*charger_desc), GFP_KERNEL);
@@ -1036,6 +1069,9 @@ static int sprdchg_2721_probe(struct platform_device *pdev)
 			ret_ptr);
 		return PTR_ERR(ret_ptr);
 	}
+	/* parameters set on the cmdline only stored values until now */
+	WRITE_ONCE(gr_ready, true);
+	gr_update();
 	SPRDCHG_DEBUG("%s probe ok\n", __func__);
 	return 0;
 }
@@ -1044,6 +1080,7 @@ static int sprdchg_2721_remove(struct platform_device *pdev)
 {
 	struct sprd2721_device *sprd_2721 = platform_get_drvdata(pdev);
 
+	WRITE_ONCE(gr_ready, false);
 	cancel_delayed_work_sync(&gr_work);
 	power_supply_unregister(&sprd_2721->charger);
 	return 0;
