@@ -1494,18 +1494,12 @@ static int qmax981_i2c_probe(struct i2c_client *client,
 		goto exit_input_deinit;
 	}
 
-	err = misc_register(&qmax981_device);
-	if (err) {
-		LOG_ERR("%s: create register fail!\n", __func__);
-		goto exit_remove_group;
-	}
-
 	gsensor_class = class_create(THIS_MODULE, "xr-gsensor");//client->name
 	if (IS_ERR(gsensor_class)) {
 		err = PTR_ERR(gsensor_class);
 		LOG_INFO("Failed to create class(xr-gsensor)!\n");
 		gsensor_class = NULL;
-		goto exit_misc_deregister;
+		goto exit_remove_group;
 	}
 	gsensor_cmd_dev = device_create(gsensor_class, NULL, 0, NULL, "device");
 	if (IS_ERR(gsensor_cmd_dev)) {
@@ -1527,8 +1521,20 @@ static int qmax981_i2c_probe(struct i2c_client *client,
 		goto exit_remove_gsensor_file;
 	}
 
+	/* last: the misc device is the only interface an fd can hold across a
+	 * failed probe (misc_deregister() does not wait for open files), so
+	 * nothing fallible may come after it
+	 */
+	err = misc_register(&qmax981_device);
+	if (err) {
+		LOG_ERR("%s: create register fail!\n", __func__);
+		goto exit_remove_delay_file;
+	}
+
 	return 0;
 
+exit_remove_delay_file:
+	device_remove_file(gsensor_cmd_dev, &dev_attr_delay_acc);
 exit_remove_gsensor_file:
 	device_remove_file(gsensor_cmd_dev, &dev_attr_gsensor);
 exit_device_destroy:
@@ -1537,8 +1543,6 @@ exit_device_destroy:
 exit_class_destroy:
 	class_destroy(gsensor_class);
 	gsensor_class = NULL;
-exit_misc_deregister:
-	misc_deregister(&qmax981_device);
 exit_remove_group:
 	sysfs_remove_group(&qmax981->input->dev.kobj, &qmax981_attribute_group);
 	/* interfaces are gone: standby and make sure no work stays queued */
