@@ -1222,6 +1222,20 @@ static void sprd_musb_idle_work(struct work_struct *work)
 	host = glue->dr_mode == USB_DR_MODE_HOST;
 	spin_unlock_irqrestore(&glue->lock, flags);
 	if (host) {
+		struct musb *musb = platform_get_drvdata(glue->musb);
+		bool connected = false;
+
+		/* a device may be enumerating (ADD comes last), or ndev drifted */
+		if (musb) {
+			spin_lock_irqsave(&musb->lock, flags);
+			connected = musb->port1_status & USB_PORT_STAT_CONNECTION;
+			spin_unlock_irqrestore(&musb->lock, flags);
+		}
+		if (connected) {
+			sprd_musb_idle_arm(glue);
+			mutex_unlock(&glue->role_lock);
+			return;
+		}
 		dev_info(glue->dev, "host mode idle, back to device mode\n");
 		ret = __sprd_musb_role_set(glue, false, false);
 		if (ret)
