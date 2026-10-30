@@ -183,8 +183,13 @@ static int bl_resend_locked(void)
 
 /*
  * The panel is power-cycled and re-initialised by panel_suspend()/resume(),
- * which leaves it in normal mode. Forget idle_state on DISPC_STOP/RUN so
- * status and the touch filter do not claim idle while the panel is not.
+ * which leaves it in normal mode. Forget idle_state on DISPC_RUN (panel just
+ * re-initialised, screen turning on) so the touch filter does not keep
+ * swallowing touches when userspace's idle=0 is late or refused. Not on
+ * DISPC_STOP: as in stock, idle_state stays set through AOD -> screen off,
+ * so only a double tap wakes the watch from off (cst0xx keeps reporting
+ * touches while the panel is off). The root-only sysfs_dsi debug attributes
+ * also send STOP/RUN pairs and can clear the state during AOD.
  * Userspace may still see idle=0 fail with -EIO while the panel is powered
  * down (refused, nothing sent); that is harmless, it only needs to retry
  * after unblank if it wants the idle brightness path's restore. Only atomics
@@ -207,8 +212,7 @@ static void set_idle_state(int on)
 static int aod_disp_event(struct notifier_block *nb, unsigned long action,
 			  void *data)
 {
-	if ((action == DISP_EVENT_DISPC_STOP ||
-	     action == DISP_EVENT_DISPC_RUN) && READ_ONCE(idle_state))
+	if (action == DISP_EVENT_DISPC_RUN && READ_ONCE(idle_state))
 		set_idle_state(0);
 	return NOTIFY_DONE;
 }
