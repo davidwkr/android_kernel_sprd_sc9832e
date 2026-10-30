@@ -260,14 +260,16 @@ static void sprdchg_write_cccv(unsigned int cvpoint)
 
 /*
  * Program the CV for a sprdbat request. The CV code rounds to the nearest
- * step (up to +3.75 mV); when the override is what limits the CV, ask for
- * 4 mV less so the programmed voltage never exceeds the override.
+ * step (up to +3.75 mV); when the CV equals the override (the override
+ * limits it, or the request is the same value), ask for 4 mV less so the
+ * programmed voltage never exceeds the override.
  */
 static void sprdchg_program_cccv(unsigned int req)
 {
+	unsigned int ov = READ_ONCE(cv_override_mv);
 	unsigned int eff = sprdchg_cv_effective(req);
 
-	sprdchg_write_cccv(eff < req ? eff - 4 : eff);
+	sprdchg_write_cccv(ov && eff == ov ? eff - 4 : eff);
 }
 
 static void sprdchg_set_cccvpoint(unsigned int cvpoint)
