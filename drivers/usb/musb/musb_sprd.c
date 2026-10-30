@@ -92,6 +92,7 @@ struct sprd_glue {
 	bool			role_stopping;	/* glue is being removed */
 	struct delayed_work	idle_work;	/* host mode idle timeout */
 	atomic_t		ndev;		/* devices below our root hub */
+	bool			idle_failed;	/* idle switch failed: no more idle switches until a role write */
 #endif
 };
 
@@ -1043,7 +1044,7 @@ static void sprd_musb_idle_arm(struct sprd_glue *glue)
 {
 	unsigned int t = READ_ONCE(host_idle_timeout);
 
-	if (t)
+	if (t && !READ_ONCE(glue->idle_failed))
 		mod_delayed_work(system_wq, &glue->idle_work,
 				 msecs_to_jiffies(t * 1000UL));
 }
@@ -1198,6 +1199,7 @@ static int sprd_musb_role_set(struct sprd_glue *glue, bool host)
 	if (!host)
 		cancel_delayed_work_sync(&glue->idle_work);
 	mutex_lock(&glue->role_lock);
+	WRITE_ONCE(glue->idle_failed, false);	/* explicit write: start over */
 	ret = glue->role_stopping ? -ENODEV :
 	      __sprd_musb_role_set(glue, host, false);
 	mutex_unlock(&glue->role_lock);
@@ -1213,7 +1215,8 @@ static void sprd_musb_idle_work(struct work_struct *work)
 	int ret;
 
 	mutex_lock(&glue->role_lock);
-	if (glue->role_stopping || !READ_ONCE(host_idle_timeout) ||
+	if (glue->role_stopping || glue->idle_failed ||
+	    !READ_ONCE(host_idle_timeout) ||
 	    atomic_read(&glue->ndev) > 0) {
 		mutex_unlock(&glue->role_lock);
 		return;
@@ -1252,6 +1255,9 @@ static void sprd_musb_idle_work(struct work_struct *work)
 			 */
 			dev_warn(glue->dev, "idle switch failed: %d, not retried\n",
 				 ret);
+			/* under role_lock: stops re-arms and a pending work */
+			WRITE_ONCE(glue->idle_failed, true);
+			cancel_delayed_work(&glue->idle_work);
 		}
 	}
 	mutex_unlock(&glue->role_lock);
@@ -1375,6 +1381,7 @@ static void sprd_musb_role_init(struct sprd_glue *glue)
 	glue->role_busy = false;
 	glue->role_stopping = false;
 	atomic_set(&glue->ndev, 0);
+	glue->idle_failed = false;
 	INIT_DELAYED_WORK(&glue->idle_work, sprd_musb_idle_work);
 	role_glue = glue;
 	usb_register_notify(&sprd_musb_usb_nb);
