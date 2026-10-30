@@ -305,6 +305,9 @@ struct isp_raw_buf_info {
 */
 struct isp_pipe_dev {
 	atomic_t users;
+	/* dma-bufs programmed into the hardware, see isp_pin_dmabuf() */
+	struct list_head pinned_dmabufs;
+	spinlock_t pinned_lock;
 	struct device_node *dn;
 	struct clk *clock;
 	/*struct platform_device *pdev;*/
