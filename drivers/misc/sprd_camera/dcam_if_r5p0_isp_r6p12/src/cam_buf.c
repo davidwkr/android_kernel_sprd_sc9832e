@@ -590,13 +590,17 @@ int sprd_cam_buf_sg_table_put(uint32_t idx)
 	struct fd_map_dma *fd_dma_next = NULL;
 	struct cam_buf_info info;
 	struct list_head *buffer_list = NULL;
+	LIST_HEAD(release_list);
 
 	buffer_list = &dma_buffer_list[idx];
 
-	list_for_each_entry_safe(fd_dma, fd_dma_next, buffer_list, list) {
-		mutex_lock(&dma_buffer_lock);
+	/* detach everything under the lock, release outside of it */
+	mutex_lock(&dma_buffer_lock);
+	list_splice_init(buffer_list, &release_list);
+	mutex_unlock(&dma_buffer_lock);
+
+	list_for_each_entry_safe(fd_dma, fd_dma_next, &release_list, list) {
 		list_del(&fd_dma->list);
-		mutex_unlock(&dma_buffer_lock);
 		if (fd_dma->type == CAM_BUF_USER_TYPE) {
 			dma_buf_put(fd_dma->user_type.dma_buf);
 			pr_debug("del: 0x%x 0x%p\n",
