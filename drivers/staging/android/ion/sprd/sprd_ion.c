@@ -497,12 +497,13 @@ static long sprd_ion_ioctl(struct ion_client *client, unsigned int cmd,
 			ion_free(client, handle);
 			return PTR_ERR(kaddr);
 		}
-#if defined(CONFIG_64BIT)
-		data.kaddr = (uint64_t)kaddr;
-#else
-		data.kaddr = (uint32_t)kaddr;
-		data.kaddr = data.kaddr & 0xffffffff;
-#endif
+		/*
+		 * Do not hand the kernel virtual address to user space: it
+		 * cannot be used from there, the mapping is dropped by the
+		 * ion_free() below, and the value would only defeat KASLR and
+		 * disclose heap layout. Callers rely on the return value.
+		 */
+		data.kaddr = 0;
 		data.size = buffer->size;
 
 		ion_free(client, handle);
