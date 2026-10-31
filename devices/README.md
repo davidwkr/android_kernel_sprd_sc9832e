@@ -111,3 +111,12 @@ These are device-specific. Keep them out of this repo, which is a public fork:
 - partition dumps, NV/calibration partitions (`l_fixnv*`, `prodnv`, `miscdata`);
 - anything from a watch's `/data`;
 - serial numbers, IMEIs, MAC addresses, logs with locations.
+
+## DW100U Goodix fingerprint driver (provenance)
+
+`drivers/input/fingerprint/goodix/` (`CONFIG_GOODIX_TEE_FINGERPRINT`, enabled for dw100u only through `arch/arm64/configs/dw100u_fp.fragment`) binds the DT node `goodix,fingerprintree` (`goodix_fp_ree@0` on `spi@70c00000`, properties `goodix,gpio_irq`, `goodix,gpio_reset`, optional `goodix,gpio_pwr`).
+
+- Source: `gf_common.c` and `gf_spi_access.c` derive from `drivers/input/fingerprint/gf3626/` of https://github.com/Supernote-Ratta/kernel_a6x_a5x (commit `bdc77c244cd3`, 2022-08-03). Both files carry Goodix's own GPL-2.0-or-later header, kept as is; the repo has no LICENSE metadata, so the per-file header is the basis. The Infinix NOTE5 4.4 tree (`OpenSource-Infinix/NOTE5-X604-Kernel-4.4`, `goodix_fp_tee/gf_spi_tee.c`, same header) was used to cross-check the uapi; it is MediaTek specific and was not ported.
+- Upstream `gf_common.h` and `gf_platform.c` have no license header, so they were not copied: the enums, structs and ioctl macros were reproduced from the upstream `gf_common.h` for ABI compatibility (that file carries no license header); the rest of the header and the platform/probe/remove code is new.
+- uapi kept: `/dev/goodix_fp` (misc device), input device `gf-keys`, ioctl magic `'g'` numbers 0..17, netlink protocol 29 (returned to the HAL by `GF_IOC_INIT`). Both public trees agree on these. The stock DW100U HAL was not inspected, so a match is likely but not confirmed.
+- Changes: refcounted lifetime, devm GPIOs, bounds checked raw SPI ioctl with a 32-bit compat path, netlink registration limited to root/system, undeclared key codes no longer forwarded, sensor-specific SPI probing in `open()` (the GPIO reset stays) and the debug sysfs file dropped; netlink registration uses the socket portid; unknown `'g'` ioctls (including cmd 15, compiled out upstream) return 0 as upstream; the register read/write helpers were dropped with that ioctl.

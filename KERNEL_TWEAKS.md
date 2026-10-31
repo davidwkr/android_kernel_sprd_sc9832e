@@ -213,3 +213,9 @@ Run on battery, not USB (USB power keeps the CPU awake). Push a small script tha
 - GPS: fix rate (1 Hz) and satellites, without logging coordinates
 
 Compare runs with the same app state (tracking on, same request interval), screen off, same place.
+
+## DW100U Goodix fingerprint interface
+
+Added `drivers/input/fingerprint/goodix/` (GPL Goodix HAL interface, derived from the Supernote gf3626 driver) for the stock `goodix,fingerprintree` node. Only the dw100u defconfig enables it. Provenance and uapi notes: `devices/README.md`, section "DW100U Goodix fingerprint driver (provenance)". Not tested on hardware.
+
+Notes: the SCREEN_ON/OFF netlink events rely on FB blank notifications, which ADF may not send (same as upstream). The device node is `/dev/goodix_fp` (sysfs `/sys/class/misc/goodix_fp`); check it against the stock init/ueventd rules at first boot.

@@ -1,0 +1,8 @@
+# DW100U: Goodix fingerprint HAL interface (DT "goodix,fingerprintree" on
+# spi@70c00000): /dev/goodix_fp, netlink 29, input device "gf-keys".
+# See drivers/input/fingerprint/goodix/gf_common.c for provenance.
+CONFIG_INPUT_FINGERPRINT=y
+CONFIG_GOODIX_TEE_FINGERPRINT=y
+# The sprd IODEBUG feature also claims netlink protocol 29 (NETLINK_IODEBUG);
+# the stock dw100u kernels (silver, V13M) do not enable it.
+# CONFIG_IODEBUG is not set
