@@ -59,7 +59,7 @@ Conflict: low = applies clean, med = needs fuzz, high = hand merge.
 | 6 | `db3af59b11da` | BACKPORT: binder: Set end of SG buffer area properly. | drivers/android/binder.c | binder SG buffer end miscalculated, memory safety | post147 | low |
 | 7 | `0c5dfd3c4c5c` | UPSTREAM: netfilter: x_tables: fix pointer leaks to userspace | net/netfilter/xt_IDLETIMER.c, net/netfilter/xt_LED.c +3 | x_tables leaked kernel pointers to unprivileged users (KASLR bypass) | post147 | high |
 | 8 | `96b09cba5590` | UPSTREAM: net: socket: set sock->sk to NULL after calling proto_ops::release() | net/socket.c | socket UAF after release (sock->sk left dangling) | post147 | high |
-| 9 | `b878b2601093` | ANDROID: sdcardfs: Call lower fs's revalidate | fs/sdcardfs/dentry.c | sdcardfs (app storage isolation) | pre147 | med |
+| 9 | `b878b2601093`, `a5504f851af9`, `96acdab2f4de`, `d46684aa425d`, `640e5265032d`, `4d70f7311524`, `09c77d623006` and the other sdcardfs commits | sdcardfs fixes and features | PRESENT, with two vendor exceptions | these commits are in our `fs/sdcardfs` (`dentry.c:64` revalidate, no `drop_recursive()`); the tree otherwise matches the aosp tip except modes. Exceptions: `lookup.c` (~line 375) reverts aosp e92f72194da2/b4840d3bba89 (lower dentry created again instead of "don't do d_add for the lower fs"; FBE visibility, not security) and `main.c` adds the stacking depth check aosp lacks |
 | 10 | `19ef30ef23a4` | FROMLIST: binder: fix proc->files use-after-free | drivers/android/binder.c | binder proc->files UAF; series with a revert, take final upstream form only | pre147 | high |
 | 11 | `f73f378b52e8` | FROMLIST: binder: use inner lock to sync work dq and node counts | drivers/android/binder.c | binder (local, any app) | pre147 | high |
 | 12 | `fa60377966b7` | UPSTREAM: usb: gadget: f_fs: avoid out of bounds access on comp_desc | drivers/usb/gadget/function/f_fs.c | OOB read in FunctionFS descriptor parsing (USB host-controlled) | pre147 | high |
@@ -176,3 +176,44 @@ f_accessory (Dec 2020 series, USB gadget lifetime): picked in order `f5686beef3e
 Open: ebtables (`CONFIG_BRIDGE_NF_EBTABLES` is not set in dm63) and matches/targets with their own `compat_to_user()` (not audited for kernel pointers). Pre-147 candidates (f2fs sanity checks, PAN/UAO, `_etext`, RO mappings) are not in this batch.
 
 Build: `scripts/watch_build.sh dm63` finishes with 0 errors; the touched files (recompiled after `touch`) produce no warnings.
+
+## Batch 2 verdicts (pre147 security candidates plus bugfixes in security-relevant code)
+
+Same method as batch 1 (aosp diff read against our code). A tree-wide check first: `fs/sdcardfs` matches the aosp tip apart from modes and the vendor exceptions below, so the sdcardfs commits in this list are PRESENT. Vendor divergences: our `main.c` has the stacking depth check aosp lacks, and our `lookup.c` (~line 375) keeps the older "create the lower dentry again" fallback, i.e. it reverts aosp e92f72194da2/b4840d3bba89 ("don't do d_add for the lower fs"); that is about file-based-encryption visibility, not security. The vendor binder is the final upstream design (fine-grained locking), so the FROMLIST/ANDROID binder commits are superseded. Batch 2 is small because most remaining candidates were false MISSING.
+
+| aosp | Subject | Verdict | Evidence |
+|---|---|---|---|
+| `f73f378b52e8`, `57628830c307`, `8881f118f526`, `6ea602711571`, `a19f3efc4f54` | binder locking series (inner lock, todo-list spinlocks, global lock removal) | PRESENT (superseded) | `binder.c:391-401` bitfields under the inner lock, `binder_inner_proc_lock()` throughout |
+| `b81f4c5f3167`, `14f09e8e7cd8` | binder: strong ref checks | PRESENT | `binder.c:1619`, target handle at `binder.c:2977` |
+| `f80cbc72e1b8` | binder: target node needs a strong ref | PRESENT | `binder_get_ref_olocked(..., need_strong_ref)` at `binder.c:2977` |
+| `db51658467e0` | binder: two threads freeing a buffer | PRESENT | `binder_alloc.c:151` (`allow_user_free`) |
+| `19ef30ef23a4` | binder: `proc->files` UAF | PRESENT | `proc->files_lock`, `binder.c:945` |
+| `afda44d0aa52`, `9dac44d5d4b0`, `2db1fabeccc1`, `6cfb5a870f75` | binder: `looper_need_return`, `proc->tsk` check, `e->cmd`, `mmget_still_valid` | PRESENT | `binder.c:636`, `binder.c:5044`, `binder.c:4217`, `binder_alloc.c:222` |
+| `b878b2601093`, `a5504f851af9`, `96acdab2f4de`, `d46684aa425d`, `640e5265032d`, `4d70f7311524`, `09c77d623006` and the other sdcardfs commits | sdcardfs fixes and features | PRESENT | `fs/sdcardfs` equals the aosp tip (`dentry.c:64` revalidate, no `drop_recursive()`) |
+| `8cbdbb9a6aa5`, `57e54f412025` | f2fs checkpoint and journal sanity checks | PRESENT | `fs/f2fs/super.c:2620-2651`, `fs/f2fs/segment.c:3570` |
+| `fbbe0f6b7fc1` | f2fs: fstrim panic | PRESENT (code differs) | vendor f2fs rewrote the discard wait path (`segment.c:1690`) |
+| `8b75db9857a4` | ext4 crypto: no zeroing without a key | PRESENT | `fs/ext4/inode.c:3672` |
+| `28850c79d071` | timekeeping: raw sub-nanosecond accounting | PRESENT | `kernel/time/timekeeping.c:286` |
+| `644210f3f890` | arm64: `change_memory_common()` with zero pages | PRESENT | `arch/arm64/mm/pageattr.c:92` |
+| `5c866b0f8a2f` | uid_sys_stats: negative write bytes | PRESENT | `drivers/misc/uid_sys_stats.c:216` |
+| `dd842551d5f0`, `1dffd1ffc410`, `e005abce5829` | lowmemorykiller `handle_lmk_event()` locking | PRESENT (code absent) | no `handle_lmk_event()` in our `lowmemorykiller.c` |
+| `26cab56d9af4` | dm: `dm_substitute_devices()` | PRESENT (code absent) | `init/do_mounts_dm.c` has no `candidate_end` |
+| `c2ab93b45b5c` | xt_qtaguid: remove the tag entry from the process list on untag | PICKED `5070c1f66498` | review finding (missed by the audit script, class b): `qtaguid_untag()` freed a `sock_tag_entry` that was still on its tagging process's list unless the untagging process had opened `/dev/xt_qtaguid` (use-after-free; aosp Bug 176919394; no CVE is named in the commit); `QTAGUID=y` in dm63 |
+| `d4e9776f69fb` | xt_quota2: NUL-terminate the proc write | PICKED `023b81dbedda` | |
+| `ff02bcf175a1` | xt_quota2: `remove_proc_entry()` outside `spin_lock_bh` | PICKED `43a61fd0e2ca` | sleeping call in atomic context |
+| `59f04f292e87` | xt_quota2: quota accounting bug | PICKED `2bd68a81c249` | |
+| `eeb0ab66f753` | xt_quota2: clear the log message before sending | PICKED `984956d5b85f` | uninitialised bytes were sent over netlink |
+| `eb4909b080c4` | f_fs: no gadget unbind when not bound | PICKED `3da99b3c6473` | adapted to the vendor `ffs_closed()` (`ci_parent`) |
+| `1f3f566d9b41` | configfs: NULL `cdev` in `android_disconnect()` | PICKED `fcfc68b19e05` | race with `usb_gadget_udc_stop()` |
+| `9a83b8157a75` | f_mtp: NULL pointer in `mtp_read()` | PICKED `588ed5ec4335` | adapted: vendor aligns `count` against `rx_buf_size`. One `READ_ONCE()` snapshot of `ep_out->desc` is used for the alignment (`mtp_function_disable()` clears it without `dev->lock`, and `usb_ep_align_maybe()` would re-read it); the descriptors are the static tables, so the snapshot stays valid. The size check is unconditional, under `dev->lock` |
+| `ae6624540ecb` | dm verity fec: hash block number | PICKED `ac5737f684bc` | wrong FEC block when `hash_start` is not 0 |
+| `8b3e83b2bced` | arm_pmu: failure path in PM notifier | PICKED `dff9c271441e` | events were not restored after a failed idle entry |
+| `db4b201bdbee` | loop: drop caches on offset/size change | SKIPPED | conflicts with the vendor `loop_set_status()`, data-coherence fix only, needs its own series |
+| `ea2db829e4ac` | xfrm: remove `in_compat_syscall()` checks | SKIPPED | functional, not a security fix |
+| `0b848391c272` | net: move `RTA_UID` | PRESENT (superseded) | the aosp tip uses the mainline value (after `RTA_PAD`) like our `include/uapi/linux/rtnetlink.h:316` |
+| `955d167947d2` | mnt: propagate remount | SKIPPED | functional (remount propagation) |
+| `e623751cb9e3`, `3f7fac35ec62`, `ebff0104446a` | uid_sys_stats features | SKIPPED | features/statistics, vendor file differs |
+| `79389c0d7861`, `612055f383a0`, `63048c3fad6d`, `e0357208fbf9`, `b8f39d900e15`, `8ace694d891e` | arm64 PAN/UAO, `_etext`, RO mappings | DEFERRED | boot test needed. PAN and UAO are ARMv8.1/8.2 features: the Cortex-A53 here has neither, so the PAN/UAO ones are of no use on these watches |
+| vhost, overlayfs, ip_gre, kcov, kasan items | | NOT-BUILT | CONFIGs off in dm63 |
+
+Build: `scripts/watch_build.sh dm63` finishes with 0 errors; every picked file was compiled right after its pick.
