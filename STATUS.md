@@ -12,7 +12,7 @@ Where the kernel work stands, what was reviewed, what is open. Details live in t
 
 ## Branches
 
-All finished work is merged into **`security-backports`** (head `49bfec080`). The topic branches are kept for history:
+All finished work is merged into **`security-backports`** (head `577e1f6f7`). The topic branches are kept for history:
 
 | Branch | Content | Merged |
 |---|---|---|
@@ -43,10 +43,13 @@ All finished work is merged into **`security-backports`** (head `49bfec080`). Th
 | `devices/dt-bindings` | `devices/DT_BINDINGS.md`, `tools/dt_driver_check.py`; Hynitron touch also built on the DM63 | yes |
 | `fixes/otg-gpio-cable` | NULL Type-C notifier fixed; manual `host` refused without a VBUS supplier (`host_without_vbus`); no watch has one | yes |
 | `tools/first-boot` | `scripts/first_boot.sh` (backup, recovery-only flash, verify, restore) and a fake-adb test suite | **no**: latest fixes uncommitted, test suite not run yet |
-| `drivers/goodix-fp` | Goodix fingerprint | **no**: empty, needs the vendor GPL source |
+| `drivers/goodix-fp` | Goodix TEE fingerprint interface for the DW100U (`/dev/goodix_fp`, `gf-keys`, netlink 29), from a GPL-2.0+ public tree; dw100u only (`dw100u_fp.fragment`) | yes |
+| `security/sipc-debugfs` | SIPC debugfs/status dumps read peer fields once, never as bounds | yes |
+| `security/ion-custom-phys` | `CONFIG_SPRD_ION_RESTRICT_PHYS` (default n, in no watch config) | yes |
+| `tweaks/iodebug-off` | `IODEBUG` off on all watches, as stock (frees netlink 29) | yes |
 | `backup/security-backports-pre-trailer-strip` | backup ref from before the commit-trailer cleanup | – |
 
-**Push state:** `origin/security-backports` is at `73dda0c26` (pushed 2026-10-30); 26 commits since then are local only. The fork is public: check before pushing that no device data is in the tree. A few CIP commits carry `Assisted-by:` trailers written by their upstream authors; they are kept as upstream wrote them. Commits made for this project carry no tool attribution.
+**Push state:** `origin/security-backports` is at `5143b8771` (pushed 2026-10-30); 12 commits since then are local only. The fork is public: check before pushing that no device data is in the tree. A few CIP commits carry `Assisted-by:` trailers written by their upstream authors; they are kept as upstream wrote them. Commits made for this project carry no tool attribution.
 
 ## Review process
 
@@ -97,7 +100,7 @@ The script runs `sprd_sharkle_defconfig`, merges `watch_base`, `watch_stock_pari
 
 Standalone defconfigs: `arch/arm64/configs/{dm63,dw100u,mt107,mt108,dm82}_defconfig` (`dw100u` covers silver and V13M) are generated from the same fragments by `scripts/watch_defconfig.sh DEVICE|all`; `scripts/watch_defconfig.sh --check all` fails if one drifted from the fragments. The assembly and fragment verification live in `scripts/watch_lib.sh`, shared with `watch_build.sh`.
 
-Last full build of `security-backports` (head `49bfec080`, 2026-10-30): all six devices rc=0, every ramdisk module symbol resolves against `Module.symvers`, no implicit declarations; the four modules are stripped with `--strip-debug`.
+Last full build of `security-backports` (head `577e1f6f7`, 2026-10-31): all six devices rc=0, every ramdisk module symbol resolves against `Module.symvers`, no implicit declarations; the four modules are stripped with `--strip-debug`.
 
 ## Open
 
@@ -108,5 +111,6 @@ Last full build of `security-backports` (head `49bfec080`, 2026-10-30): all six 
 - **KASLR:** check on hardware whether the bootloader passes a seed; if not, dropping KASLR and KPTI saves battery on the A53.
 - **Charging:** check that SELinux lets init write the override parameter.
 - **Heart rate:** the driver reports no data; the HR/SpO2 algorithm is closed vendor code. Next step is a GPL source request to the vendor.
-- **Fingerprint:** Goodix driver needs the vendor GPL source (request draft kept outside this repo).
+- **Fingerprint:** Goodix driver merged, build-tested only; the HAL's ioctl/netlink use (protocol 29, `/dev/goodix_fp`, `/sys/class/misc/goodix_fp`) must be checked on the first DW100U boot.
+- **ION:** test `CONFIG_SPRD_ION_RESTRICT_PHYS` on a watch (camera, video, graphics; dmesg for denials) before enabling it.
 - **Push** to the public fork after a final check, only on the owner's OK.
