@@ -43,3 +43,8 @@ CONFIG_BACKLIGHT_SC2721_RGBLED=y
 # Boot-logo copy path of sprd_dispc.c (64-bit DMA mask, iova - 0x80000000): stock has it =y and
 # every stock DT carries video-mode panel entries; without it the first frame scans from a wrong address.
 CONFIG_DISP_LITE_R2P0=y
+
+# sprd IO debug (fs-IO accounting and D-state monitor under /sys/kernel/debug/iodebug):
+# enabled by sprd_sharkle_defconfig but in none of the six stock configs. It adds per-IO
+# overhead and claims netlink protocol 29, which the Goodix fingerprint driver needs.
+# CONFIG_IODEBUG is not set
