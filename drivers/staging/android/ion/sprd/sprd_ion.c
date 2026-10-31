@@ -565,6 +565,10 @@ static long sprd_ion_ioctl(struct ion_client *client, unsigned int cmd,
 	int ret = 0;
 	void __user *arg_user;
 
+	/* Check before compat_get_custom_data() touches user space. */
+	if (cmd == ION_SPRD_CUSTOM_PHYS && !sprd_ion_phys_allowed())
+		return -EPERM;
+
 	if (is_compat_task())
 		compat_get_custom_data(cmd, (void __user *)arg, &arg_user);
 	else
@@ -575,9 +579,6 @@ static long sprd_ion_ioctl(struct ion_client *client, unsigned int cmd,
 	{
 		struct ion_phys_data data;
 		struct ion_handle *handle;
-
-		if (!sprd_ion_phys_allowed())
-			return -EPERM;
 
 		if (copy_from_user(&data, arg_user, sizeof(data))) {
 			pr_err("%s, PHYS copy_from_user error!\n", __func__);
