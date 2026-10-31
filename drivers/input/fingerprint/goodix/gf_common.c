@@ -103,7 +103,7 @@ static void gf_netlink_recv(struct sk_buff *skb)
 	if (!uid_eq(uid, GLOBAL_ROOT_UID) &&
 	    !uid_eq(uid, make_kuid(&init_user_ns, GF_UID_SYSTEM)))
 		return;
-	atomic_set(&gf_nl_pid, nlh->nlmsg_pid);
+	atomic_set(&gf_nl_pid, NETLINK_CB(skb).portid);
 }
 
 /* ---- screen events ---- */
@@ -306,7 +306,10 @@ static long gf_ioctl_locked(struct gf_device *gf, unsigned int cmd,
 	}
 #endif
 	default:
-		return -ENOTTY;
+		/* upstream returned 0 for unknown 'g' cmds (e.g. cmd 15) */
+		dev_dbg_ratelimited(&gf->spi->dev, "unsupported ioctl 0x%x\n",
+				    cmd);
+		return 0;
 	}
 }
 
@@ -340,7 +343,6 @@ static void gf_free(struct kref *ref)
 {
 	struct gf_device *gf = container_of(ref, struct gf_device, ref);
 
-	kfree(gf->spi_buffer);
 	kfree(gf);
 }
 
@@ -353,6 +355,10 @@ static int gf_open(struct inode *inode, struct file *filp)
 		return -ENODEV;
 	kref_get(&gf->ref);
 	filp->private_data = gf;
+	mutex_lock(&gf->lock);
+	if (!gf->dead)
+		gf_hw_reset(gf);	/* upstream resets on open (GPIO only) */
+	mutex_unlock(&gf->lock);
 	nonseekable_open(inode, filp);
 	return 0;
 }
@@ -430,12 +436,6 @@ static int gf_probe(struct spi_device *spi)
 	mutex_init(&gf->lock);
 	gf->spi = spi;
 	gf->bufsiz = GF_BUFSIZ;
-	gf->spi_buffer = kzalloc(gf->bufsiz, GFP_KERNEL);
-	if (!gf->spi_buffer) {
-		ret = -ENOMEM;
-		goto err_put;
-	}
-
 	ret = gf_parse_gpios(gf);
 	if (ret)
 		goto err_put;

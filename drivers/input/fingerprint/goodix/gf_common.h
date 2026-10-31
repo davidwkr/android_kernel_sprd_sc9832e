@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Goodix fingerprint HAL interface (ioctl numbers, structures, netlink
- * events). The definitions mirror the public GPL Goodix driver (see the
- * provenance note in gf_common.c); this header was written for this tree
- * because the upstream header carries no license notice.
+ * Goodix fingerprint HAL interface. The enums, structs and ioctl macros are
+ * reproduced from the upstream gf_common.h for ABI compatibility (that file
+ * carries no license header); the rest of this header is new. See the
+ * provenance note in gf_common.c.
  */
 #ifndef __GF_COMMON_H
 #define __GF_COMMON_H
@@ -57,14 +57,6 @@ struct gf_key {
 	uint32_t value;		/* key down = 1, key up = 0 */
 };
 
-struct gf_ioc_transfer {
-	u8 cmd;
-	u8 reserved;
-	u16 addr;
-	u32 len;
-	u8 *buf;
-};
-
 struct gf_ioc_transfer_raw {
 	u32 len;
 	u8 *read_buf;
@@ -108,20 +100,12 @@ typedef struct {
 #define GF_IOC_REMOVE		_IO(GF_IOC_MAGIC, 12)
 #define GF_IOC_CHIP_INFO	_IOW(GF_IOC_MAGIC, 13, struct gf_ioc_chip_info)
 #define GF_IOC_NAV_EVENT	_IOW(GF_IOC_MAGIC, 14, gf_nav_event_t)
-#define GF_IOC_TRANSFER_CMD	_IOWR(GF_IOC_MAGIC, 15, struct gf_ioc_transfer)
+/* cmd 15 (GF_IOC_TRANSFER_CMD) is compiled out upstream; not implemented */
 #define GF_IOC_TRANSFER_RAW_CMD	_IOWR(GF_IOC_MAGIC, 16, struct gf_ioc_transfer_raw)
 #define GF_IOC_SPI_INIT_CFG_CMD	_IOW(GF_IOC_MAGIC, 17, gf_spi_cfg_t)
 
 #ifdef CONFIG_COMPAT
 /* 32-bit userspace layout of the structures that hold pointers */
-struct gf_ioc_transfer_compat {
-	u8 cmd;
-	u8 reserved;
-	u16 addr;
-	u32 len;
-	compat_uptr_t buf;
-};
-
 struct gf_ioc_transfer_raw_compat {
 	u32 len;
 	compat_uptr_t read_buf;
@@ -143,7 +127,6 @@ struct gf_device {
 	struct notifier_block fb_nb;
 	struct wake_lock wake_lock;
 	struct mutex lock;		/* ioctl/open/release serialisation */
-	u8 *spi_buffer;
 	unsigned int bufsiz;
 	int reset_gpio;
 	int irq_gpio;
@@ -155,8 +138,6 @@ struct gf_device {
 	u8 vendor_id;
 };
 
-int gf_spi_read_bytes(struct gf_device *gf, u16 addr, u32 len, u8 *rx);
-int gf_spi_write_bytes(struct gf_device *gf, u16 addr, u32 len, const u8 *tx);
 int gf_spi_transfer_raw(struct gf_device *gf, const u8 *tx, u8 *rx, u32 len);
 void gf_spi_setup_conf(struct gf_device *gf, u32 speed);
 
