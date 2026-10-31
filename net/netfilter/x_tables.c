@@ -663,17 +663,23 @@ int xt_compat_match_to_user(const struct xt_entry_match *m,
 	int off = xt_compat_match_offset(match);
 	u_int16_t msize = m->u.user.match_size - off;
 
-	if (copy_to_user(cm, m, sizeof(*cm)) ||
-	    put_user(msize, &cm->u.user.match_size) ||
-	    copy_to_user(cm->u.user.name, m->u.kernel.match->name,
-			 strlen(m->u.kernel.match->name) + 1))
+	struct compat_xt_entry_match hdr;
+
+	/* Build the header from scratch: copying *m would leak the kernel
+	 * pointer that shares the union with the user-visible name. */
+	memset(&hdr, 0, sizeof(hdr));
+	hdr.u.user.match_size = msize;
+	strlcpy(hdr.u.user.name, match->name, sizeof(hdr.u.user.name));
+	hdr.u.user.revision = match->revision;
+	if (copy_to_user(cm, &hdr, sizeof(hdr)))
 		return -EFAULT;
 
 	if (match->compat_to_user) {
 		if (match->compat_to_user((void __user *)cm->data, m->data))
 			return -EFAULT;
 	} else {
-		if (copy_to_user(cm->data, m->data, msize - sizeof(*cm)))
+		if (xt_data_to_user(cm->data, m->data, match->usersize,
+				    msize - sizeof(*cm)))
 			return -EFAULT;
 	}
 
@@ -1030,17 +1036,22 @@ int xt_compat_target_to_user(const struct xt_entry_target *t,
 	int off = xt_compat_target_offset(target);
 	u_int16_t tsize = t->u.user.target_size - off;
 
-	if (copy_to_user(ct, t, sizeof(*ct)) ||
-	    put_user(tsize, &ct->u.user.target_size) ||
-	    copy_to_user(ct->u.user.name, t->u.kernel.target->name,
-			 strlen(t->u.kernel.target->name) + 1))
+	struct compat_xt_entry_target hdr;
+
+	/* Build the header from scratch, see xt_compat_match_to_user(). */
+	memset(&hdr, 0, sizeof(hdr));
+	hdr.u.user.target_size = tsize;
+	strlcpy(hdr.u.user.name, target->name, sizeof(hdr.u.user.name));
+	hdr.u.user.revision = target->revision;
+	if (copy_to_user(ct, &hdr, sizeof(hdr)))
 		return -EFAULT;
 
 	if (target->compat_to_user) {
 		if (target->compat_to_user((void __user *)ct->data, t->data))
 			return -EFAULT;
 	} else {
-		if (copy_to_user(ct->data, t->data, tsize - sizeof(*ct)))
+		if (xt_data_to_user(ct->data, t->data, target->usersize,
+				    tsize - sizeof(*ct)))
 			return -EFAULT;
 	}
 
