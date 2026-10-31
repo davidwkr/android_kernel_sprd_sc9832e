@@ -1149,7 +1149,7 @@ void sbuf_get_status(u8 dst, char *status_info, int size)
 	struct task_struct *task;
 	unsigned long flags;
 	int i, n, len, cnt;
-	u32 b_select;
+	u32 b_select, rd, wr;
 	char *phead;
 
 #if defined(SIPC_DEBUG_SBUF_RDWT_OWNER)
@@ -1169,8 +1169,10 @@ void sbuf_get_status(u8 dst, char *status_info, int size)
 			ring = &sbuf->rings[n];
 			ringhd = ring->header;
 
-			if ((ringhd->rxbuf_wrptr - ringhd->rxbuf_rdptr)
-					< ringhd->rxbuf_size)
+			/* peer-writable pointers: read once, size is the AP's */
+			wr = READ_ONCE(ringhd->rxbuf_wrptr);
+			rd = READ_ONCE(ringhd->rxbuf_rdptr);
+			if (wr - rd < (u32)ring->rx_size)
 				continue;
 
 			snprintf(status_info + len,
@@ -1229,6 +1231,19 @@ void sbuf_get_status(u8 dst, char *status_info, int size)
 EXPORT_SYMBOL(sbuf_get_status);
 
 #if defined(CONFIG_DEBUG_FS)
+/* the ring header is peer-writable: read each field once, print the copy */
+static void sbuf_debug_snap(VOLA_SBUF_RING *hd, struct sbuf_ring_header *s)
+{
+	s->txbuf_addr = READ_ONCE(hd->txbuf_addr);
+	s->txbuf_size = READ_ONCE(hd->txbuf_size);
+	s->txbuf_rdptr = READ_ONCE(hd->txbuf_rdptr);
+	s->txbuf_wrptr = READ_ONCE(hd->txbuf_wrptr);
+	s->rxbuf_addr = READ_ONCE(hd->rxbuf_addr);
+	s->rxbuf_size = READ_ONCE(hd->rxbuf_size);
+	s->rxbuf_rdptr = READ_ONCE(hd->rxbuf_rdptr);
+	s->rxbuf_wrptr = READ_ONCE(hd->rxbuf_wrptr);
+}
+
 static void sbuf_debug_task_show(struct seq_file *m,
 				 struct sbuf_mgr *sbuf, int task_type)
 {
@@ -1326,6 +1341,7 @@ static int sbuf_debug_show(struct seq_file *m, void *private)
 	struct sbuf_mgr *sbuf = NULL;
 	struct sbuf_ring *ring = NULL;
 	VOLA_SBUF_RING *ringhd = NULL;
+	struct sbuf_ring_header hd;
 	int i, j, n, cnt;
 	struct smsg_ipc *smsg_sipc = NULL;
 
@@ -1362,23 +1378,24 @@ static int sbuf_debug_show(struct seq_file *m, void *private)
 			for (n = 0;  n < sbuf->ringnr;  n++) {
 				ring = &sbuf->rings[n];
 				ringhd = ring->header;
-				if (ringhd->txbuf_wrptr == 0 &&
-				    ringhd->rxbuf_wrptr == 0)
+				sbuf_debug_snap(ringhd, &hd);
+				if (hd.txbuf_wrptr == 0 &&
+				    hd.rxbuf_wrptr == 0)
 					continue;
 
 				seq_printf(m, "  rx ring[%2d]: addr: 0x%0x, ",
-					   n, ringhd->rxbuf_addr);
+					   n, hd.rxbuf_addr);
 				seq_printf(m, "rp: 0x%0x, wp: 0x%0x, size: 0x%0x\n",
-					   ringhd->rxbuf_rdptr,
-					   ringhd->rxbuf_wrptr,
-					   ringhd->rxbuf_size);
+					   hd.rxbuf_rdptr,
+					   hd.rxbuf_wrptr,
+					   hd.rxbuf_size);
 
 				seq_printf(m, "  tx ring[%2d]: addr: 0x%0x, ",
-					   n, ringhd->txbuf_addr);
+					   n, hd.txbuf_addr);
 				seq_printf(m, "rp: 0x%0x, wp: 0x%0x, size: 0x%0x\n",
-					   ringhd->txbuf_rdptr,
-					   ringhd->txbuf_wrptr,
-					   ringhd->txbuf_size);
+					   hd.txbuf_rdptr,
+					   hd.txbuf_wrptr,
+					   hd.txbuf_size);
 			}
 
 			/* list all sbuf rxwait/txwait in a chanel */;
@@ -1401,8 +1418,10 @@ static int sbuf_debug_show(struct seq_file *m, void *private)
 			for (n = 0;  n < sbuf->ringnr;	n++) {
 				ring = &sbuf->rings[n];
 				ringhd = ring->header;
-				if ((ringhd->rxbuf_wrptr - ringhd->rxbuf_rdptr)
-						== ringhd->rxbuf_size) {
+				sbuf_debug_snap(ringhd, &hd);
+				/* the ring size is the AP's cached one */
+				if (hd.rxbuf_wrptr - hd.rxbuf_rdptr >=
+						(u32)ring->rx_size) {
 					if (cnt == 0) {
 						sipc_debug_putline(m, '-', 80);
 						seq_puts(m, "  x. all rx full ring list:\n");

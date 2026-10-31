@@ -1975,11 +1975,23 @@ module_init(sipx_init);
 module_exit(sipx_exit);
 
 #if defined(CONFIG_DEBUG_FS)
+/* the fifo info is peer-writable: read each field once, print the copy */
+static void sipx_debug_snap(volatile struct sipx_fifo_info *info,
+			    struct sipx_fifo_info *s)
+{
+	s->blks_addr = READ_ONCE(info->blks_addr);
+	s->blk_size = READ_ONCE(info->blk_size);
+	s->fifo_size = READ_ONCE(info->fifo_size);
+	s->fifo_rdptr = READ_ONCE(info->fifo_rdptr);
+	s->fifo_wrptr = READ_ONCE(info->fifo_wrptr);
+	s->fifo_addr = READ_ONCE(info->fifo_addr);
+}
+
 static int sipx_debug_show(struct seq_file *m, void *private)
 {
 	struct sipx_mgr *sipx = NULL;
 	struct sipx_channel *sipx_chan = NULL;
-	volatile struct sipx_fifo_info *fifo_info = NULL;
+	struct sipx_fifo_info fi;
 	int i, j;
 
 	for (i = 0; i < SIPC_ID_NR; i++) {
@@ -2021,49 +2033,49 @@ static int sipx_debug_show(struct seq_file *m, void *private)
 			   sipx->blk_size,
 			   sipx->ack_blk_size);
 
-		fifo_info = sipx->dl_pool->fifo_info;
+		sipx_debug_snap(sipx->dl_pool->fifo_info, &fi);
 		seq_printf(m, "dl_pool: blks_addr :0x%0x, blk_size :%d,",
-			   (u32)fifo_info->blks_addr,
-			   (u32)fifo_info->blk_size);
+			   fi.blks_addr,
+			   fi.blk_size);
 		seq_printf(m, "fifo_addr :0x%0x, fifo_size :%d, fifo_rdptr",
-			   (u32)fifo_info->fifo_addr,
-			   (u32)fifo_info->fifo_size);
+			   fi.fifo_addr,
+			   fi.fifo_size);
 		seq_printf(m, " :0x%0x, fifo_wrptr: 0x%0x\n",
-			   (u32)fifo_info->fifo_rdptr,
-			   (u32)fifo_info->fifo_wrptr);
+			   fi.fifo_rdptr,
+			   fi.fifo_wrptr);
 
-		fifo_info = sipx->dl_ack_pool->fifo_info;
+		sipx_debug_snap(sipx->dl_ack_pool->fifo_info, &fi);
 		seq_printf(m, "dl_ack_pool: blks_addr :0x%0x, blk_size :%d,",
-			   (u32)fifo_info->blks_addr,
-			   (u32)fifo_info->blk_size);
+			   fi.blks_addr,
+			   fi.blk_size);
 		seq_printf(m, "fifo_addr :0x%0x, fifo_size :%d,",
-			   (u32)fifo_info->fifo_addr,
-			   (u32)fifo_info->fifo_size);
+			   fi.fifo_addr,
+			   fi.fifo_size);
 		seq_printf(m, " fifo_rdptr :0x%0x, fifo_wrptr: 0x%0x\n",
-			   (u32)fifo_info->fifo_rdptr,
-			   (u32)fifo_info->fifo_wrptr);
+			   fi.fifo_rdptr,
+			   fi.fifo_wrptr);
 
-		fifo_info = sipx->ul_pool->fifo_info;
+		sipx_debug_snap(sipx->ul_pool->fifo_info, &fi);
 		seq_printf(m, "ul_pool: blks_addr :0x%0x, blk_size :%d,",
-			   (u32)fifo_info->blks_addr,
-			   (u32)fifo_info->blk_size);
+			   fi.blks_addr,
+			   fi.blk_size);
 		seq_printf(m, " fifo_addr :0x%0x, fifo_size :%d,",
-			   (u32)fifo_info->fifo_addr,
-			   (u32)fifo_info->fifo_size);
+			   fi.fifo_addr,
+			   fi.fifo_size);
 		seq_printf(m, "fifo_rdptr :0x%0x, fifo_wrptr: 0x%0x\n",
-			   (u32)fifo_info->fifo_rdptr,
-			   (u32)fifo_info->fifo_wrptr);
+			   fi.fifo_rdptr,
+			   fi.fifo_wrptr);
 
-		fifo_info = sipx->ul_ack_pool->fifo_info;
+		sipx_debug_snap(sipx->ul_ack_pool->fifo_info, &fi);
 		seq_printf(m, "ul_ack_pool: blks_addr :0x%0x, blk_size :%d,",
-			   (u32)fifo_info->blks_addr,
-			   (u32)fifo_info->blk_size);
+			   fi.blks_addr,
+			   fi.blk_size);
 		seq_printf(m, " fifo_addr :0x%0x, fifo_size :%d,",
-			   (u32)fifo_info->fifo_addr,
-			   (u32)fifo_info->fifo_size);
+			   fi.fifo_addr,
+			   fi.fifo_size);
 		seq_printf(m, "fifo_rdptr :0x%0x, fifo_wrptr: 0x%0x\n",
-			   (u32)fifo_info->fifo_rdptr,
-			   (u32)fifo_info->fifo_wrptr);
+			   fi.fifo_rdptr,
+			   fi.fifo_wrptr);
 
 		sipc_debug_putline(m, '*', 180);
 
@@ -2087,51 +2099,51 @@ static int sipx_debug_show(struct seq_file *m, void *private)
 				   sipx_chan->dl_record_flag,
 				   sipx_chan->ul_record_flag);
 
-			fifo_info = sipx_chan->dl_ring->fifo_info;
+			sipx_debug_snap(sipx_chan->dl_ring->fifo_info, &fi);
 			seq_printf(m, "dl_ring: blks_addr :0x%0x, blk_size :%d,",
-				   (u32)fifo_info->blks_addr,
-				   (u32)fifo_info->blk_size);
+				   fi.blks_addr,
+				   fi.blk_size);
 			seq_printf(m,
 				   "fifo_addr :0x%0x, fifo_size :%d, fifo_rdptr :0x%0x,:",
-				   (u32)fifo_info->fifo_addr,
-				   (u32)fifo_info->fifo_size,
-				   (u32)fifo_info->fifo_rdptr);
+				   fi.fifo_addr,
+				   fi.fifo_size,
+				   fi.fifo_rdptr);
 			seq_printf(m, "fifo_wrptr: 0x%0x\n",
-				   (u32)fifo_info->fifo_wrptr);
+				   fi.fifo_wrptr);
 
-			fifo_info = sipx_chan->dl_ack_ring->fifo_info;
+			sipx_debug_snap(sipx_chan->dl_ack_ring->fifo_info, &fi);
 			seq_printf(m, "dl_ack_ring: blks_addr :0x%0x, blk_size :%d,",
-				   (u32)fifo_info->blks_addr,
-				   (u32)fifo_info->blk_size);
+				   fi.blks_addr,
+				   fi.blk_size);
 			seq_printf(m, "fifo_addr :0x%0x, fifo_size :%d, ",
-				   (u32)fifo_info->fifo_addr,
-				   (u32)fifo_info->fifo_size);
+				   fi.fifo_addr,
+				   fi.fifo_size);
 			seq_printf(m, "fifo_rdptr :0x%0x, fifo_wrptr: 0x%0x\n",
-				   (u32)fifo_info->fifo_rdptr,
-				   (u32)fifo_info->fifo_wrptr);
+				   fi.fifo_rdptr,
+				   fi.fifo_wrptr);
 
-			fifo_info = sipx_chan->ul_ring->fifo_info;
+			sipx_debug_snap(sipx_chan->ul_ring->fifo_info, &fi);
 			seq_printf(m, "ul_ring: blks_addr :0x%0x, blk_size :%d, ",
-				   (u32)fifo_info->blks_addr,
-				   (u32)fifo_info->blk_size);
+				   fi.blks_addr,
+				   fi.blk_size);
 			seq_printf(m, "fifo_addr :0x%0x, fifo_size :%d, ",
-				   (u32)fifo_info->fifo_addr,
-				   (u32)fifo_info->fifo_size);
+				   fi.fifo_addr,
+				   fi.fifo_size);
 			seq_printf(m, "fifo_rdptr :0x%0x, fifo_wrptr: 0x%0x\n",
-				   (u32)fifo_info->fifo_rdptr,
-				   (u32)fifo_info->fifo_wrptr);
+				   fi.fifo_rdptr,
+				   fi.fifo_wrptr);
 
-			fifo_info = sipx_chan->ul_ack_ring->fifo_info;
+			sipx_debug_snap(sipx_chan->ul_ack_ring->fifo_info, &fi);
 			seq_printf(m, "ul_ack_ring: blks_addr :0x%0x, blk_size :%d,",
-				   (u32)fifo_info->blks_addr,
-				   (u32)fifo_info->blk_size);
+				   fi.blks_addr,
+				   fi.blk_size);
 			seq_printf(m,
 				   " fifo_addr :0x%0x, fifo_size :%d, fifo_rdptr :0x%0x,",
-				   (u32)fifo_info->fifo_addr,
-				   (u32)fifo_info->fifo_size,
-				   (u32)fifo_info->fifo_rdptr);
+				   fi.fifo_addr,
+				   fi.fifo_size,
+				   fi.fifo_rdptr);
 			seq_printf(m, " fifo_wrptr: 0x%0x\n",
-				   (u32)fifo_info->fifo_wrptr);
+				   fi.fifo_wrptr);
 
 			sipc_debug_putline(m, '*', 180);
 		}

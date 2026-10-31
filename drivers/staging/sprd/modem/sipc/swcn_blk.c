@@ -1102,12 +1102,31 @@ int swcnblk_get_cp_cache_range(u8 dst, u8 channel, u32 *addr, u32 *len)
 EXPORT_SYMBOL(swcnblk_get_cp_cache_range);
 
 #if defined(CONFIG_DEBUG_FS)
+/* one READ_ONCE per shared field; the dump only prints the copy */
+static void swcnblk_debug_snap(VOLA_SWCNBLK_RING *hd,
+			       struct swcnblk_ring_header *s)
+{
+	s->txblk_addr = READ_ONCE(hd->txblk_addr);
+	s->txblk_count = READ_ONCE(hd->txblk_count);
+	s->txblk_size = READ_ONCE(hd->txblk_size);
+	s->txblk_blks = READ_ONCE(hd->txblk_blks);
+	s->txblk_rdptr = READ_ONCE(hd->txblk_rdptr);
+	s->txblk_wrptr = READ_ONCE(hd->txblk_wrptr);
+	s->rxblk_addr = READ_ONCE(hd->rxblk_addr);
+	s->rxblk_count = READ_ONCE(hd->rxblk_count);
+	s->rxblk_size = READ_ONCE(hd->rxblk_size);
+	s->rxblk_blks = READ_ONCE(hd->rxblk_blks);
+	s->rxblk_rdptr = READ_ONCE(hd->rxblk_rdptr);
+	s->rxblk_wrptr = READ_ONCE(hd->rxblk_wrptr);
+}
+
 static int swcnblk_debug_show(struct seq_file *m, void *private)
 {
 	struct swcnblk_mgr *swcnblk = NULL;
 	struct swcnblk_ring  *ring = NULL;
 	VOLA_SWCNBLK_RING *ringhd = NULL;
 	VOLA_SWCNBLK_RING *poolhd = NULL;
+	struct swcnblk_ring_header rh, ph;
 	int i, j;
 
 	for (i = 0; i < SIPC_ID_NR; i++) {
@@ -1120,6 +1139,9 @@ static int swcnblk_debug_show(struct seq_file *m, void *private)
 						      header->ring);
 			poolhd = (VOLA_SWCNBLK_RING *)(&swcnblk->ring->
 						      header->pool);
+			/* the header is peer-writable: read each field once */
+			swcnblk_debug_snap(ringhd, &rh);
+			swcnblk_debug_snap(poolhd, &ph);
 
 			seq_puts(m, "***************************************************************************************************************************\n");
 			seq_printf(m, "swcnblk dst %d, channel: %3d, state: %d, smem_virt: 0x%lx, smem_cached_virt: 0x%lx smem_blk_virt: 0x%lx smem_addr: 0x%0x, mapped_smem_addr: 0x%0x, smem_size: 0x%0x, txblksz: %d, rxblksz: %d\n",
@@ -1138,29 +1160,29 @@ static int swcnblk_debug_show(struct seq_file *m, void *private)
 				   (unsigned long)ring->txblk_virt,
 				   (unsigned long)ring->rxblk_virt);
 			seq_printf(m, "swcnblk ring header: rxblk_addr :0x%0x, rxblk_rdptr :0x%0x, rxblk_wrptr :0x%0x, rxblk_size :%d, rxblk_count :%d, rxblk_blks: 0x%0x\n",
-				   ringhd->rxblk_addr, ringhd->rxblk_rdptr,
-				   ringhd->rxblk_wrptr, ringhd->rxblk_size,
-				   (int)(ringhd->rxblk_wrptr -
-				   ringhd->rxblk_rdptr),
-				   ringhd->rxblk_blks);
+				   rh.rxblk_addr, rh.rxblk_rdptr,
+				   rh.rxblk_wrptr, rh.rxblk_size,
+				   (int)(rh.rxblk_wrptr -
+				   rh.rxblk_rdptr),
+				   rh.rxblk_blks);
 			seq_printf(m, "swcnblk ring header: txblk_addr :0x%0x, txblk_rdptr :0x%0x, txblk_wrptr :0x%0x, txblk_size :%d, txblk_count :%d, txblk_blks: 0x%0x\n",
-				   ringhd->txblk_addr, ringhd->txblk_rdptr,
-				   ringhd->txblk_wrptr, ringhd->txblk_size,
-				   (int)(ringhd->txblk_wrptr -
-				   ringhd->txblk_rdptr),
-				   ringhd->txblk_blks);
+				   rh.txblk_addr, rh.txblk_rdptr,
+				   rh.txblk_wrptr, rh.txblk_size,
+				   (int)(rh.txblk_wrptr -
+				   rh.txblk_rdptr),
+				   rh.txblk_blks);
 			seq_printf(m, "swcnblk pool header: rxblk_addr :0x%0x, rxblk_rdptr :0x%0x, rxblk_wrptr :0x%0x, rxblk_size :%d, rxpool_count :%d, rxblk_blks: 0x%0x\n",
-				   poolhd->rxblk_addr, poolhd->rxblk_rdptr,
-				   poolhd->rxblk_wrptr, poolhd->rxblk_size,
-				   (int)(poolhd->rxblk_wrptr -
-				   poolhd->rxblk_rdptr),
-				   poolhd->rxblk_blks);
+				   ph.rxblk_addr, ph.rxblk_rdptr,
+				   ph.rxblk_wrptr, ph.rxblk_size,
+				   (int)(ph.rxblk_wrptr -
+				   ph.rxblk_rdptr),
+				   ph.rxblk_blks);
 			seq_printf(m, "swcnblk pool header: txblk_addr :0x%0x, txblk_rdptr :0x%0x, txblk_wrptr :0x%0x, txblk_size :%d, txpool_count :%d, txblk_blks: 0x%0x\n",
-				   poolhd->txblk_addr, poolhd->txblk_rdptr,
-				   poolhd->txblk_wrptr, poolhd->txblk_size,
-				   (int)(poolhd->txblk_wrptr -
-				   poolhd->txblk_rdptr),
-				   poolhd->txblk_blks);
+				   ph.txblk_addr, ph.txblk_rdptr,
+				   ph.txblk_wrptr, ph.txblk_size,
+				   (int)(ph.txblk_wrptr -
+				   ph.txblk_rdptr),
+				   ph.txblk_blks);
 		}
 	}
 
