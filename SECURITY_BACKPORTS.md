@@ -53,6 +53,18 @@ Cherry-picked with `-x` from `aosp/android-4.4-p`; selection and evidence in [`d
 
 Not picked on purpose: `b48ef710056e` (f_accessory "CTS test stuck", functional, conflicts with the vendor `acc_read()`), ebtables copy helpers (`CONFIG_BRIDGE_NF_EBTABLES` is not set).
 
+### Android common kernel 4.4-p picks, batch 2 (branch `security/android-4.4-p-batch2`)
+
+Selection and evidence: [`devices/ANDROID_4.4_P_AUDIT.md`](devices/ANDROID_4.4_P_AUDIT.md). Most remaining candidates turned out PRESENT in another form, NOT-BUILT, or deferred (arm64 PAN/RODATA hardening); the picks below are fixes in code reachable from local apps or the USB host, including one use-after-free found in review:
+
+| Fix | CVE | Commits | Adapted? |
+|---|---|---|---|
+| xt_qtaguid: `sock_tag_entry` freed while still on the tagging process's list (`qtaguid_untag()` use-after-free) | none named in the commit | 1 | no |
+| xt_quota2: uninitialised `quota2_log` message sent over netlink, `remove_proc_entry()` under `spin_lock_bh`, proc write not NUL-terminated, accounting bug | none assigned | 4 | no |
+| USB gadget: f_fs unbind when not bound, configfs NULL `cdev` in `android_disconnect()`, f_mtp NULL `ep_out->desc` in `mtp_read()` | none assigned | 3 | f_fs (`ci_parent`) and f_mtp (`rx_buf_size`) by hand |
+| dm-verity FEC: wrong block number when `hash_start` is not 0 | none assigned | 1 | no |
+| arm_pmu: PM notifier failure path | none assigned | 1 | no |
+
 ### Bugs found during review and fixed in this tree
 
 Not upstream fixes; found while reviewing the merges above.
