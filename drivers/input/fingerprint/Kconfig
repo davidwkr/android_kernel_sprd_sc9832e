@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-2.0
+menuconfig INPUT_FINGERPRINT
+	bool "Fingerprint sensor drivers"
+	depends on INPUT
+	help
+	  Say Y here to list fingerprint sensor drivers. This only
+	  enables the menu; it does not build any driver by itself.
+
+if INPUT_FINGERPRINT
+
+source "drivers/input/fingerprint/goodix/Kconfig"
+
+endif

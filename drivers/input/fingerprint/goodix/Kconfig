@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-2.0
+config GOODIX_TEE_FINGERPRINT
+	bool "Goodix fingerprint sensor (TEE/HAL interface)"
+	depends on SPI && OF && OF_GPIO && FB && INPUT_FINGERPRINT
+	help
+	  Kernel side of the Goodix fingerprint HAL: /dev/goodix_fp ioctls,
+	  a netlink socket for IRQ and screen events, and the "gf-keys"
+	  input device. Binds to compatible "goodix,fingerprintree".
+	  Derived from the GPL Goodix driver, see gf_common.c.
+	  If unsure, say N.
