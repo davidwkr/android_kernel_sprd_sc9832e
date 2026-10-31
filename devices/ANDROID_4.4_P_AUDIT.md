@@ -145,3 +145,34 @@ The full list is in the TSV (class `c`: 103 commits, 49 of them post147). Lower-
 
 Effort: batches 1-2 about 25 commits, mostly low/med conflicts (half a day plus review); batch 3 similar; batch 4 is research-heavy. Nothing has been built or run on a watch.
 
+## Batch 1 verdicts (post147 security candidates plus the top-10 list)
+
+Each commit was read and compared with our code. PRESENT = fixed already or the vulnerable code does not exist here; NOT-BUILT = the CONFIG is off in dm63; PICKED = cherry-picked with `-x` (our hash). The automatic classification above had many false MISSING entries, as expected.
+
+| aosp | Subject | Verdict | Evidence |
+|---|---|---|---|
+| `1c5abcf22da4` | KEYS: keyring ref leak in `join_session_keyring()` (CVE-2016-0728) | PRESENT | `security/keys/process_keys.c`: the `keyring == new->session_keyring` branch goes to `error3:` (line 828) which does `key_put()` |
+| `fa60377966b7` | f_fs: out-of-bounds access on `comp_desc` | PRESENT (code absent) | `f_fs.c` has no `comp_desc`/`maxburst` code, only the length check at line 1865 |
+| `0c5dfd3c4c5c` | x_tables: pointer leaks to userspace | PICKED `175d28945944` | needed `.usersize` infrastructure: `fbd37d4d2ca6`, `84997e39fe6f` (xt_bpf rev 1 adapted), users `d236980eb4d2`, `34b8267f83e5`, and `b9893cebd2b7` (xt_quota2). Review found two more exposures, fixed by hand: arptables (`be7d00f1273a`; `xt_find_target()` falls back to `NFPROTO_UNSPEC`, so `arptables -j IDLETIMER` leaked the timer pointer) and the compat copy paths used by 32-bit userland (`927c72fdebd9`, which also builds the compat match/target headers from scratch: copying them leaked the kernel pointer after short names) |
+| `96b09cba5590` | socket: `sock->sk = NULL` after `->release()` | PICKED `f1456afb668b` | adapted to `sock_release()` |
+| `956f790b1759` | socket: `sock_close()` vs `sockfs_setattr()` race | PICKED `dcb90aafb223` | prerequisite found during review: without it `sockfs_setattr()` dereferences the NULL `sk` |
+| `7a9986e91f90` | binder: UAF when releasing todo list | PICKED `d30c75bd4811` | `binder_release_work()` used the old dequeue helper |
+| `db3af59b11da` | binder: end of SG buffer area | PICKED `1a7bec106d0f` | `sg_buf_end` ignored the secctx size |
+| `365fd304167c` | xt_qtaguid: UAF race | PICKED `4a6b9c2d10f6` | `get_sock_stat()` unlocked the list before use |
+| `f9eabbd3d21b` | arm64: restrict `/dev/mem` read to linear region | NOT-BUILT | `CONFIG_DEVMEM` is not set; `valid_phys_addr_range()` is only used by it |
+| `fdfc07c1377c` | arm64: leftover RWX with `UNMAP_KERNEL_AT_EL0` | PICKED `5ac2fec7f6cc` | trampoline page was `PAGE_KERNEL_EXEC` |
+| `8affe1f70379` | packet: overflow in priv area size check | PRESENT | `net/packet/af_packet.c:4259` has the `(u64)` form |
+| `44bd40ae321b` | x_tables: validate `e->target_offset` | PRESENT | `xt_check_entry_offsets()` in `x_tables.c:772`, called from `ip_tables.c:752` |
+| `3792d43a4426` | dm verity fec: bufio leaks | PICKED `b00d71c49b0a` | release was inside the loop, missing on the `is_zero` path |
+| `73251a2c8ca2`, `300d539b8e6e` | f_accessory: cancel pending work, get()/put() wrappers | PICKED `133002140217`, `c852386825e2` | series, see below |
+| `967ca3024565` | gadget: no-op request complete callbacks | PICKED `dc15fe339dac` | review finding: a stale `cdev->req->complete` let a USB host re-trigger `acc_complete_set_hid_report_desc()` (memcpy past `report_desc` or into a freed hid) |
+| `9d3e0a70f5ab` | kcore: `probe_kernel_read()` | NOT-BUILT | `CONFIG_PROC_KCORE` is not set |
+| `5cbac92a650f` | HID sony: input device leak | PRESENT (code absent) | `hid-sony.c` here has no `sc->touchpad` tracking, so the leak path does not exist |
+| `1b6aeaf17f6d` | selinux: RTM_GETLINK permission | SKIPPED | Android 11 privacy feature with a userspace-set trigger; no effect with the Android 10 policy |
+| `cc0a2d328368` | posix_acl kernel-doc | SKIPPED | documentation warning, not a fix |
+
+f_accessory (Dec 2020 series, USB gadget lifetime): picked in order `f5686beef3e7` (2900fb410b44), `c852386825e2`, `96d728786546` (KREF_INIT prerequisite), `ab0e3ee51c6f` (01eeae356193, prerequisite of the refcounting), `0c9f9b2c0c8b`, `ae8f3ff20dcc`, `c1b11ad12f51`, `133002140217`, `3f6be90e0294`, `a3ad0a476224`, then `44f2c8837a33` (f52e71a12e80, clean unbind: online/disconnected handling) and `dc15fe339dac` (967ca3024565). The vendor file differed in `acc_open()`/`acc_release()` (debug printks, `disconnected = 0`, which predates f52e71a12e80) and in the declarations: resolved to the aosp side. Not picked: the cosmetic prints/comments commits and `b48ef710056e` (CTS functional fix, conflicts with the vendor `acc_read()`). Every commit of the series builds (`f_accessory.o` checked at each step).
+
+Open: ebtables (`CONFIG_BRIDGE_NF_EBTABLES` is not set in dm63) and matches/targets with their own `compat_to_user()` (not audited for kernel pointers). Pre-147 candidates (f2fs sanity checks, PAN/UAO, `_etext`, RO mappings) are not in this batch.
+
+Build: `scripts/watch_build.sh dm63` finishes with 0 errors; the touched files (recompiled after `touch`) produce no warnings.

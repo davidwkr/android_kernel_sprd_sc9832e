@@ -36,6 +36,23 @@ Applied from the 4.4 stable versions (github.com/gregkh/linux, tags v4.4.182–v
 
 The core-kernel commits and `mali.ko` compile with GCC 16.2 (`sprd_sharkle_defconfig`, Mali built as an external module). Nothing has run on a watch yet. The two Mali fixes need review and a GPU test with the vendor r21p0 user space.
 
+### Android common kernel 4.4-p picks, batch 1 (branch `security/android-4.4-p-audit`)
+
+Cherry-picked with `-x` from `aosp/android-4.4-p`; selection and evidence in [`devices/ANDROID_4.4_P_AUDIT.md`](devices/ANDROID_4.4_P_AUDIT.md). Builds with `scripts/watch_build.sh dm63`; nothing has run on a watch.
+
+| Fix | CVE | Commits | Adapted? |
+|---|---|---|---|
+| `sock->sk = NULL` after `->release()` + `sockfs_setattr()` NULL check (use-after-free with `fchownat()` racing `close()`); keep both together | none assigned | 2 | `sock_release()` context (the pair resolves to `__sock_release()`) |
+| binder: SG buffer end excludes the security context; todo-list release UAF | none assigned | 2 | no |
+| xt_qtaguid: `sock_tag_entry` UAF race | none assigned | 1 | no |
+| arm64: entry trampoline mapped ROX, not RWX (KPTI) | none assigned | 1 | no |
+| dm-verity FEC: `dm_bufio` buffer leak | none assigned | 1 | no |
+| x_tables: kernel pointers leaked to userspace (`.usersize` infrastructure, `xt_match_to_user()` users in ip/ip6tables, quota2) | none assigned | 6 | `xt_bpf` rev 1 also gets `.usersize` |
+| same leak in arptables (`arptables -j IDLETIMER`) and in the compat paths (32-bit iptables on the 64-bit kernel) | none assigned | 2 | written by hand, no aosp counterpart |
+| f_accessory: refcounted global `acc_dev`, teardown ordering, pending work cancelled, NULL checks, clean unbind, no-op `complete` callbacks (7 commits of the Dec 2020 series, the 2018 dev-pointer check, 2 older aosp fixes, and the `KREF_INIT()` prerequisite) | Android bulletin only | 12 | vendor `_acc_dev`, `acc_open()/acc_release()` and bitfield context resolved to the aosp side; the vendor `disconnected = 0` in `acc_release()` predates f52e71a12e80 |
+
+Not picked on purpose: `b48ef710056e` (f_accessory "CTS test stuck", functional, conflicts with the vendor `acc_read()`), ebtables copy helpers (`CONFIG_BRIDGE_NF_EBTABLES` is not set).
+
 ### Bugs found during review and fixed in this tree
 
 Not upstream fixes; found while reviewing the merges above.
