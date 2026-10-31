@@ -21,6 +21,9 @@
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
+#include <linux/capability.h>
+#include <linux/cred.h>
+#include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/sprd_iommu.h>
 #include <linux/sprd_ion.h>
@@ -35,6 +38,35 @@ EXPORT_SYMBOL(idev);
 static int num_heaps;
 static struct ion_heap **heaps;
 static u32 phys_offset;
+
+#ifdef CONFIG_SPRD_ION_RESTRICT_PHYS
+#define SPRD_ION_AID_APP 10000
+
+/* Extra uids (>= 10000) that may use ION_SPRD_CUSTOM_PHYS. */
+static unsigned int phys_allow_uids[8];
+static unsigned int phys_allow_nr;
+module_param_array(phys_allow_uids, uint, &phys_allow_nr, 0644);
+MODULE_PARM_DESC(phys_allow_uids,
+		 "app-range uids allowed to use ION_SPRD_CUSTOM_PHYS");
+
+static bool sprd_ion_phys_allowed(void)
+{
+	unsigned int uid = from_kuid(&init_user_ns, current_uid());
+	unsigned int i, n = min_t(unsigned int, phys_allow_nr,
+				  ARRAY_SIZE(phys_allow_uids));
+
+	if (uid < SPRD_ION_AID_APP || capable(CAP_SYS_RAWIO))
+		return true;
+	for (i = 0; i < n; i++)
+		if (phys_allow_uids[i] == uid)
+			return true;
+	pr_err_ratelimited("%s: ION_SPRD_CUSTOM_PHYS denied comm=%s pid=%d uid=%u\n",
+			   __func__, current->comm, task_pid_nr(current), uid);
+	return false;
+}
+#else
+static inline bool sprd_ion_phys_allowed(void) { return true; }
+#endif
 
 #ifndef CONFIG_64BIT
 static unsigned long user_va2pa(struct mm_struct *mm, unsigned long addr)
@@ -530,6 +562,9 @@ static long sprd_ion_ioctl(struct ion_client *client, unsigned int cmd,
 	{
 		struct ion_phys_data data;
 		struct ion_handle *handle;
+
+		if (!sprd_ion_phys_allowed())
+			return -EPERM;
 
 		if (copy_from_user(&data, arg_user, sizeof(data))) {
 			pr_err("%s, PHYS copy_from_user error!\n", __func__);
