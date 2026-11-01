@@ -200,3 +200,4 @@ interface (mmc_access_rpmb), because the Android 8.1 vendor userspace uses
 | 4.14.316 | clean | - |
 | 4.14.317 | clean | - |
 | 4.14.318 | clean | - |
+| 4.14.319 | conflict | drivers/mmc/core/block.c: mmc_blk_ioctl_cmd()/multi_cmd(): kept vendor mmc_access_rpmb() direct path and non-RPMB queue path; added stable drv_op_result = -EIO before the queued ioctl (not on the direct RPMB path, which does not use drv_op_result); stable's MMC_DRV_OP_IOCTL_RPMB form dropped per RPMB block-device decision; 0 skipped |
