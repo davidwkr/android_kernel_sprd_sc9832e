@@ -714,10 +714,16 @@ int sbuf_write(u8 dst, u8 channel, u32 bufid,
 		pr_debug("sbuf_write: channel=%d, txpos=%p, txsize=%d\n",
 			 channel, txpos, txsize);
 
-		/* update tx wrptr */
+		/* update tx wrptr, after the data is visible to the peer */
+		wmb();
 		ringhd->txbuf_wrptr = wr + txsize;
-		/* tx ringbuf was empty, so need to notify peer side */
-		if (used == 0) {
+		/* tx ringbuf is empty but for this chunk, so need to notify
+		 * peer side; rdptr is re-read here (not the snapshot): the
+		 * peer may have drained the ring while we copied
+		 */
+		mb();
+		if (used == 0 ||
+		    (wr + txsize) - ringhd->txbuf_rdptr == txsize) {
 			smsg_set(&mevt, channel,
 				 SMSG_TYPE_EVENT,
 				 SMSG_EVENT_SBUF_WRPTR,
@@ -902,10 +908,16 @@ int sbuf_read(u8 dst, u8 channel, u32 bufid,
 			}
 		}
 
-		/* update rx rdptr */
+		/* update rx rdptr, after the data is copied out */
+		mb();
 		ringhd->rxbuf_rdptr = rd + rxsize;
-		/* rx ringbuf was full, so need to notify peer side */
-		if (wr - (rd + rxsize) == ring->rx_size - rxsize) {
+		/* rx ringbuf was full, so need to notify peer side; wrptr is
+		 * re-read here (not the snapshot): the peer may have filled
+		 * the ring while we copied
+		 */
+		mb();
+		if (ringhd->rxbuf_wrptr - (rd + rxsize) ==
+		    ring->rx_size - rxsize) {
 			smsg_set(&mevt, channel,
 				 SMSG_TYPE_EVENT,
 				 SMSG_EVENT_SBUF_RDPTR,
