@@ -50,6 +50,10 @@ PRESENT: none. N/A: only the sc2332 file named above.
   the handler spinning for up to 2^32 messages. Slot index is masked, so
   this is a hang, not an out-of-bounds access. smsg_send/smsg_send_irq test
   occupancy against the peer rdptr the same way (overwrite, not OOB).
+  Fixed separately (`kernel-4.14-smsg-bound`): at most rxbuf_size messages per
+  interrupt, with a rate-limited warning. The 4.4 watches build the
+  CONFIG_SPRD_MAILBOX_FIFO handler (one message per call), so they do not have
+  this loop.
 - smsg.c: the message channel index is `channel2index[msg->channel]` with a
   u8 channel and a 256-entry table (fine today, depends on SMSG_CH_NR=255).
 - sblock.c sblock_get_arrived_count / sblock_get_free_count,
