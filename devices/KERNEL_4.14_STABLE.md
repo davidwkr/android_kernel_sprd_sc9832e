@@ -94,6 +94,7 @@ Base: 4.14.133 (UNISOC downstream). Each release applied as
 | 4.14.220 | clean | - |
 | 4.14.221 | clean | - |
 | 4.14.222 | conflict | drivers/usb/gadget/function/u_ether.c: kept vendor SIPA/tx-wq block, took stable GETHER_MAX_MTU_SIZE/ETH_FRAME_LEN defines + min/max_mtu in both setup paths; vendor change_mtu limit switched to GETHER_MAX_MTU_SIZE (JUDGEMENT); scripts/Makefile.build: vendor CONFIG_LTO_CLANG endif kept inside new CC_USING_RECORD_MCOUNT ifndef; 0 skipped |
+| 4.14.223 | clean | - |
 
 Builds: sprd_sharkle_defconfig Image + dtbs built OK at 4.14.147, at 4.14.150
 (merged with the watch_414 fragment) and at 4.14.151. Checked with
