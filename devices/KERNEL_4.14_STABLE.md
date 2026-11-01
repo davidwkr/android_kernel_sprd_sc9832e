@@ -77,3 +77,8 @@ Builds: sprd_sharkle_defconfig Image + dtbs built OK at 4.14.147, at 4.14.150
 (merged with the watch_414 fragment) and at 4.14.151. Checked with
 sprd_sharkle_defconfig + watch_414 fragment at 4.14.171, 182, 192 and 200 (all
 OK; breaks found at 182 and 200 were fixed in 4.14.175 and 4.14.196).
+
+Follow-up: the 4.14.164 mmc RPMB character-device conversion (and the 4.14.183
+chardev release-order fix) is reverted to the vendor block-device RPMB
+interface (mmc_access_rpmb), because the Android 8.1 vendor userspace uses
+/dev/block/mmcblk0rpmb. No other mmc fix depends on it.
