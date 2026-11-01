@@ -99,6 +99,8 @@ struct sc2720_charger_info {
 	u32 cv_cal;
 	u32 cv_vmax_mv;
 	u32 cv_last_req_mv;
+	/* SC2721: last requested charge current in uA, before the adapter cap */
+	u32 cur_req_ua;
 	/* SC2721 only: "sprd,ovp-microvolt", 0 = not set */
 	u32 ovp_uv;
 };
@@ -703,7 +705,7 @@ static int sc2720_charger_stop_charge(struct sc2720_charger_info *info)
 /* charge current of the attached adapter type in uA */
 static u32 sc2720_charger_adapter_cur(struct sc2720_charger_info *info)
 {
-	switch (info->usb_phy->chg_type) {
+	switch (READ_ONCE(info->usb_phy->chg_type)) {
 	case SDP_TYPE:
 		return info->cur.sdp_cur;
 	case DCP_TYPE:
@@ -724,8 +726,10 @@ static int sc2720_charger_set_current(struct sc2720_charger_info *info, u32 cur)
 	 * the request (jeita, thermal, userspace), as the 4.4 driver capped
 	 * every jeita current to the adapter current.
 	 */
-	if (info->data->is_sc2721)
+	if (info->data->is_sc2721) {
+		info->cur_req_ua = cur;
 		cur = min(cur, sc2720_charger_adapter_cur(info));
+	}
 
 	cur = cur / 1000;
 	if (cur < SC2720_CHG_CURRENT_MIN)
@@ -890,6 +894,15 @@ static void sc2720_charger_work(struct work_struct *data)
 			goto out;
 
 		info->charging = true;
+	} else if (info->data->is_sc2721 && info->limit > 0 &&
+		   info->charging && present) {
+		/*
+		 * The adapter type may have changed while charging: apply the
+		 * last request again so the cap follows the current type.
+		 */
+		ret = sc2720_charger_set_current(info, info->cur_req_ua);
+		if (ret)
+			goto out;
 	} else if ((!info->limit && info->charging) || !present) {
 		/* Stop charging */
 		info->charging = false;
