@@ -1605,9 +1605,9 @@ static int android_setup(struct usb_gadget *gadget,
 	}
 	spin_unlock_irqrestore(&cdev->lock, flags);
 
-	spin_lock(&gi->slock);
+	spin_lock_irqsave(&gi->slock, flags);
 	if (!get_gadget_data(gadget) || gi->unbind) {
-		spin_unlock(&gi->slock);
+		spin_unlock_irqrestore(&gi->slock, flags);
 		return 0;
 	}
 	list_for_each_entry(fi, &gi->available_func, cfs_list) {
@@ -1626,7 +1626,7 @@ static int android_setup(struct usb_gadget *gadget,
 	if (value < 0)
 		value = composite_setup(gadget, c);
 
-	spin_unlock(&gi->slock);
+	spin_unlock_irqrestore(&gi->slock, flags);
 	spin_lock_irqsave(&cdev->lock, flags);
 	if (c->bRequest == USB_REQ_SET_CONFIGURATION &&
 						cdev->config) {
