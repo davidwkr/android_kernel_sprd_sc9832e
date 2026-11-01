@@ -920,6 +920,19 @@ include scripts/Makefile.kasan
 include scripts/Makefile.extrawarn
 include scripts/Makefile.ubsan
 
+# Silence diagnostics introduced by GCC 10-16 that fire on valid 4.14 code
+KBUILD_CFLAGS += $(call cc-disable-warning, array-bounds)
+KBUILD_CFLAGS += $(call cc-disable-warning, zero-length-bounds)
+KBUILD_CFLAGS += $(call cc-disable-warning, stringop-overflow)
+KBUILD_CFLAGS += $(call cc-disable-warning, stringop-overread)
+KBUILD_CFLAGS += $(call cc-disable-warning, stringop-truncation)
+KBUILD_CFLAGS += $(call cc-disable-warning, array-compare)
+KBUILD_CFLAGS += $(call cc-disable-warning, address)
+KBUILD_CFLAGS += $(call cc-disable-warning, restrict)
+KBUILD_CFLAGS += $(call cc-disable-warning, enum-int-mismatch)
+KBUILD_CFLAGS += $(call cc-disable-warning, dangling-pointer)
+KBUILD_CFLAGS += $(call cc-disable-warning, use-after-free)
+
 # Add any arch overrides and user supplied CPPFLAGS, AFLAGS and CFLAGS as the
 # last assignments
 KBUILD_CPPFLAGS += $(ARCH_CPPFLAGS) $(KCPPFLAGS)
