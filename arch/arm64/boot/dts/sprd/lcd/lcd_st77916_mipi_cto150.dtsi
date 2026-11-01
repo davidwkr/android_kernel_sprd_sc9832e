@@ -1,0 +1,324 @@
+/*
+ * ST77916 MIPI DSI LCD config dtsi (CTO 1.50 inch) for the MT108 (4.14 DRM binding)
+ *
+ * Converted from the stock node lcd77916150@77916150 of devices/mt108/stock.dts
+ * (4.4 ADF binding, panel-name "lcd_st77916_mipi_cto150",
+ * lcd_id ID77916150). Encoding and binding notes: devices/dm63/PANEL_414.md
+ * (same conversion), board notes devices/mt108/DTS_414.md. Nothing here has run
+ * on a watch.
+ *
+ * SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+ */
+
+/ { lcds {
+	lcd_st77916_mipi_cto150: lcd_st77916_mipi_cto150 {
+
+		sprd,dsi-work-mode = <1>; /* video, burst with sync pulses (stock work-mode 1, no burst-mode property = burst) */
+		/*
+		 * Stock bpp 18 (0x12): 4.4 bpp_to_coding() = COLOR_CODE_18BIT_CONFIG1,
+		 * the packed 18 bit coding, which is "rgb666_packed" in 4.14
+		 * ("rgb666" would be 24 bit coding there). The 4.14 dpu_lite_r1p0
+		 * hard-codes a 24 bit DPI bus width (stock programs 18 bit), see
+		 * devices/mt108/DTS_414.md: display stays disabled in the board DTS.
+		 */
+		sprd,dsi-color-format = "rgb666_packed";
+		sprd,dsi-lane-number = <1>; /* stock lane-number 1 */
+
+		/*
+		 * Stock display-timings clock-frequency (0x53020 = 340000) is the
+		 * DSI bit clock in kbps in the 4.4 ADF driver (phy_freq), not a
+		 * pixel clock.
+		 */
+		sprd,lcd-id = <0x77916150>;	/* stock lcd_id=ID77916150 */
+		sprd,refresh-rate = <50>;	/* stock fps */
+		sprd,phy-bit-clock = <340000>; /* kbps */
+
+		/*
+		 * stock need-check-esd 0: the esd check stays off, esd-timeout
+		 * 1000 ms is stock, register and value are the 4.14 defaults
+		 * (stock has no esd-check-reg).
+		 */
+		sprd,esd-check-enable = <0>;
+		sprd,esd-check-mode = <0>; /* register check */
+		sprd,esd-check-period = <1000>; /* stock esd-timeout, ms */
+		sprd,esd-check-register = <0x0a>;
+		sprd,esd-check-value = <0x9c>;
+
+		/*
+		 * Stock power-on-sequence (gpio level delay-ms): 50 1 50, 50 0 50, 50 1 120.
+		 * Gpio 50 is the panel reset-gpio of the dsi child node in the
+		 * board DTS; stock has no avdd gpio step for this panel.
+		 * Stock power-off-sequence: 50 0 20.
+		 */
+		sprd,reset-on-sequence = <1 50>, <0 50>, <1 120>;
+		sprd,reset-off-sequence = <0 20>;
+
+		/* each command: data-type wait-ms len-hi len-lo payload */
+		sprd,initial-command = [
+			29 00 00 03 f0 00 08
+			29 00 00 03 f2 00 08
+			29 00 00 03 9b 00 51
+			29 00 00 03 86 00 53
+			29 00 00 03 f2 00 80
+			29 00 00 03 f0 00 00
+			29 00 00 03 f0 00 28
+			29 00 00 03 f2 00 28
+			29 00 00 03 83 00 e8
+			29 00 00 03 84 00 69
+			29 00 00 03 f2 00 82
+			29 00 00 03 f0 00 00
+			29 00 00 03 f0 00 01
+			29 00 00 03 f1 00 01
+			29 00 00 03 b0 00 52
+			29 00 00 03 b1 00 51
+			29 00 00 03 b2 00 20
+			29 00 00 03 b4 00 84
+			29 00 00 03 b5 00 44
+			29 00 00 03 b6 00 8b
+			29 00 00 03 b7 00 40
+			29 00 00 03 b8 00 05
+			29 00 00 03 ba 00 00
+			29 00 00 03 bb 00 08
+			29 00 00 03 bc 00 08
+			29 00 00 03 bd 00 00
+			29 00 00 03 c0 00 80
+			29 00 00 03 c1 00 0c
+			29 00 00 03 c2 00 38
+			29 00 00 03 c3 00 80
+			29 00 00 03 c4 00 0c
+			29 00 00 03 c5 00 38
+			29 00 00 03 c6 00 a9
+			29 00 00 03 c7 00 41
+			29 00 00 03 c8 00 51
+			29 00 00 03 c9 00 a9
+			29 00 00 03 ca 00 41
+			29 00 00 03 cb 00 51
+			29 00 00 03 d0 00 91
+			29 00 00 03 d1 00 68
+			29 00 00 03 d2 00 69
+			29 00 00 04 f5 00 00 a5
+			29 00 00 03 dd 00 4b
+			29 00 00 03 de 00 4b
+			29 00 00 03 f1 00 10
+			29 00 00 03 f0 00 00
+			29 00 00 03 f0 00 02
+			29 05 00 1d e0 00 f0 00 0a 00 11 00 0b 00 0b 00 07 00 3c 00 44 00 52 00 09 00 16 00 15 00 31 00 34
+			29 05 00 1d e1 00 f0 00 0a 00 11 00 0b 00 0b 00 07 00 3b 00 43 00 4f 00 08 00 15 00 15 00 2e 00 34
+			29 00 00 03 f0 00 10
+			29 00 00 03 f3 00 10
+			29 00 00 03 e0 00 08
+			29 00 00 03 e1 00 00
+			29 00 00 03 e2 00 0c
+			29 00 00 03 e3 00 00
+			29 00 00 03 e4 00 e0
+			29 00 00 03 e5 00 06
+			29 00 00 03 e6 00 21
+			29 00 00 03 e7 00 10
+			29 00 00 03 e8 00 8a
+			29 00 00 03 e9 00 82
+			29 00 00 03 ea 00 e4
+			29 00 00 03 eb 00 00
+			29 00 00 03 ec 00 00
+			29 00 00 03 ed 00 14
+			29 00 00 03 ee 00 ff
+			29 00 00 03 ef 00 00
+			29 00 00 03 f8 00 ff
+			29 00 00 03 f9 00 00
+			29 00 00 03 fa 00 00
+			29 00 00 03 fb 00 30
+			29 00 00 03 fc 00 00
+			29 00 00 03 fd 00 00
+			29 00 00 03 fe 00 00
+			29 00 00 03 ff 00 00
+			29 00 00 03 60 00 50
+			29 00 00 03 61 00 02
+			29 00 00 03 62 00 0c
+			29 00 00 03 63 00 50
+			29 00 00 03 64 00 04
+			29 00 00 03 65 00 0c
+			29 00 00 03 66 00 52
+			29 00 00 03 67 00 d6
+			29 00 00 03 68 00 0c
+			29 00 00 03 69 00 52
+			29 00 00 03 6a 00 d8
+			29 00 00 03 6b 00 0c
+			29 00 00 03 70 00 50
+			29 00 00 03 71 00 01
+			29 00 00 03 72 00 0c
+			29 00 00 03 73 00 50
+			29 00 00 03 74 00 03
+			29 00 00 03 75 00 0c
+			29 00 00 03 76 00 52
+			29 00 00 03 77 00 d5
+			29 00 00 03 78 00 0c
+			29 00 00 03 79 00 52
+			29 00 00 03 7a 00 d7
+			29 00 00 03 7b 00 0c
+			29 00 00 03 80 00 58
+			29 00 00 03 81 00 00
+			29 00 00 03 82 00 04
+			29 00 00 03 83 00 02
+			29 00 00 03 84 00 dc
+			29 00 00 03 85 00 00
+			29 00 00 03 86 00 00
+			29 00 00 03 87 00 00
+			29 00 00 03 88 00 58
+			29 00 00 03 89 00 00
+			29 00 00 03 8a 00 06
+			29 00 00 03 8b 00 02
+			29 00 00 03 8c 00 de
+			29 00 00 03 8d 00 00
+			29 00 00 03 8e 00 00
+			29 00 00 03 8f 00 00
+			29 00 00 03 90 00 58
+			29 00 00 03 91 00 00
+			29 00 00 03 92 00 08
+			29 00 00 03 93 00 02
+			29 00 00 03 94 00 e0
+			29 00 00 03 95 00 00
+			29 00 00 03 96 00 00
+			29 00 00 03 97 00 00
+			29 00 00 03 98 00 58
+			29 00 00 03 99 00 00
+			29 00 00 03 9a 00 0a
+			29 00 00 03 9b 00 02
+			29 00 00 03 9c 00 e2
+			29 00 00 03 9d 00 00
+			29 00 00 03 9e 00 00
+			29 00 00 03 9f 00 00
+			29 00 00 03 a0 00 58
+			29 00 00 03 a1 00 00
+			29 00 00 03 a2 00 03
+			29 00 00 03 a3 00 02
+			29 00 00 03 a4 00 db
+			29 00 00 03 a5 00 00
+			29 00 00 03 a6 00 00
+			29 00 00 03 a7 00 00
+			29 00 00 03 a8 00 58
+			29 00 00 03 a9 00 00
+			29 00 00 03 aa 00 05
+			29 00 00 03 ab 00 02
+			29 00 00 03 ac 00 dd
+			29 00 00 03 ad 00 00
+			29 00 00 03 ae 00 00
+			29 00 00 03 af 00 00
+			29 00 00 03 b0 00 58
+			29 00 00 03 b1 00 00
+			29 00 00 03 b2 00 07
+			29 00 00 03 b3 00 02
+			29 00 00 03 b4 00 df
+			29 00 00 03 b5 00 00
+			29 00 00 03 b6 00 00
+			29 00 00 03 b7 00 00
+			29 00 00 03 b8 00 58
+			29 00 00 03 b9 00 00
+			29 00 00 03 ba 00 09
+			29 00 00 03 bb 00 02
+			29 00 00 03 bc 00 e1
+			29 00 00 03 bd 00 00
+			29 00 00 03 be 00 00
+			29 00 00 03 bf 00 00
+			29 00 00 03 c0 00 77
+			29 00 00 03 c1 00 46
+			29 00 00 03 c2 00 55
+			29 00 00 03 c3 00 64
+			29 00 00 03 c4 00 bb
+			29 00 00 03 c5 00 21
+			29 00 00 03 c6 00 30
+			29 00 00 03 c7 00 aa
+			29 00 00 03 c8 00 12
+			29 00 00 03 c9 00 03
+			29 00 00 03 d0 00 77
+			29 00 00 03 d1 00 46
+			29 00 00 03 d2 00 55
+			29 00 00 03 d3 00 64
+			29 00 00 03 d4 00 bb
+			29 00 00 03 d5 00 21
+			29 00 00 03 d6 00 30
+			29 00 00 03 d7 00 aa
+			29 00 00 03 d8 00 12
+			29 00 00 03 d9 00 03
+			29 00 00 03 f3 00 01
+			29 00 00 03 f0 00 00
+			29 00 00 03 f0 00 01
+			29 00 00 03 f1 00 01
+			29 00 00 03 a0 00 0b
+			29 00 00 03 a3 00 2a
+			29 00 00 03 a5 00 c3
+			29 00 00 03 a3 00 2b
+			29 00 00 03 a5 00 c3
+			29 00 00 03 a3 00 2c
+			29 00 00 03 a5 00 c3
+			29 00 00 03 a3 00 2d
+			29 00 00 03 a5 00 c3
+			29 00 00 03 a3 00 2e
+			29 00 00 03 a5 00 c3
+			29 00 00 03 a3 00 2f
+			29 00 00 03 a5 00 c3
+			29 00 00 03 a3 00 30
+			29 00 00 03 a5 00 c3
+			29 00 00 03 a3 00 31
+			29 00 00 03 a5 00 c3
+			29 00 00 03 a3 00 32
+			29 00 00 03 a5 00 c3
+			29 00 00 03 a3 00 33
+			29 00 00 03 a5 00 c3
+			29 00 00 03 a0 00 09
+			29 00 00 03 f1 00 10
+			29 00 00 03 f0 00 00
+			29 00 00 09 2a 00 00 00 00 00 01 00 67
+			29 00 00 09 2b 00 01 00 68 00 01 00 68
+			29 00 00 03 4d 00 00
+			29 00 00 03 4e 00 00
+			29 00 00 03 4f 00 00
+			29 00 00 03 4c 00 01
+			29 00 00 03 4c 00 00
+			29 00 00 09 2a 00 00 00 00 00 01 00 67
+			29 00 00 09 2b 00 00 00 00 00 01 00 67
+			13 00 00 01 21
+			29 00 00 03 3a 00 66
+			13 00 00 01 35
+			13 78 00 01 11
+			13 00 00 01 29
+			13 1a 00 01 00
+			];
+
+		sprd,sleep-in-command = [
+			13 0a 00 01 28
+			13 78 00 01 10
+			];
+
+		sprd,sleep-out-command = [
+			13 78 00 01 11
+			13 64 00 01 29
+			];
+
+		/*
+		 * Video mode. Stock display-timings: hback 60 (0x3c), hfront 80
+		 * (0x50), hsync 16, vback 8, vfront 8, vsync 2, 360x360, all
+		 * used. clock-frequency is the DPI pixel clock and is derived,
+		 * the stock node only has the 340000 kbps DSI bit clock and
+		 * fps 50: htotal 516 * vtotal 378 * 50 = 9.75 MHz. The 4.4 ADF
+		 * driver ran it from the 128 MHz dispc source with divider
+		 * ROUND(128 MHz / 9.75 MHz) = 13, i.e. 9.846 MHz (50.5 fps).
+		 * The 4.14 sharkle dpu_clk_init() needs a pixel clock that
+		 * divides 96 / 128 / 153.6 MHz exactly (else it logs an error
+		 * and takes 96 MHz); 9.6 MHz = 96 MHz / 10 (49.2 fps) is the
+		 * nearest exact value. TODO check on hardware.
+		 * 4.14 dpu_dpi_init() warns when vsync + vback < 32 (stock 10).
+		 */
+		display-timings {
+			timing0 {
+				clock-frequency = <9600000>;
+				hactive = <360>;
+				vactive = <360>;
+				hback-porch = <60>;
+				hfront-porch = <80>;
+				hsync-len = <16>;
+				vback-porch = <8>;
+				vfront-porch = <8>;
+				vsync-len = <2>;
+			};
+		};
+	};
+}; };
