@@ -26,6 +26,7 @@ Base: 4.14.133 (UNISOC downstream). Each release applied as
 | 4.14.152 | conflict | drivers/block/zram/zram_drv.c (took stable backing_dev_show), fs/f2fs/super.c (vendor already had sync_filesystem in f2fs_quota_off_umount; kept vendor); 0 skipped |
 | 4.14.153 | clean | - |
 | 4.14.154 | conflict | drivers/usb/gadget/configfs.c: vendor already had gi->slock (Android unbind/setup guard); ported the stable unbind-flag fix onto slock instead of adding a second spinlock; 0 skipped |
+| 4.14.155 | conflict | fs/f2fs/recovery.c: stable recover_inode uid/gid/projid + mark_dirty change already present in vendor f2fs (newer backport); 3 hunks skipped as already applied |
 
 Builds: sprd_sharkle_defconfig Image + dtbs built OK at 4.14.147, at 4.14.150
 (merged with the watch_414 fragment) and at 4.14.151.
