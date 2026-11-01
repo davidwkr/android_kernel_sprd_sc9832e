@@ -215,10 +215,10 @@
 	 * [stock] = value derived from the stock battery node, [base] = value
 	 * of the 4.14 sl8541e-1h10 reference board, no stock equivalent.
 	 *
-	 * TODO: cm-jeita-temp-table not mapped. The 4.14 code has exactly four
-	 * temperature entries (five zones); stock has five temperatures
-	 * (jeita-temp-tab 900 1000 1100 1450 1500, recovery 930 1030 1130 1420
-	 * 1470, current 0 100 500 7fff 700 0 mA, cccv 4450 mV everywhere).
+	 * cm-jeita-temp-table: the five entry stock table, converted in
+	 * devices/dm63/DTS_414.md. The stock 0x7fff (no limit) zone is the
+	 * smallest stock adapter current, 430 mA. The 4.4 driver of the watch
+	 * never read these jeita properties, so this is stricter than stock.
 	 * cm-wdt-interval is left out: stock chg-wdt is disabled and the
 	 * charger driver has no watchdog property.
 	 */
@@ -227,7 +227,7 @@
 		cm-name = "battery";
 		cm-poll-mode = <2>;			/* [base] */
 		cm-poll-interval = <15000>;		/* [base] */
-		cm-battery-stat = <2>;			/* [base] fuel gauge PRESENT, see DTS_414.md */
+		cm-battery-stat = <2>;			/* [base] fuel gauge PRESENT (always 1 here) */
 
 		cm-fullbatt-vchkdrop-ms = <30000>;	/* [base] */
 		cm-fullbatt-vchkdrop-volt = <60000>;	/* [base] */
@@ -240,6 +240,12 @@
 		cm-fuel-gauge = "sc27xx-fgu";
 
 		/* [stock] outer limits of jeita-temp-tab: -10 and 50 degC, 3 degC hysteresis */
+		cm-jeita-temp-table = <900 930 0 4450000>,
+				      <1000 1030 100000 4450000>,
+				      <1100 1130 500000 4450000>,
+				      <1450 1420 430000 4450000>,
+				      <1500 1470 700000 4450000>;
+
 		cm-battery-cold = <100>;
 		cm-battery-cold-in-minus;
 		cm-battery-hot = <500>;
@@ -319,9 +325,11 @@
  * sl8541e/mach.dtsi layout (1 GiB board) differs, so the nodes that differ are
  * deleted and declared again with the same labels.
  *
- * Stock has no logo buffer; logo_reserved (0x9e000000, mach.dtsi) is kept
- * only because sharkle.dtsi dpu references it. TODO with the display step.
+ * Stock has no logo buffer: logo_reserved (0x9e000000, mach.dtsi) and the
+ * dpu "sprd,logo-memory" property that points at it are removed (the driver
+ * only prints "no sprd,logo-memory specified"). TODO with the display step.
  */
+/delete-node/ &logo_reserved;
 /delete-node/ &wcn_reserved;
 /delete-node/ &gnss_reserved;
 /delete-node/ &cp_reserved;
@@ -381,6 +389,10 @@
 	overlay_reserved: overlaybuffer@bf274000 {
 		reg = <0x0 0xbf274000 0x0 0xa8c000>;
 	};
+};
+
+&dpu {
+	/delete-property/ sprd,logo-memory;
 };
 
 &uart1 {
@@ -522,16 +534,20 @@
 	 * matches "sprd,sc27xx-charger", the driver "sprd,sc2721-charger".
 	 * "phys" is the USB phy the charger driver registers a notifier on.
 	 *
+	 * sprd,ovp-microvolt: stock battery ovp-stop 0x1964 = 6500 mV, written
+	 * to the input OVP field (code 9).
+	 *
 	 * TODO (not implemented in the 4.14 driver, stock values): chg-cv-gpios
-	 * = PMIC EIC 4, chg-ovi-gpios = PMIC EIC 6, input OVP level (stock
-	 * ovp-stop 6500 mV, ovp-restart 5800 mV), chg-timer@0 (irq 7),
-	 * fast-charger@900 (disabled in stock), chg-wdt@80 (disabled in stock).
+	 * = PMIC EIC 4, chg-ovi-gpios = PMIC EIC 6, ovp-restart 5800 mV,
+	 * chg-timer@0 (irq 7), fast-charger@900 (disabled in stock), chg-wdt@80
+	 * (disabled in stock), ITERM and recharge bits.
 	 */
 	pmic_charger: charger@ec0 {
 		compatible = "sprd,sc27xx-charger", "sprd,sc2721-charger";
 		reg = <0xec0>;
 		phys = <&hsphy>;
 		monitored-battery = <&bat>;
+		sprd,ovp-microvolt = <6500000>;
 		nvmem-cells = <&cccv_calib_data>, <&cccv_calib_valid>;
 		nvmem-cell-names = "cccv_calib", "cccv_calib_valid";
 	};
@@ -547,10 +563,12 @@
  * rsense-real/spec: stock 200/200, only the ratio is used (1).
  * comp-resistance: stock temp-comp-res 30 mOhm.
  *
- * bat-detect-gpio (base, PMIC EIC 9) is mandatory for the 4.14 probe, stock
- * has no battery detect gpio. TODO: confirm EIC 9 on this board.
+ * Stock has no battery detect gpio and treats the battery as present: the
+ * inherited bat-detect-gpio (PMIC EIC 9) is deleted, the gauge then reports
+ * the battery as always present and requests no detection interrupt.
  */
 &pmic_fgu {
+	/delete-property/ bat-detect-gpio;
 	monitored-battery = <&bat>;
 	sprd,calib-resistance-real = <200>;
 	sprd,calib-resistance-spec = <200>;
