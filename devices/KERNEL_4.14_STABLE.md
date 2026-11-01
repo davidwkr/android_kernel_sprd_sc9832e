@@ -68,6 +68,7 @@ Base: 4.14.133 (UNISOC downstream). Each release applied as
 | 4.14.194 | clean | - |
 | 4.14.195 | clean | - |
 | 4.14.196 | clean | include/linux/overflow.h: stable re-adds array_size/array3_size/__ab_c_size/struct_size after check_shl_overflow; vendor already has them (kept at 4.14.178), duplicate block dropped (redefinition build error); 0 skipped |
+| 4.14.197 | conflict | drivers/block/zram/zram_drv.h: SECTOR_SHIFT define removed per stable (now in blkdev.h); vendor already lacks max_zpage_size block; 0 skipped |
 
 Builds: sprd_sharkle_defconfig Image + dtbs built OK at 4.14.147, at 4.14.150
 (merged with the watch_414 fragment) and at 4.14.151.
