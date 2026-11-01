@@ -34,6 +34,7 @@ Base: 4.14.133 (UNISOC downstream). Each release applied as
 | 4.14.160 | clean | - |
 | 4.14.161 | clean | - |
 | 4.14.162 | clean | - |
+| 4.14.163 | clean | - |
 
 Builds: sprd_sharkle_defconfig Image + dtbs built OK at 4.14.147, at 4.14.150
 (merged with the watch_414 fragment) and at 4.14.151.
