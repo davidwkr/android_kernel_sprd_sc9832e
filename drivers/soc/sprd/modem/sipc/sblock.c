@@ -107,10 +107,10 @@ void sblock_put(u8 dst, u8 channel, struct sblock *blk)
 	spin_lock_irqsave(&ring->p_txlock, flags);
 	txpos = sblock_get_ringpos(poolhd->txblk_rdptr - 1,
 				   sblock->txblknum);
-	ring->r_txblks[txpos].addr = blk->addr -
+	ring->p_txblks[txpos].addr = blk->addr -
 				     sblock->smem_virt +
 				     sblock->mapped_smem_addr;
-	ring->r_txblks[txpos].length = sblock->txblksz;
+	ring->p_txblks[txpos].length = sblock->txblksz;
 	wmb();
 	poolhd->txblk_rdptr = poolhd->txblk_rdptr - 1;
 	mb();

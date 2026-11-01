@@ -363,6 +363,8 @@ static void sipx_drain_ring(struct sipx_ring *ring, struct sipx_pool *pool,
 	spin_lock_irqsave(&ring->lock, flags);
 	wr = fifo_info->fifo_wrptr;
 	rd = fifo_info->fifo_rdptr;
+	/* read the entries only after the pointer */
+	rmb();
 	cnt = wr - rd;
 	if (cnt > ring->fifo_size) {
 		SIPX_ERR("%s: bad %s occupancy %u (wr=%u rd=%u)\n",
@@ -385,6 +387,8 @@ static void sipx_drain_ring(struct sipx_ring *ring, struct sipx_pool *pool,
 			SIPX_ERR("%s: bad %s block index %u dropped\n",
 				 __func__, name, blk.index);
 	}
+	/* finish reading the entries before giving the slots back */
+	mb();
 	fifo_info->fifo_rdptr = wr;
 	spin_unlock_irqrestore(&ring->lock, flags);
 }
@@ -402,9 +406,9 @@ static int sipx_recover_channel(struct sipx_mgr *sipx,
 
 		blk = sipx_chan->dl_record_blk;
 		if (IS_DL_BLK_ACK(sipx, &blk))
-			sipx_put_item_into_pool(sipx->dl_pool, &blk);
-		else
 			sipx_put_item_into_pool(sipx->dl_ack_pool, &blk);
+		else
+			sipx_put_item_into_pool(sipx->dl_pool, &blk);
 
 		sipx_chan->dl_record_flag = 0;
 	}

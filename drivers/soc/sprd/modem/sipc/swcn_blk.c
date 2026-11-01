@@ -122,10 +122,10 @@ void swcnblk_put(u8 dst, u8 channel, struct swcnblk_blk *blk)
 	spin_lock_irqsave(&ring->p_txlock, flags);
 	txpos = swcnblk_get_ringpos(poolhd->txblk_rdptr - 1,
 				    swcnblk->txblknum);
-	ring->r_txblks[txpos].addr = blk->addr -
+	ring->p_txblks[txpos].addr = blk->addr -
 				     swcnblk->smem_blk_virt +
 				     swcnblk->mapped_smem_addr;
-	ring->r_txblks[txpos].length = swcnblk->txblksz;
+	ring->p_txblks[txpos].length = swcnblk->txblksz;
 	wmb();
 	poolhd->txblk_rdptr = poolhd->txblk_rdptr - 1;
 	mb();
