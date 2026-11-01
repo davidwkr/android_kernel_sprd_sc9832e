@@ -8,7 +8,6 @@ Required properties:
   "sprd,sc2730-fgu",
   "sprd,sc2731-fgu".
 - reg: The address offset of fuel gauge unit.
-- battery-detect-gpios: GPIO for battery detection.
 - io-channels: Specify the IIO ADC channels to get temperature and charge voltage.
 - io-channel-names: Should be "bat-temp" and "charge-vol"
 - sprd,calib-resistance-real: The real resistance of coulomb counter chip in microohms
@@ -21,6 +20,8 @@ Required properties:
   See Documentation/devicetree/bindings/power/supply/battery.txt
 
 Optional Properties:
+- bat-detect-gpios: GPIO for battery detection. When absent the battery is reported
+  as always present and no detection interrupt is requested.
 - sprd,comp-resistance-mohm: The coulomb counter internal resistance and the board
   ground resistance.
   Due to the ntc resistor is connected to the coulomb counter internal resistance of 20 million
