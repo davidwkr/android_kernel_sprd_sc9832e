@@ -21,6 +21,8 @@
 		 * DSI bit clock in kbps in the 4.4 ADF driver (phy_freq), not a
 		 * pixel clock.
 		 */
+		sprd,lcd-id = <0x5300206>;	/* stock lcd_id=ID5300206 */
+		sprd,refresh-rate = <60>;	/* stock fps */
 		sprd,phy-bit-clock = <409000>; /* kbps */
 
 		/* stock need-check-esd 0: the esd check stays off, values are stock */

@@ -684,11 +684,10 @@
  * lcd/lcd_co5300_oled*_mipi.dtsi (all three stock CO5300 variants). See
  * devices/dm63/PANEL_414.md.
  *
- * Panel selection: the 4.14 driver has no lcd_id= bootarg. sprd,force-attached
- * names the /lcds node; it overrides lcd_name=. DM63 units report ID5300213,
- * so lcd_co5300_oled213_mipi is the default. For a 1.952 inch (ID53001952) or
- * 2.06 inch (ID5300206) unit use lcd_co5300_oled1952_mipi or
- * lcd_co5300_oled206_mipi. A wrong variant gives a blank or shifted picture
+ * Panel selection, as stock: the bootloader's lcd_id=ID<hex> picks the /lcds
+ * node whose sprd,lcd-id matches (ID53001952, ID5300206, ID5300213).
+ * lcd_name= still wins; without either, sprd,default-panel applies
+ * (lcd_co5300_oled213_mipi, the ID the stock DM63 reports). A wrong variant gives a blank or shifted picture
  * (column window and timing differ), the init commands do not stress the
  * panel supplies.
  *
@@ -729,7 +728,7 @@
 		#size-cells = <0>;
 		reg = <0>;
 
-		sprd,force-attached = "lcd_co5300_oled213_mipi";
+		sprd,default-panel = "lcd_co5300_oled213_mipi";
 		power-supply = <&lcd_nosupply>;
 		avdd-gpio = <&ap_gpio 33 GPIO_ACTIVE_HIGH>;
 		reset-gpio = <&ap_gpio 50 GPIO_ACTIVE_HIGH>;

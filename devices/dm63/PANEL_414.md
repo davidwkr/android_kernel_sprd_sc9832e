@@ -59,16 +59,16 @@ Stock (4.4 ADF): the bootloader puts `lcd_id=ID<hex>` on the command line (DM63:
 searches `sprd-panel-if/panel-drivers` (14 phandles) for the node named `lcd<hex>` (`lcd5300213`);
 `lcd_id=0` means calibration mode, a `force-id` property overrides.
 
-4.14: there is no `lcd_id` parsing. `sprd_panel.c` has `__setup("lcd_name=")` (the node name under `/lcds`,
-for example `lcd_name=lcd_co5300_oled213_mipi`), and the panel node property `sprd,force-attached` overrides it.
-If neither is present the path becomes `/lcds/(null)` and the probe returns -ENODEV (blank, no crash).
-`sprd_dsi_find_panel` then asks every `/lcds` child for a registered panel, so several dtsi files can be
-compiled in at once; only the selected one registers. `lcd_id=ID5300213` on the command line is ignored.
+4.14 (this tree): `sprd_panel.c` reads `lcd_id=ID<hex>` and selects the `/lcds` child whose `sprd,lcd-id` equals
+the id, as stock does. Order: `sprd,force-attached` (other boards), then `lcd_name=`, then the `lcd_id` match,
+then the panel node's `sprd,default-panel`. With none of them the path becomes `/lcds/(null)` and the probe
+returns -ENODEV (blank, no crash). `sprd_dsi_find_panel` asks every `/lcds` child for a registered panel, so
+several dtsi files can be compiled in at once; only the selected one registers.
 
-DM63 DTS: all three CO5300 dtsi are included, `sprd,force-attached = "lcd_co5300_oled213_mipi"` (the stock
-DM63 reports ID5300213). Other panels of the stock `lcds` (GC9B71 x2, ST77916 x3, ST7797, ST7801, CH13613,
-SH8601 x2, dummy) are not converted here. To run a 1.952 inch (ID53001952) or 2.06 inch (ID5300206) unit change
-that string, or drop the property and pass `lcd_name=` from the boot image command line.
+DM63 DTS: all three CO5300 dtsi are included with `sprd,lcd-id` 0x53001952, 0x5300206 and 0x5300213, and
+`sprd,default-panel = "lcd_co5300_oled213_mipi"` (the stock DM63 reports ID5300213) covers a command line without
+`lcd_id`. Other panels of the stock `lcds` (GC9B71 x2, ST77916 x3, ST7797, ST7801, CH13613, SH8601 x2, dummy) are
+not converted here.
 
 ## Stock CO5300 nodes
 
@@ -111,7 +111,7 @@ datasheet, the bytes are copied.
 | `oled-backlight` `max-level 255` | `sprd,max-level = <255>` | |
 | `oled-backlight` `brightness-levels` | one command `23 0a 00 02 51 00` | below |
 | `fps 60`, `panel-name` | none | fps comes from the timings |
-| `lcd_id`, `panel-drivers` | `sprd,force-attached` / `lcd_name=` | |
+| `lcd_id`, `panel-drivers` | `sprd,lcd-id` + `lcd_id=`, `sprd,default-panel`, `lcd_name=` | |
 
 ### Init command encoding
 
@@ -158,14 +158,10 @@ only after an ESD recovery); whether the Android side rewrites the level on scre
 * AOD / idle mode (`sprd_aod_idle`, DCS 0x38/0x39 on the CO5300) has no 4.14 port; it used the 4.4 `panel_device`
   and the OLED backlight object.
 * Only the CO5300 variants are converted. The other stock `lcds` nodes are not.
-* The refresh rate that DRM reports for the mode is `128 MHz / (412 * vtotal)`, around 600 Hz instead of 60.
-  The panel is paced by TE, so the picture should not depend on it, but a userspace that trusts the mode
-  vrefresh for its vsync period would be wrong. A 60 Hz mode (`412 * 520 * 60` = 12.85 MHz for the 2.06 / 1.952
-  inch) would make the DPU pick the first divisible source or the 96 MHz default and an approximate DPI
-  clock, which can not be ruled out on paper to be slower than the TE period; therefore the stock 128 MHz was
-  kept. Decide on hardware.
+* DPI clock and refresh rate: the mode keeps the stock 128 MHz DPI clock (stock dispc `sprd,dpi_clk_div = 1`),
+  so the computed refresh would be `128 MHz / (412 * vtotal)`, around 600 Hz. `sprd,refresh-rate = <60>` (stock
+  `fps`) sets the reported vrefresh instead; the frame rate itself follows the panel TE in command mode.
 * avdd timing: stock waits 20 ms after gpio 33, the 4.14 driver 5 ms. Not compensated (no invented values).
-* `lcd_id` is not read; `sprd,force-attached` fixes the variant at build time.
 
 ## Risks for a first boot
 
@@ -173,7 +169,7 @@ only after an ESD recovery); whether the Android side rewrites the level on scre
   bootloader's logo is assumed to be on, the panel probe sets `is_enabled`). If the bootloader leaves the panel
   off or in another state, the screen stays blank until the first screen off/on cycle, which re-runs the full
   power-on and init sequence.
-* Wrong variant or wrong `force-attached`: blank, shifted or cropped picture. The init commands only select
+* Wrong variant (unknown `lcd_id`, default used): blank, shifted or cropped picture. The init commands only select
   pages, the TE, colour depth, brightness and windows, nothing that changes panel voltages; no variant-specific
   voltage register is written (the vendor page writes of the 1.952 / 2.06 inch streams were not decoded, they
   are the stock bytes).
