@@ -105,6 +105,7 @@ Base: 4.14.133 (UNISOC downstream). Each release applied as
 | 4.14.231 | clean | - |
 | 4.14.232 | conflict | fs/ext4/namei.c: kept vendor (fscrypt_prepare_rename() called at entry before any buffer is held, so the goto end_rename->release_bh leak fix targets code the vendor no longer has); 0 skipped |
 | 4.14.233 | clean | drivers/staging/typec/tcpci.c hunks applied to vendor drivers/usb/typec/tcpm/tcpci.c; 0 skipped |
+| 4.14.234 | clean | - |
 
 Builds: sprd_sharkle_defconfig Image + dtbs built OK at 4.14.147, at 4.14.150
 (merged with the watch_414 fragment) and at 4.14.151. Checked with
