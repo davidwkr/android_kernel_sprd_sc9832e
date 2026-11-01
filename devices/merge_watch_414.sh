@@ -6,9 +6,9 @@ set -e
 [ -n "$1" ] || { echo "usage: $0 <build-dir>" >&2; exit 1; }
 top=$(cd "$(dirname "$0")/.." && pwd)
 out=$(mkdir -p "$1" && cd "$1" && pwd)
-export ARCH=arm64 CROSS_COMPILE=${CROSS_COMPILE:-aarch64-linux-gnu-}
+export ARCH=arm64 CROSS_COMPILE=${CROSS_COMPILE:-aarch64-linux-gnu-} KCONFIG_CONFIG="$out/.config"
 make -C "$top" O="$out" sprd_sharkle_defconfig
 cd "$top"
-KCONFIG_CONFIG="$out/.config" scripts/kconfig/merge_config.sh -m -O "$out" \
+scripts/kconfig/merge_config.sh -m -O "$out" \
 	"$out/.config" arch/arm64/configs/watch_414.fragment
 make -C "$top" O="$out" olddefconfig
