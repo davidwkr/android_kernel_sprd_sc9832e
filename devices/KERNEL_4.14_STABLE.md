@@ -163,3 +163,4 @@ interface (mmc_access_rpmb), because the Android 8.1 vendor userspace uses
 | 4.14.279 | clean | - |
 | 4.14.280 | clean | - |
 | 4.14.281 | clean | - |
+| 4.14.282 | conflict | drivers/md/dm-verity-target.c: verity_target: added stable .features = DM_TARGET_IMMUTABLE, kept vendor version {1, 4, 0}; matches Google's 4.14.282 merge; 0 skipped |
