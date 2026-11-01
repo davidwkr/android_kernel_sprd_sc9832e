@@ -108,3 +108,7 @@ code; the 4.14 port always follows the monotone order above, including with the 
    (bit 0) and fails probe without them (no guessed default).
 6. Timers, fast charge, CV status, interrupts: see section 2.
 7. Everything is untested on hardware.
+
+## Init unit fix
+
+`0dee9e011d3a`: the vendor `hw_init()` passed the battery CV in mV to `sc2720_set_termination_voltage()`, which expects uV, so the first CV programmed was the lowest one (about 3.96 V). Fixed for both SC2720 and SC2721.
