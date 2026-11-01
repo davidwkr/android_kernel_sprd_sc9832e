@@ -119,6 +119,7 @@ Base: 4.14.133 (UNISOC downstream). Each release applied as
 | 4.14.245 | clean | - |
 | 4.14.246 | clean | - |
 | 4.14.247 | conflict | fs/f2fs/segment.c: kept vendor (newer f2fs backport already has the discard_blks/valid_blocks split-update fix in build_sit_entries()); 0 skipped |
+| 4.14.248 | clean | - |
 
 Builds: sprd_sharkle_defconfig Image + dtbs built OK at 4.14.147, at 4.14.150
 (merged with the watch_414 fragment) and at 4.14.151. Checked with
