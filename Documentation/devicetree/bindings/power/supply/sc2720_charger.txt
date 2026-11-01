@@ -1,9 +1,15 @@
-Spreadtrum SC2720 PMIC battery charger binding
+Spreadtrum SC2720/SC2721 PMIC battery charger binding
 
 Required properties:
- - compatible: Should be "sprd,sc2720-charger".
- - reg: Address offset of charger register.
+ - compatible: Should be "sprd,sc2720-charger" or "sprd,sc2721-charger".
+ - reg: Address offset of charger register (CHGR_CTRL0; CHGR_CTRL1 follows at
+   +0x4). For the SC2721 this is 0xec0.
  - phys: Contains a phandle to the USB phy.
+ - nvmem-cells, nvmem-cell-names: the CCCV calibration. "cccv_calib" is
+   required for both chips (6 bits). The SC2721 additionally requires
+   "cccv_calib_valid" (efuse valid flag, bit 0 of efuse block 0); when the flag
+   is clear the calibration defaults to 0x20. Probe fails if a required cell
+   is missing.
 
 Optional Properties:
 - monitored-battery: phandle of battery characteristics devicetree node.
@@ -11,6 +17,14 @@ Optional Properties:
 - charge-term-current-microamp: current for charge termination phase.
 - constant-charge-voltage-max-microvolt: maximum constant input voltage.
   See Documentation/devicetree/bindings/power/supply/battery.txt
+
+SC2721 notes:
+- The charge current is clamped to 300..1300 mA in 50 mA steps and the
+  constant charge voltage to 4400 mV; the input over voltage protection is
+  not programmed.
+- The module parameter sc2720_charger.cv_override_mv (4000..4400 mV, 0 = off)
+  caps the constant charge voltage of the SC2721 charger. See
+  devices/SC2721_CHARGER_MAP.md.
 
 Example:
 
