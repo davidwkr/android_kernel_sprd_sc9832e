@@ -35,6 +35,7 @@ Base: 4.14.133 (UNISOC downstream). Each release applied as
 | 4.14.161 | clean | - |
 | 4.14.162 | clean | - |
 | 4.14.163 | clean | - |
+| 4.14.164 | conflict | drivers/mmc/core/block.c: took stable RPMB character-device rework, dropping vendor mmc_access_rpmb() queue bypass (JUDGEMENT CALL, see commit); 0 skipped |
 
 Builds: sprd_sharkle_defconfig Image + dtbs built OK at 4.14.147, at 4.14.150
 (merged with the watch_414 fragment) and at 4.14.151.
