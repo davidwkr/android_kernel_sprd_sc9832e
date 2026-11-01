@@ -304,9 +304,9 @@ err:
 }
 
 /*
- * Program the CV for a request in mV. Override off: the stock 4.4 value
- * (requests the stock arithmetic cannot represent are refused, nothing is
- * written). Override on: the highest representable CV not above
+ * Program the CV for a request in mV. Override off: the stock 4.4 value;
+ * where the stock arithmetic would wrap, the highest representable CV not
+ * above the request. Override on: the highest representable CV not above
  * min(request, battery maximum, override); if none exists the lowest
  * representable CV, or the stock value if that is lower still. Caller holds
  * sc2721_cv_lock.
@@ -317,8 +317,18 @@ static int sc2721_program_cccv(struct sc2720_charger_info *info,
 	unsigned int e, c;
 
 	if (!READ_ONCE(sc2721_cv_override_mv)) {
-		if (!sc2721_cv_model(req, info->cv_cal, &e, &c))
+		if (sc2721_cv_model(req, info->cv_cal, &e, &c))
+			return sc2721_program_end_cv(info, e, c);
+		/*
+		 * The stock arithmetic would wrap for this calibration (4.4
+		 * then writes an arbitrary code): take the highest
+		 * representable CV not above the request instead.
+		 */
+		if (!sc2721_cv_floor(req, info->cv_cal, &e, &c))
 			return -EINVAL;
+		dev_warn(info->dev, "CV %u mV not representable, using %d.%d mV\n",
+			 req, sc2721_cv_v10(e, c, info->cv_cal) / 10,
+			 sc2721_cv_v10(e, c, info->cv_cal) % 10);
 		return sc2721_program_end_cv(info, e, c);
 	}
 
