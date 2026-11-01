@@ -39,6 +39,37 @@ static int __init lcd_name_get(char *str)
 }
 __setup("lcd_name=", lcd_name_get);
 
+/* lcd_id=ID<hex> from the bootloader, matched against sprd,lcd-id */
+static u32 lcd_id;
+static int __init lcd_id_get(char *str)
+{
+	if (str && !strncmp(str, "ID", 2) && !kstrtou32(str + 2, 16, &lcd_id))
+		DRM_INFO("lcd id from uboot: 0x%x\n", lcd_id);
+	return 0;
+}
+__setup("lcd_id=", lcd_id_get);
+
+static struct device_node *sprd_panel_find_by_id(u32 id)
+{
+	struct device_node *lcds, *child;
+	u32 val;
+
+	lcds = of_find_node_by_path("/lcds");
+	if (!lcds)
+		return NULL;
+
+	for_each_child_of_node(lcds, child) {
+		if (!of_property_read_u32(child, "sprd,lcd-id", &val) &&
+		    val == id) {
+			of_node_put(lcds);
+			return child;
+		}
+	}
+	of_node_put(lcds);
+
+	return NULL;
+}
+
 static inline struct sprd_panel *to_sprd_panel(struct drm_panel *panel)
 {
 	return container_of(panel, struct sprd_panel, base);
@@ -86,9 +117,9 @@ static int sprd_panel_unprepare(struct drm_panel *p)
 		mdelay(5);
 	}
 
-	if (panel->info.avdd_gpio) {
+	if (panel->info.avdd_gpio && !panel->info.avdd_off_after_reset) {
 		gpiod_direction_output(panel->info.avdd_gpio, 0);
-		mdelay(5);
+		mdelay(panel->info.avdd_off_ms);
 	}
 
 	if (panel->info.reset_gpio) {
@@ -99,6 +130,11 @@ static int sprd_panel_unprepare(struct drm_panel *p)
 						timing[i].level);
 			mdelay(timing[i].delay);
 		}
+	}
+
+	if (panel->info.avdd_gpio && panel->info.avdd_off_after_reset) {
+		gpiod_direction_output(panel->info.avdd_gpio, 0);
+		mdelay(panel->info.avdd_off_ms);
 	}
 
 	regulator_disable(panel->supply);
@@ -120,7 +156,7 @@ static int sprd_panel_prepare(struct drm_panel *p)
 
 	if (panel->info.avdd_gpio) {
 		gpiod_direction_output(panel->info.avdd_gpio, 1);
-		mdelay(5);
+		mdelay(panel->info.avdd_on_ms);
 	}
 
 	if (panel->info.avee_gpio) {
@@ -397,6 +433,20 @@ static int sprd_panel_gpio_request(struct device *dev,
 	if (IS_ERR_OR_NULL(panel->info.avdd_gpio))
 		DRM_WARN("can't get panel avdd gpio: %ld\n",
 				 PTR_ERR(panel->info.avdd_gpio));
+
+	/*
+	 * Optional: avdd settle time after power on and after power off
+	 * (default 5 ms each), and dropping avdd only after the reset-off
+	 * sequence, for panels whose vendor sequence requires it.
+	 */
+	panel->info.avdd_on_ms = 5;
+	panel->info.avdd_off_ms = 5;
+	of_property_read_u32(dev->of_node, "sprd,avdd-on-delay-ms",
+			     &panel->info.avdd_on_ms);
+	of_property_read_u32(dev->of_node, "sprd,avdd-off-delay-ms",
+			     &panel->info.avdd_off_ms);
+	panel->info.avdd_off_after_reset =
+		of_property_read_bool(dev->of_node, "sprd,avdd-off-after-reset");
 
 	panel->info.avee_gpio = devm_gpiod_get_optional(dev,
 					"avee", GPIOD_ASIS);
@@ -798,7 +848,14 @@ int sprd_panel_parse_lcddtb(struct device_node *lcd_node,
 		return rc;
 	}
 
-	info->mode.vrefresh = drm_mode_vrefresh(&info->mode);
+	/*
+	 * Command mode panels run the DPI clock well above the frame rate;
+	 * sprd,refresh-rate gives the real rate to report.
+	 */
+	if (!of_property_read_u32(lcd_node, "sprd,refresh-rate", &val))
+		info->mode.vrefresh = val;
+	else
+		info->mode.vrefresh = drm_mode_vrefresh(&info->mode);
 	of_parse_buildin_modes(info, lcd_node);
 
 	return 0;
@@ -815,8 +872,23 @@ static int sprd_panel_parse_dt(struct device_node *np, struct sprd_panel *panel)
 	if (!rc)
 		lcd_name = str;
 
+	/*
+	 * Without lcd_name= or sprd,force-attached: the panel whose
+	 * sprd,lcd-id matches lcd_id=, else sprd,default-panel.
+	 */
+	lcd_node = NULL;
+	if (!lcd_name && lcd_id) {
+		lcd_node = sprd_panel_find_by_id(lcd_id);
+		if (lcd_node)
+			goto found;
+		DRM_WARN("no panel for lcd id 0x%x\n", lcd_id);
+	}
+	if (!lcd_name && !of_property_read_string(np, "sprd,default-panel", &str))
+		lcd_name = str;
+
 	sprintf(lcd_path, "/lcds/%s", lcd_name);
 	lcd_node = of_find_node_by_path(lcd_path);
+found:
 	if (!lcd_node) {
 		DRM_ERROR("%pOF: could not find %s node\n", np, lcd_name);
 		return -ENODEV;

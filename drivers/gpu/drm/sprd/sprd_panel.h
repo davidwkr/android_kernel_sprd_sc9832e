@@ -76,6 +76,10 @@ struct panel_info {
 	struct drm_display_mode *buildin_modes;
 	int num_buildin_modes;
 	struct gpio_desc *avdd_gpio;
+	/* avdd delays (ms) and power-off order, see sprd_panel_gpio_request() */
+	u32 avdd_on_ms;
+	u32 avdd_off_ms;
+	bool avdd_off_after_reset;
 	struct gpio_desc *avee_gpio;
 	struct gpio_desc *reset_gpio;
 	struct reset_sequence rst_on_seq;
