@@ -32,6 +32,7 @@ Base: 4.14.133 (UNISOC downstream). Each release applied as
 | 4.14.158 | conflict | drivers/hid/hid-core.c: 5 hunks skipped, vendor HID parser predates usage_size / hid_concatenate_usage_page infrastructure the fix builds on |
 | 4.14.159 | conflict | configfs.c (kept vendor slock init), f2fs/gc.c (stable change already in vendor), scripts/mod/modpost.c (vendor CFI pattern 6 kept, stable .L pattern added as pattern 7); 3 skipped |
 | 4.14.160 | clean | - |
+| 4.14.161 | clean | - |
 
 Builds: sprd_sharkle_defconfig Image + dtbs built OK at 4.14.147, at 4.14.150
 (merged with the watch_414 fragment) and at 4.14.151.
