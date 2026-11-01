@@ -199,13 +199,26 @@ static irqreturn_t smsg_irq_handler(int irq, void *private)
 	struct smsg *msg;
 	struct smsg_channel *ch = NULL;
 	uintptr_t rxpos;
-	u32 wr;
+	u32 wr, budget;
 	u8 ch_index;
 
 	if (ipc->rxirq_status(ipc->id))
 		ipc->rxirq_clear(ipc->id);
 
+	/*
+	 * The peer writes rxbuf_wrptr: a well-behaved peer never has more than
+	 * rxbuf_size messages pending, so never handle more than that in one
+	 * interrupt, whatever the pointers say.
+	 */
+	budget = ipc->rxbuf_size;
 	while (SIPC_READL(ipc->rxbuf_wrptr) != SIPC_READL(ipc->rxbuf_rdptr)) {
+		if (!budget--) {
+			pr_warn_ratelimited("smsg %d: more than %u messages pending, wrptr=%u rdptr=%u\n",
+					    ipc->dst, ipc->rxbuf_size,
+					    SIPC_READL(ipc->rxbuf_wrptr),
+					    SIPC_READL(ipc->rxbuf_rdptr));
+			break;
+		}
 		rxpos = (SIPC_READL(ipc->rxbuf_rdptr) & (ipc->rxbuf_size - 1)) *
 			sizeof(struct smsg) + ipc->rxbuf_addr;
 		msg = (struct smsg *)rxpos;
