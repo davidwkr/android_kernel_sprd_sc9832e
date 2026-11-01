@@ -61,6 +61,7 @@ Base: 4.14.133 (UNISOC downstream). Each release applied as
 | 4.14.187 | clean | - |
 | 4.14.188 | clean | - |
 | 4.14.189 | conflict | arch/arm64/kernel/vmlinux.lds.S: dropped .altinstr_replacement output section (stable moves replacements to .text subsections), vendor KEEP() on .altinstructions kept; xhci-plat.c: 1 hunk skipped (reverts the 4.14.186 hunk skipped earlier) |
+| 4.14.190 | clean | - |
 
 Builds: sprd_sharkle_defconfig Image + dtbs built OK at 4.14.147, at 4.14.150
 (merged with the watch_414 fragment) and at 4.14.151.
