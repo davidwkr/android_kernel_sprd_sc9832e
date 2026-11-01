@@ -22,16 +22,7 @@ Base: 4.14.133 (UNISOC downstream). Each release applied as
 | 4.14.148 | clean | - |
 | 4.14.149 | conflict | kernel/sched/core.c: stable early dest_cpu applied in the !SPRD_CORE_CTL branch, vendor core_ctl branch unchanged; 0 skipped |
 | 4.14.150 | clean | - |
+| 4.14.151 | conflict | arm64 SSBS/Spectre-v4 backport: hwcap.h, cpuinfo.c, sysreg.h, ISAR0 ftr table and docs take stable (context-only conflicts); cpufeature.c kpti_install_ng_mappings takes the new cpu_enable signature and keeps vendor __nocfi; process.c keeps sprd_update_cpu_usage() after ssbs_thread_switch() |
 
-## Stopped at 4.14.151
-
-4.14.151 is a large arm64 backport (SSBS/Spectre-v4 rework, cpufeature.c and
-cpu_errata.c rewrite, sysreg.h/hwcap/ptrace/proc.S/head.S changes, ~107 files).
-It conflicts in arch/arm64 cpufeature.c (kpti_install_ng_mappings with the
-vendor __nocfi, unmap_kernel_at_el0), sysreg.h, hwcap.h, cpuinfo.c and
-process.c (vendor sprd_update_cpu_usage), plus cpu_errata.c. This is arch/arm64
-core code; not resolved here, needs a deliberate decision (the vendor tree
-already carries partial Android/ARM backports in these files).
-
-Builds: sprd_sharkle_defconfig Image + dtbs built OK at 4.14.147 (no failures).
-Not rebuilt at 4.14.150.
+Builds: sprd_sharkle_defconfig Image + dtbs built OK at 4.14.147, at 4.14.150
+(merged with the watch_414 fragment) and at 4.14.151.
