@@ -787,6 +787,22 @@
 	status = "disabled";
 };
 
+/*
+ * GSP binds through the DRM component master; with the DPU disabled it would
+ * probe without gsp_core_init() and fault at suspend. Off with the display.
+ */
+&gsp {
+	status = "disabled";
+};
+
+&gsp_core0 {
+	status = "disabled";
+};
+
+&iommu_gsp {
+	status = "disabled";
+};
+
 &iommu_dispc {
 	status = "disabled";
 };
