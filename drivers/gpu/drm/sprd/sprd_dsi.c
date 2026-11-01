@@ -188,8 +188,13 @@ static void sprd_dsi_encoder_mode_set(struct drm_encoder *encoder,
 				 struct drm_display_mode *adj_mode)
 {
 	struct sprd_dsi *dsi = encoder_to_dsi(encoder);
+	struct sprd_dpu *dpu = crtc_to_dpu(encoder->crtc);
 
 	DRM_INFO("%s() set mode: %s\n", __func__, dsi->mode->name);
+
+	/* let the DPU follow the DSI pixel format for its DPI bus width */
+	if (dpu)
+		dpu->ctx.dsi_format = dsi->ctx.format;
 }
 
 static int sprd_dsi_encoder_atomic_check(struct drm_encoder *encoder,

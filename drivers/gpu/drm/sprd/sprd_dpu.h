@@ -170,6 +170,8 @@ struct dpu_context {
 	u32 corner_size;
 	int irq;
 	u8 if_type;
+	/* enum mipi_dsi_pixel_format of the DSI slave, 0 (RGB888) if unset */
+	u32 dsi_format;
 	u8 id;
 	bool is_inited;
 	bool is_stopped;

@@ -15,6 +15,7 @@
 #include <linux/of_address.h>
 #include <linux/wait.h>
 #include <linux/workqueue.h>
+#include <drm/drm_mipi_dsi.h>
 #include "sprd_dpu.h"
 #include "sprd_corner.h"
 
@@ -818,6 +819,16 @@ static void dpu_flip(struct dpu_context *ctx,
 				DISPC_INT_MMU_INV_WR_MASK;
 }
 
+/* DPI bus width field (dpi_ctrl bits 7:6): 0 16 bit, 1 18 bit, 2 24 bit */
+static u32 dpu_dpi_bus_width(struct dpu_context *ctx)
+{
+	/* packed rgb666 is what the DSI host codes as 18 bit, see fmt_to_coding() */
+	if (ctx->dsi_format == MIPI_DSI_FMT_RGB666_PACKED)
+		return BIT(6);
+
+	return BIT(7);
+}
+
 static void dpu_dpi_init(struct dpu_context *ctx)
 {
 	struct dpu_reg *reg = (struct dpu_reg *)ctx->base;
@@ -833,8 +844,9 @@ static void dpu_dpi_init(struct dpu_context *ctx)
 		/* select te from external pad */
 		reg->dpi_ctrl |= BIT(10);
 
-		/* dpu pixel data width is 24 bit*/
-		reg->dpi_ctrl |= BIT(7);
+		/* dpu pixel data width follows the DSI format */
+		reg->dpi_ctrl &= ~(BIT(6) | BIT(7));
+		reg->dpi_ctrl |= dpu_dpi_bus_width(ctx);
 
 		/* set dpi timing */
 		reg->dpi_h_timing = (ctx->vm.hsync_len << 0) |
@@ -872,8 +884,9 @@ static void dpu_dpi_init(struct dpu_context *ctx)
 		/* enable te */
 		reg->dpi_ctrl |= BIT(8);
 
-		/* dpu pixel data width is 24 bit*/
-		reg->dpi_ctrl |= BIT(7);
+		/* dpu pixel data width follows the DSI format */
+		reg->dpi_ctrl &= ~(BIT(6) | BIT(7));
+		reg->dpi_ctrl |= dpu_dpi_bus_width(ctx);
 
 		/* enable stop DONE INT */
 		int_mask |= DISPC_INT_DONE_MASK;
