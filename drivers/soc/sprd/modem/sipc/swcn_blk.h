@@ -130,6 +130,13 @@ struct swcnblk_mgr {
 	u32		rxblksz;
 	u32		txblknum;
 	u32		rxblknum;
+	/*
+	 * AP-side copies of the block pool bases (peer view, i.e. mapped
+	 * smem addresses) taken at creation; peer-written block addresses
+	 * are validated against these, never against the shared header.
+	 */
+	u32		txblk_base;
+	u32		rxblk_base;
 
 	struct swcnblk_ring	*ring;
 	struct task_struct	*thread;
