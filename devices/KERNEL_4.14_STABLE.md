@@ -48,6 +48,7 @@ Base: 4.14.133 (UNISOC downstream). Each release applied as
 | 4.14.174 | clean | - |
 | 4.14.175 | clean | net/xfrm/xfrm_device.c: vendor's no-op xfrm_dev_unregister() stub and its NETDEV_UNREGISTER case dropped in favour of stable's UNREGISTER -> xfrm_dev_down (fixes duplicate case value; 4.14.140 skip left the stub); 0 skipped |
 | 4.14.176 | clean | - |
+| 4.14.177 | conflict | arch/arm64/kernel/traps.c: took stable revert of exception-stack dump, kept vendor frame_fp_saved loop guard; mm/slub.c: swab() applied around vendor kasan_reset_tag(); 0 skipped |
 
 Builds: sprd_sharkle_defconfig Image + dtbs built OK at 4.14.147, at 4.14.150
 (merged with the watch_414 fragment) and at 4.14.151.
