@@ -101,7 +101,7 @@ retry1:
 			usleep_range(8000, 10000);
 			goto retry1;
 		} else {
-			WCN_ERR("malloc err\n");
+			WCN_ERR_RATELIMITED("malloc err\n");
 			return NULL;
 		}
 	}
@@ -117,7 +117,7 @@ retry2:
 			usleep_range(8000, 10000);
 			goto retry2;
 		} else {
-			WCN_ERR("vmap err\n");
+			WCN_ERR_RATELIMITED("vmap err\n");
 			goto out;
 		}
 	} else {

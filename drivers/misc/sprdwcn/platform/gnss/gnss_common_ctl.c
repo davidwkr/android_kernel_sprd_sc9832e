@@ -600,7 +600,10 @@ static DEVICE_ATTR_RO(gnss_status);
  * gnss_engine_state: read-only, diagnostic only. Takes no locks and does
  * not access the GNSS core: it reads the driver state and one status word
  * from the AP-side DDR carve-out (mapped per read, may sleep).
- *   off         driver state POWEROFF: core powered down (or never started)
+ *   off         software control state POWEROFF (never started or stopped via
+ *               gnss_power_enable). Not proof the core is unpowered: the first
+ *               Wi-Fi/BT start runs a GNSS calibration on its own
+ *               (start_integrate_wcn()), and a failed one leaves it powered
  *   transition  start or stop in progress (POWERON_GOING/POWEROFF_GOING)
  *               (shown as error if the boot status is ERR_BOOT)
  *   assert      the core asserted and a memory dump was taken
