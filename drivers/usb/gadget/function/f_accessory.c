@@ -27,6 +27,7 @@
 #include <linux/interrupt.h>
 #include <linux/kthread.h>
 #include <linux/freezer.h>
+#include <linux/kref.h>
 
 #include <linux/types.h>
 #include <linux/file.h>
@@ -73,6 +74,7 @@ struct acc_dev {
 	struct usb_function function;
 	struct usb_composite_dev *cdev;
 	spinlock_t lock;
+	struct acc_dev_ref *ref;
 
 	struct usb_ep *ep_in;
 	struct usb_ep *ep_out;
@@ -199,8 +201,14 @@ static struct usb_gadget_strings *acc_strings[] = {
 	NULL,
 };
 
-/* temporary variable used between acc_open() and acc_gadget_bind() */
-static struct acc_dev *_acc_dev;
+struct acc_dev_ref {
+	struct kref	kref;
+	struct acc_dev	*acc_dev;
+};
+
+static struct acc_dev_ref _acc_dev_ref = {
+	.kref = KREF_INIT(0),
+};
 
 struct acc_instance {
 	struct usb_function_instance func_inst;
@@ -209,11 +217,30 @@ struct acc_instance {
 
 static struct acc_dev *get_acc_dev(void)
 {
-	return _acc_dev;
+	struct acc_dev_ref *ref = &_acc_dev_ref;
+
+	return kref_get_unless_zero(&ref->kref) ? ref->acc_dev : NULL;
+}
+
+static void __put_acc_dev(struct kref *kref)
+{
+	struct acc_dev_ref *ref = container_of(kref, struct acc_dev_ref, kref);
+	struct acc_dev *dev = ref->acc_dev;
+
+	/* Cancel any async work */
+	cancel_delayed_work_sync(&dev->start_work);
+	cancel_work_sync(&dev->hid_work);
+
+	ref->acc_dev = NULL;
+	kfree(dev);
 }
 
 static void put_acc_dev(struct acc_dev *dev)
 {
+	struct acc_dev_ref *ref = dev->ref;
+
+	WARN_ON(ref->acc_dev != dev);
+	kref_put(&ref->kref, __put_acc_dev);
 }
 
 static inline struct acc_dev *func_to_dev(struct usb_function *f)
@@ -1226,6 +1253,7 @@ static void acc_function_disable(struct usb_function *f)
 
 static int acc_setup(void)
 {
+	struct acc_dev_ref *ref = &_acc_dev_ref;
 	struct acc_dev *dev;
 	int ret;
 
@@ -1244,8 +1272,9 @@ static int acc_setup(void)
 	INIT_DELAYED_WORK(&dev->start_work, acc_start_work);
 	INIT_WORK(&dev->hid_work, acc_hid_work);
 
-	/* _acc_dev must be set before calling usb_gadget_register_driver */
-	_acc_dev = dev;
+	dev->ref = ref;
+	kref_init(&ref->kref);
+	ref->acc_dev = dev;
 
 	ret = misc_register(&acc_device);
 	if (ret)
@@ -1274,16 +1303,11 @@ EXPORT_SYMBOL_GPL(acc_disconnect);
 
 static void acc_cleanup(void)
 {
-	struct acc_dev *dev = _acc_dev;
+	struct acc_dev *dev = get_acc_dev();
 
 	misc_deregister(&acc_device);
-	/* Cancel any async work */
-	cancel_delayed_work_sync(&dev->start_work);
-	cancel_work_sync(&dev->hid_work);
-
 	put_acc_dev(dev);
-	kfree(dev);
-	_acc_dev = NULL;
+	put_acc_dev(dev); /* Pairs with kref_init() in acc_setup() */
 }
 static struct acc_instance *to_acc_instance(struct config_item *item)
 {
@@ -1343,7 +1367,6 @@ static void acc_free_inst(struct usb_function_instance *fi)
 static struct usb_function_instance *acc_alloc_inst(void)
 {
 	struct acc_instance *fi_acc;
-	struct acc_dev *dev;
 	int err;
 
 	fi_acc = kzalloc(sizeof(*fi_acc), GFP_KERNEL);
@@ -1361,7 +1384,6 @@ static struct usb_function_instance *acc_alloc_inst(void)
 
 	config_group_init_type_name(&fi_acc->func_inst.group,
 					"", &acc_func_type);
-	dev = _acc_dev;
 	return  &fi_acc->func_inst;
 }
 
