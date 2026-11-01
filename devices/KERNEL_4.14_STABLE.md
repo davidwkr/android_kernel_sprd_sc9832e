@@ -114,6 +114,7 @@ Base: 4.14.133 (UNISOC downstream). Each release applied as
 | 4.14.240 | conflict | fs/fs-writeback.c: took stable removal of block_dump___mark_inode_dirty() (vendor 'block_dump > 1' caller dropped; Android merge did the same) (JUDGEMENT); security/selinux/avc.c: took stable GFP_NOWAIT|__GFP_NOWARN over vendor GFP_ATOMIC|__GFP_NOMEMALLOC at all 6 sites, matching Android's 4.14.240 merge (JUDGEMENT); 0 skipped |
 | 4.14.241 | clean | - |
 | 4.14.242 | clean | - |
+| 4.14.243 | clean | - |
 
 Builds: sprd_sharkle_defconfig Image + dtbs built OK at 4.14.147, at 4.14.150
 (merged with the watch_414 fragment) and at 4.14.151. Checked with
