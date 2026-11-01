@@ -164,3 +164,4 @@ interface (mmc_access_rpmb), because the Android 8.1 vendor userspace uses
 | 4.14.280 | clean | - |
 | 4.14.281 | clean | - |
 | 4.14.282 | conflict | drivers/md/dm-verity-target.c: verity_target: added stable .features = DM_TARGET_IMMUTABLE, kept vendor version {1, 4, 0}; matches Google's 4.14.282 merge; 0 skipped |
+| 4.14.283 | conflict | drivers/nfc/st21nfca/se.c: kept vendor params_len read + combined PARAMETERS tag/skb->len check (already has devm_kfree); took stable devm_kfree on the aid_len/params_len -EINVAL paths and the '||' skb->len fix; 0 skipped. Not Android-specific (Android merge not compared) |
