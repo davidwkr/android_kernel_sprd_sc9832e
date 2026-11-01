@@ -28,12 +28,14 @@
 #include <linux/mfd/sprd/pmic_glb_reg.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
+#include <linux/spinlock.h>
 #include <linux/sysfs.h>
 #include <soc/sprd/wcn_bus.h>
 
@@ -306,14 +308,54 @@ static unsigned long gnss_retry_delay_s(void)
 	return min_t(unsigned long, delay, GNSS_RETRY_CAP_S);
 }
 
-static void gnss_power_on(bool enable)
+/*
+ * Locking. gnss_ctl_lock (mutex) serializes a whole control transaction in
+ * gnss_power_on(): state check, retry bookkeeping, start/stop and the final
+ * state. It is held across start_marlin()/stop_marlin(), which sleep, so it
+ * must never be taken from the dump callback (a start or stop can trigger the
+ * dump from inside start_marlin()/stop_marlin()).
+ * gnss_status_lock (irqsave spinlock) only makes the gnss_status transitions
+ * atomic: the dump callback sets ASSERT without gnss_ctl_lock, and ASSERT
+ * must not be overwritten by the failure/stop completion.
+ */
+static DEFINE_MUTEX(gnss_ctl_lock);
+static DEFINE_SPINLOCK(gnss_status_lock);
+
+/* unconditional transition (ASSERT from the dump path) */
+static void gnss_status_set(unsigned int to)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&gnss_status_lock, flags);
+	gnss_common_ctl_dev.gnss_status = to;
+	spin_unlock_irqrestore(&gnss_status_lock, flags);
+}
+
+/* move from -> to only if the state is still from; false if it changed */
+static bool gnss_status_move(unsigned int from, unsigned int to)
+{
+	unsigned long flags;
+	bool moved = false;
+
+	spin_lock_irqsave(&gnss_status_lock, flags);
+	if (gnss_common_ctl_dev.gnss_status == from) {
+		gnss_common_ctl_dev.gnss_status = to;
+		moved = true;
+	}
+	spin_unlock_irqrestore(&gnss_status_lock, flags);
+
+	return moved;
+}
+
+static void gnss_power_on_locked(bool enable)
 {
 	int ret;
 	unsigned int new_status;
 
 	GNSSCOMM_INFO("%s:enable=%d,current gnss_status=%d\n", __func__,
 			enable, gnss_common_ctl_dev.gnss_status);
-	if (enable && gnss_common_ctl_dev.gnss_status == GNSS_STATUS_POWEROFF) {
+	if (enable && READ_ONCE(gnss_common_ctl_dev.gnss_status) ==
+	    GNSS_STATUS_POWEROFF) {
 		s64 left_ns = gnss_retry_after_ns -
 			(s64)ktime_get_boot_ns();
 
@@ -324,7 +366,11 @@ static void gnss_power_on(bool enable)
 							    NSEC_PER_SEC) + 1);
 			return;
 		}
-		gnss_common_ctl_dev.gnss_status = GNSS_STATUS_POWERON_GOING;
+		if (!gnss_status_move(GNSS_STATUS_POWEROFF,
+				      GNSS_STATUS_POWERON_GOING)) {
+			GNSSCOMM_INFO("%s: status is not match\n", __func__);
+			return;
+		}
 
 #ifdef CONFIG_SC2342_INTEG
 		/*
@@ -348,18 +394,17 @@ static void gnss_power_on(bool enable)
 			 * a retry without a reboot, but do not overwrite an
 			 * ASSERT set by the dump path meanwhile
 			 */
-			if (gnss_common_ctl_dev.gnss_status ==
-			    GNSS_STATUS_POWERON_GOING)
-				gnss_common_ctl_dev.gnss_status =
-					GNSS_STATUS_POWEROFF;
+			gnss_status_move(GNSS_STATUS_POWERON_GOING,
+					 GNSS_STATUS_POWEROFF);
 		} else {
 			gnss_fail_count = 0;
 			gnss_last_start_failed = false;
-			gnss_common_ctl_dev.gnss_status = GNSS_STATUS_POWERON;
+			/* an ASSERT set meanwhile is kept */
+			gnss_status_move(GNSS_STATUS_POWERON_GOING,
+					 GNSS_STATUS_POWERON);
 		}
-	} else if (!enable && gnss_common_ctl_dev.gnss_status
-			== GNSS_STATUS_POWERON) {
-		gnss_common_ctl_dev.gnss_status = GNSS_STATUS_POWEROFF_GOING;
+	} else if (!enable && gnss_status_move(GNSS_STATUS_POWERON,
+					       GNSS_STATUS_POWEROFF_GOING)) {
 #ifdef CONFIG_SC2342_INTEG
 		if (gnss_get_boot_status() == WCN_BOOT_CP2_ERR_BOOT)
 			gnss_set_boot_status(WCN_BOOT_CP2_OK); /* init val */
@@ -375,9 +420,7 @@ static void gnss_power_on(bool enable)
 		new_status = (ret == 0 || ret == -EINVAL) ?
 			GNSS_STATUS_POWEROFF : GNSS_STATUS_POWERON;
 		/* keep an ASSERT set by the dump path meanwhile */
-		if (gnss_common_ctl_dev.gnss_status ==
-		    GNSS_STATUS_POWEROFF_GOING)
-			gnss_common_ctl_dev.gnss_status = new_status;
+		gnss_status_move(GNSS_STATUS_POWEROFF_GOING, new_status);
 		if (new_status == GNSS_STATUS_POWEROFF) {
 			gnss_fail_count = 0;
 			gnss_last_start_failed = false;
@@ -385,6 +428,13 @@ static void gnss_power_on(bool enable)
 	} else {
 		GNSSCOMM_INFO("%s: status is not match\n", __func__);
 	}
+}
+
+static void gnss_power_on(bool enable)
+{
+	mutex_lock(&gnss_ctl_lock);
+	gnss_power_on_locked(enable);
+	mutex_unlock(&gnss_ctl_lock);
 }
 
 static ssize_t gnss_power_enable_store(struct device *dev,
@@ -500,17 +550,22 @@ void gnss_dump_mem_ctrl_co(void)
 		return;
 	dump_flag = 1;
 
-	if (gnss_get_boot_status() == WCN_BOOT_CP2_ERR_BOOT &&
-	    gnss_common_ctl_dev.gnss_status != GNSS_STATUS_POWEROFF)
-		gnss_common_ctl_dev.gnss_status = GNSS_STATUS_POWERON;
+	if (gnss_get_boot_status() == WCN_BOOT_CP2_ERR_BOOT) {
+		unsigned long flags;
 
-	temp_status = gnss_common_ctl_dev.gnss_status;
+		spin_lock_irqsave(&gnss_status_lock, flags);
+		if (gnss_common_ctl_dev.gnss_status != GNSS_STATUS_POWEROFF)
+			gnss_common_ctl_dev.gnss_status = GNSS_STATUS_POWERON;
+		spin_unlock_irqrestore(&gnss_status_lock, flags);
+	}
+
+	temp_status = READ_ONCE(gnss_common_ctl_dev.gnss_status);
 	if ((temp_status == GNSS_STATUS_POWERON_GOING) ||
 		((temp_status == GNSS_STATUS_POWERON) &&
 		(gnss_status_get() != GNSS_CP_STATUS_SLEEP))) {
 		flag = (temp_status == GNSS_STATUS_POWERON) ? 0 : 1;
 		gnss_dump_mem(flag);
-		gnss_common_ctl_dev.gnss_status = GNSS_STATUS_ASSERT;
+		gnss_status_set(GNSS_STATUS_ASSERT);
 	}
 	complete(&gnss_dump_complete);
 }
@@ -526,7 +581,7 @@ int gnss_dump_mem_ctrl(void)
 	dump_flag = 1;
 	if (gnss_common_ctl_dev.gnss_status == GNSS_STATUS_POWERON) {
 		ret = gnss_dump_mem(0);
-		gnss_common_ctl_dev.gnss_status = GNSS_STATUS_ASSERT;
+		gnss_status_set(GNSS_STATUS_ASSERT);
 	}
 
 	return ret;
@@ -784,7 +839,7 @@ static int gnss_common_ctl_probe(struct platform_device *pdev)
 	GNSSCOMM_INFO("%s enter", __func__);
 	gnss_common_ctl_dev.dev = &pdev->dev;
 
-	gnss_common_ctl_dev.gnss_status = GNSS_STATUS_POWEROFF;
+	gnss_status_set(GNSS_STATUS_POWEROFF);
 #ifndef CONFIG_SC2342_INTEG
 	gnss_common_ctl_dev.gnss_subsys = MARLIN_GNSS;
 	gnss_cali_init();
