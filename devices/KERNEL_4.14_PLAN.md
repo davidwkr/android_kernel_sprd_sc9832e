@@ -147,8 +147,11 @@ ported/re-implemented, MISSING = in neither tree or needs new work.
 ## 6. Recommended next step
 
 Done (compile only, nothing booted): 4.14.y stable to 4.14.336, the top `android-4.14-stable` fixes, input
-drivers, SC2721 charger and gauge, the DM63 board DTS (`sp9832e-1h10-dm63.dts`, `dm63/DTS_414.md`) and the
-CO5300 panels on DRM.
+drivers, SC2721 charger and gauge, board DTS for all six watches (DM63, DW100U silver and V13M, MT107, MT108,
+DM82; notes in `devices/<watch>/DTS_414.md`), the CO5300 panels on DRM with `lcd_id=` selection, the ST77916
+panels and the DPU 18-bit DPI bus (MT108 display chain still disabled until a first boot shows the fitted
+panel). Charger safety on all boards: CV capped to the battery maximum, every current capped to the adapter
+current, input OVP, CV floor fallback for high efuse calibrations.
 
 Next:
 1. First boot of the DM63 on 4.14 (needs the user's OK to flash): console, USB, eMMC, then display. The first
@@ -156,7 +159,8 @@ Next:
 2. Userspace: the Android 8.1 vendor hwcomposer/gralloc use ADF; on 4.14 DRM a DRM-capable composer is needed,
    which ties a 4.14 kernel to a newer Android build (GSI with a DRM HWC) rather than the stock vendor image.
 3. Mali kbase port (needs the kbase source tarballs).
-4. Board DTS for the other watches (DW100U next), AOD on DRM, WCN/GNSS tweaks, SIPC hardening.
+4. AOD on DRM, WCN/GNSS tweaks, SIPC hardening, the remaining stock panels, ports for the parts without a
+   4.14 driver (BetterLife touch, bd1xxx heart rate, msp891, af6837).
 
 ## 7. Driver port status (branch `kernel-4.14-ports`)
 
