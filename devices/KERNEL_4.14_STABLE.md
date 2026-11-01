@@ -110,6 +110,7 @@ Base: 4.14.133 (UNISOC downstream). Each release applied as
 | 4.14.236 | conflict | kernel/sched/fair.c: 3-way merge conflicted over the whole file (vendor fair.c is heavily diverged); kept vendor file and hand-applied the select_idle_cpu() cpumask_and(select_idle_mask) change, retaining vendor SPRD_CORE_CTL cpu_isolated() check in the loop (JUDGEMENT); 0 skipped |
 | 4.14.237 | clean | - |
 | 4.14.238 | clean | - |
+| 4.14.239 | conflict | mm/huge_memory.c: unmap_page(): kept vendor 3-arg try_to_unmap(page, flags, NULL), took stable VM_WARN_ON_ONCE_PAGE(page_mapped()) in place of unmap_success BUG (JUDGEMENT, core mm; TTU_SYNC/page_vma_mapped/rmap hunks applied cleanly); 0 skipped |
 
 Builds: sprd_sharkle_defconfig Image + dtbs built OK at 4.14.147, at 4.14.150
 (merged with the watch_414 fragment) and at 4.14.151. Checked with
