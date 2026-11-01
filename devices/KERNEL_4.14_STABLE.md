@@ -132,3 +132,4 @@ Follow-up: the 4.14.164 mmc RPMB character-device conversion (and the 4.14.183
 chardev release-order fix) is reverted to the vendor block-device RPMB
 interface (mmc_access_rpmb), because the Android 8.1 vendor userspace uses
 /dev/block/mmcblk0rpmb. No other mmc fix depends on it.
+| 4.14.251 | clean | - |
