@@ -163,4 +163,4 @@ Applied from `aosp/android-4.14-stable`, one commit each (subject kept, `(cherry
 | 14 | `24ae15a0f6da` | skipped: already present (`compute_write_bytes()` exists in `uid_sys_stats.c`) |
 | 15 | `7b860d58c10c` | applied clean |
 
-Not taken from the f_accessory ACK end state: `338cdd129815` (bitfields), `c0a1a632dca5`, `2021317cc8a9` (acc_read length/NULL request, composite ctrl buffer size), `74ee3eed8bcf`, `407e85baca42`, `4b8d9e341fb4` (cleanups). Build: `sprd_sharkle_defconfig` + `watch_414.fragment`, `Image dtbs` OK after picks 5, 11 and at the end; every touched `.c` object is built in that config.
+f_accessory end state: `a5f7ea4426e7` syncs `f_accessory.c` with the final ACK file, adding `338cdd129815` (bitfields), `c0a1a632dca5` (freed rx request, read length), `2021317cc8a9` (composite ctrl buffer size; `android_setup()` now calls `acc_ctrlrequest_composite()`) and the cleanups `74ee3eed8bcf`, `407e85baca42`, `4b8d9e341fb4`. Build: `sprd_sharkle_defconfig` + `watch_414.fragment`, `Image dtbs` OK after picks 5, 11 and at the end; every touched `.c` object is built in that config.
