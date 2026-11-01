@@ -870,4 +870,65 @@ config INPUT_SC27XX_VIBRA
 	  To compile this driver as a module, choose M here. The module will
 	  be called sc27xx_vibra.
 
+config INPUT_QMA6981_I2C
+	tristate "QMA6981 accelerometer sensor device with I2C bus"
+	depends on I2C
+	default n
+	help
+	  Say Y here if you have a QMA6981 device on the board and use I2C
+	  communication, else say N.
+
+	  To compile this driver as a module, choose M here.
+config SENSORS_SC7A22
+	tristate "SC7A22 accelerometer sensor device with I2C bus"
+	depends on I2C
+	default n
+	help
+	  Say Y here if you have an SC7A22 or SC7A20 accelerometer on an
+	  I2C bus. The driver exposes the legacy qmax981 userspace ABI used
+	  by the Spreadtrum sensor HAL.
+
+	  To compile this driver as a module, choose M here.
+
+config SENSORS_OCH1970
+	tristate "Orient-Chip OCH1970 3-axis Hall magnetic sensor with I2C bus"
+	depends on I2C
+	default n
+	help
+	  Say Y here if you have an OCH1970 magnetic sensor on an I2C bus.
+	  The driver reports X/Y/Z as an input device and is controlled
+	  through the "enable" and "delay" sysfs attributes of the I2C
+	  device. The sensor stays in power-down mode unless enabled.
+
+	  To compile this driver as a module, choose M here.
+
+config INPUT_SENSORS_HRS3XXX
+	tristate "TYHX HRS3xxx heart-rate sensor"
+	depends on I2C
+	help
+	  Say Y here to support the TYHX HRS3xxx family heart-rate sensor
+	  (DT compatible "tyhx,hrs3xxx") found on some UNISOC smartwatches.
+	  The driver registers an input device named "heartrate" and the
+	  "enable" and "chipinfo" attributes used by the vendor Android
+	  sensors HAL.  The vendor heart-rate algorithms are not included.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called hrs3xxx.
+
+config HEARTRATE_HRS3918
+	bool "HRS3918 (HX3918) chip support"
+	depends on INPUT_SENSORS_HRS3XXX
+	default y
+	help
+	  Accept the HRS3918 (chip ID 0x27) as a supported device.
+
+config HEARTRATE_HRS3300
+	bool "HRS3300 chip support"
+	depends on INPUT_SENSORS_HRS3XXX
+	default y
+	help
+	  Accept the HRS3300 (chip ID 0x21) as a supported device. Only
+	  probing, power and the sysfs/input interface are provided; no
+	  measurement is implemented for this chip.
+
 endif

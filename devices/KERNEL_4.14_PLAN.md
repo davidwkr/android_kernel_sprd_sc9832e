@@ -153,3 +153,80 @@ ported/re-implemented, MISSING = in neither tree or needs new work.
    measure the conflict count with the vendor BSP.
 3. Then port, in order: display DT conversion for one OLED panel (CO5300), the sc2721 charger/FGU,
    Mali kbase, touch and sensors.
+
+## 7. Driver port status (branch `kernel-4.14-ports`)
+
+Source: the 4.4 product tree, branch `security-backports`. All builds below are compile and link only;
+nothing has run on a watch.
+
+### 7.1 Input drivers (ported, builds, untested)
+
+| Driver | Files | Kconfig | Status |
+|---|---|---|---|
+| CST0xx (DM63) | `touchscreen/cst0xx_ts.c` | `TOUCHSCREEN_CST0XX` | ported, builds |
+| Hynitron `hyn_ts` / CST9217 (DW100U) | `touchscreen/hynitron_cst9217.c` | `TOUCHSCREEN_CST9217` | ported, builds |
+| SC7A22 accelerometer | `misc/sc7a22.c` | `SENSORS_SC7A22` | ported, builds |
+| QMA6981 accelerometer | `misc/qma6981.c/.h` | `INPUT_QMA6981_I2C` | ported, builds |
+| OCH1970 magnetometer | `misc/och1970.c` | `SENSORS_OCH1970` | ported, builds |
+| HRS3xxx heart rate | `misc/hrs3xxx.c` | `INPUT_SENSORS_HRS3XXX` (+ `HEARTRATE_HRS3918/3300`) | ported, builds |
+
+Notes:
+- `hyn_ts` (the rewritten driver) and CST9217 are the same source file in 4.4 (`hynitron_cst9217.c`,
+  input name `hyn_ts`, compatible `hynitron,hyn_ts`). The old vendor directory
+  `touchscreen/hynitron_ts/` is not built in 4.4, relies on a prebuilt gesture library and was not
+  ported.
+- API changes needed: none. 4.14.133 still provides everything these files use: `devm_gpiod_get_index`,
+  `of_get_named_gpio` + `devm_gpio_request_one`, `input_mt_*`, delayed work/hrtimer, regulator consumer
+  API. They use no `setup_timer`, `struct timeval` or `do_gettimeofday`, so no `timer_setup`/`from_timer`
+  conversion was required. The 4.4 robustness fixes (probe hardening, devm, late suspend/early resume,
+  ack of failed reads, clamping) came over unchanged because the files were copied verbatim.
+- Warnings: the default build is clean for all six files. `W=1` still reports `qma6981.c` unused
+  `rc`, an always-true `position >= 0` on an unsigned value and unused `qmax981_cvt`; kept to stay
+  identical to 4.4.
+- Untested: probe on real hardware, DT bindings against the 4.14 DTS (no watch DTS exists yet),
+  interrupt trigger behaviour, suspend/resume with the 4.14 PM core, the sensor HAL ABI.
+
+### 7.2 SC2721 charger: not ported, 4.14-native approach
+
+Why a straight port is not possible: `sprd_2721_charge.c` is only a backend of the legacy Spreadtrum
+battery framework. It registers through `sprdbat_register_ext_ops()` and uses `struct
+sprdbat_drivier_data` from `sprd_battery.h`, `sprd_charge_helper.h`, the chg-timer/fchg/helper files, and
+the fuel gauge calls `sprdfgu_read_soc`, `sprdfgu_read_vbat_ocv`, `sprdfgu_read_batcurrent`,
+`sprdfgu_ocv_to_capacity`, `sprdfgu_force_set_soc` from `sprd_27xx_fgu.c`. 4.14 has none of that: its
+model is `charger-manager` (already in the `sl8541e-1h10.dts` charger-manager node) plus power_supply
+drivers, with `sc27xx_fuel_gauge.c` as the gauge (DT fallback `sprd,sc2720-fgu`). Porting the charger
+would mean porting `sprd_battery.c` and `sprd_27xx_fgu.c` and dropping the 4.14 gauge, which is a
+rewrite of the fuel gauge path and was out of scope.
+
+4.14-native approach:
+1. Charger: extend `drivers/power/supply/sc2720_charger.c` (compatible `sprd,sc2720-charger`; it is the
+   closest in-tree driver, with the same CCCV code scheme: `CHG_CV_V` field, efuse `cccv_calib` cell, 75 step
+   constants) and add a `sprd,sc2721-charger` compatible with its own match data. Every register
+   address, field mask, step size and calibration offset for the SC2721 must be taken from our 4.4
+   `sprd_2721_charge.c`/`sprd_2721_charge.h` and `sc2721_glb.h`; do not reuse the sc2720 values unchecked.
+   Charge timers/watchdog/fast charge (`sprd2721_chg_timer.c`, `sprd_2721_fchg.c`) map to charger-manager
+   feeding plus a small power_supply property set, or a separate `sc2721_fast_charger` modelled on
+   `sc2730_fast_charger.c`.
+2. CV override: implement inside the charger driver's `POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE_MAX`
+   set path (the point where the CCCV code is programmed). Keep the 4.4 module parameter
+   `cv_override_mv` (range 4000 to 4400, 0 = off), the lock around the END_V and CV_V writes, the
+   exact representable-CV model (highest CV not above the target; if unreachable program the lowest
+   CV, END_V written first) and the "write CV code to 0 first" monotone step.
+3. Gauge resync: do it in `sc27xx_fuel_gauge.c`, not in the charger. The charger exposes
+   "override active" and "CV reached" through power_supply properties (or a notifier); the gauge
+   driver reads OCV (`sc27xx_fgu_get_vbat_ocv`), current, and after the 4.4 rest/threshold conditions
+   calls the existing `sc27xx_fgu_adjust_cap()` (which rewrites the coulomb counter through
+   `sc27xx_fgu_set_clbcnt`) with the capacity from its own OCV table. This replaces
+   `sprdfgu_force_set_soc` and keeps 4.14 gauge ownership of the counter.
+4. Check first: the sc2720 gauge data (`sc2720_info`) against the SC2721 gauge registers and OCV tables
+   in the 4.4 `sprd_27xx_fgu.c`; the DTS currently claims `sprd,sc2720-fgu` as a compatible only.
+5. Needs hardware validation (CV, timers, thermal, watchdog) before any real battery use.
+
+## 8. Config fragment and build
+
+- `arch/arm64/configs/watch_414.fragment` enables all ported drivers as `=y`.
+- `devices/merge_watch_414.sh <build-dir>` runs `sprd_sharkle_defconfig`, merges the fragment with
+  `scripts/kconfig/merge_config.sh` and runs `olddefconfig`. Then build with
+  `make O=<build-dir> ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- Image dtbs`.
+- Result: `Image` and all `sprd/*.dtb` build with the fragment (GCC 16); the six ported objects are
+  linked in and no build warning mentions them. The build directory was deleted afterwards.

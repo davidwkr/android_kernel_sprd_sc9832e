@@ -1248,4 +1248,33 @@ config TOUCHSCREEN_ROHM_BU21023
 	  To compile this driver as a module, choose M here: the
 	  module will be called bu21023_ts.
 
+config TOUCHSCREEN_CST9217
+	tristate "CST9217 based touch panel controllers"
+	depends on I2C
+	depends on INPUT
+	depends on OF && GPIOLIB
+	help
+	  Say Y here if you have a Hynitron CST9217 touch panel described
+	  by a "hynitron,hyn_ts" device tree node, as found on the DW100U
+	  smartwatch. The input device is named "hyn_ts".
+
+	  If unsure, say N.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called hynitron_cst9217.
+
+config TOUCHSCREEN_CST0XX
+	tristate "Hynitron CST0xx touchscreen controllers"
+	depends on I2C && OF
+	depends on GPIOLIB
+	help
+	  Say Y here if you have a Hynitron CST0xx (CST816 style) touch
+	  panel, as found on the DM63 smartwatch. The input device is
+	  named "cst0xx_ts".
+
+	  If unsure, say N.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called cst0xx_ts.
+
 endif
