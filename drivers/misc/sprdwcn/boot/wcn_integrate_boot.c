@@ -754,6 +754,37 @@ static void wcn_show_dev_status(const char *pre_str)
 	}
 }
 
+/*
+ * Undo wcn_power_wq() after a failed GNSS first start (power_lock held,
+ * wcn_open_status == 0, so no other subsystem of this device is up).
+ * Mirrors the tail of stop_integrate_wcn_truely() without the deep sleep
+ * wait: the core never came up. Each reference taken by the work
+ * (vddcon, sys domain) is released once; the regulator and sys domain
+ * stay on if BT/Wi-Fi still use them.
+ */
+static void wcn_unwind_failed_start(struct wcn_device *wcn_dev)
+{
+	/*
+	 * The work may still be running after a wait timeout: wait for it.
+	 * If it never ran (cancelled while pending) it took no reference,
+	 * so there is nothing to release.
+	 */
+	if (cancel_delayed_work_sync(&wcn_dev->power_wq)) {
+		WCN_ERR("%s power work never ran\n", wcn_dev->name);
+		return;
+	}
+
+	WCN_ERR("%s start failed, power down\n", wcn_dev->name);
+	wcn_proc_native_stop(wcn_dev);
+	wcn_power_enable_sys_domain(false);
+	wcn_power_enable_vddcon(false);
+
+	wcn_sys_soft_reset();
+	wcn_sys_soft_release();
+	wcn_sys_deep_sleep_en();
+	wcn_dev->power_state = WCN_POWER_STATUS_OFF;
+}
+
 int start_integrate_wcn_truely(u32 subsys)
 {
 	bool is_marlin;
@@ -807,17 +838,21 @@ int start_integrate_wcn_truely(u32 subsys)
 		/* marlin download fail dump memory */
 		if (is_marlin)
 			goto err_boot_marlin;
+		wcn_unwind_failed_start(wcn_dev);
 		mutex_unlock(&wcn_dev->power_lock);
 		return -1;
 	} else if (wcn_dev->boot_cp_status) {
 		if (wcn_dev->boot_cp_status == WCN_BOOT_CP2_ERR_DONW_IMG) {
+			if (!is_marlin)
+				wcn_unwind_failed_start(wcn_dev);
 			mutex_unlock(&wcn_dev->power_lock);
 			return -1;
 		}
 		if (is_marlin) {
 			goto err_boot_marlin;
 		} else if (wcn_dev->boot_cp_status == WCN_BOOT_CP2_ERR_BOOT) {
-			mutex_unlock(&wcn_dev->power_lock);  /* gnss */
+			wcn_unwind_failed_start(wcn_dev);  /* gnss */
+			mutex_unlock(&wcn_dev->power_lock);
 			return -1;
 		}
 	}
