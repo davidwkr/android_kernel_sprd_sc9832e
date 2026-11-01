@@ -222,25 +222,48 @@ static struct acc_dev *get_acc_dev(void)
 	return kref_get_unless_zero(&ref->kref) ? ref->acc_dev : NULL;
 }
 
-static void __put_acc_dev(struct kref *kref)
+/*
+ * Device whose last reference was dropped; freed by acc_release_work.
+ * acc_release_lock covers the final decrement, the handoff to
+ * _acc_dev_dying and queueing the work, against acc_setup().
+ */
+static struct acc_dev *_acc_dev_dying;
+static DEFINE_SPINLOCK(acc_release_lock);
+
+static void acc_release_workfn(struct work_struct *work)
 {
-	struct acc_dev_ref *ref = container_of(kref, struct acc_dev_ref, kref);
-	struct acc_dev *dev = ref->acc_dev;
+	struct acc_dev *dev = _acc_dev_dying;
 
 	/* Cancel any async work */
 	cancel_delayed_work_sync(&dev->start_work);
 	cancel_work_sync(&dev->hid_work);
 
-	ref->acc_dev = NULL;
+	_acc_dev_dying = NULL;
 	kfree(dev);
 }
+
+static DECLARE_WORK(acc_release_work, acc_release_workfn);
 
 static void put_acc_dev(struct acc_dev *dev)
 {
 	struct acc_dev_ref *ref = dev->ref;
+	unsigned long flags;
 
 	WARN_ON(ref->acc_dev != dev);
-	kref_put(&ref->kref, __put_acc_dev);
+	if (refcount_dec_not_one(&ref->kref.refcount))
+		return;
+
+	/*
+	 * The last reference can be dropped from acc_ctrlrequest() in atomic
+	 * context, so cancel the work items and free from process context.
+	 */
+	spin_lock_irqsave(&acc_release_lock, flags);
+	if (refcount_dec_and_test(&ref->kref.refcount)) {
+		ref->acc_dev = NULL;
+		_acc_dev_dying = dev;
+		schedule_work(&acc_release_work);
+	}
+	spin_unlock_irqrestore(&acc_release_lock, flags);
 }
 
 static inline struct acc_dev *func_to_dev(struct usb_function *f)
@@ -1291,10 +1314,18 @@ static int acc_setup(void)
 {
 	struct acc_dev_ref *ref = &_acc_dev_ref;
 	struct acc_dev *dev;
+	unsigned long flags;
+	bool busy;
 	int ret;
 
-	if (kref_read(&ref->kref))
+	spin_lock_irqsave(&acc_release_lock, flags);
+	busy = kref_read(&ref->kref);
+	spin_unlock_irqrestore(&acc_release_lock, flags);
+	if (busy)
 		return -EBUSY;
+
+	/* A zero count means any release is queued; let it finish first */
+	flush_work(&acc_release_work);
 
 	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
 	if (!dev)
