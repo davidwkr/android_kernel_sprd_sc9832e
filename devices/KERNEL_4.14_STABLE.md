@@ -208,3 +208,4 @@ interface (mmc_access_rpmb), because the Android 8.1 vendor userspace uses
 | 4.14.324 | conflict | drivers/android/binder_alloc.{c,h}: kept vendor int binder_alloc_shrinker_init() and the vendor-backported buffer copy helpers; added stable binder_alloc_shrinker_exit() (declaration + definition after binder_alloc_copy_from_buffer()); binder.c error-path call applied cleanly; matches Google's 4.14.324 merge for the binder_alloc.h declarations and shrinker_exit; 0 skipped |
 | 4.14.325 | clean | - |
 | 4.14.326 | clean | - |
+| 4.14.327 | clean | - |
