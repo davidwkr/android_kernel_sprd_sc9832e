@@ -150,6 +150,7 @@ struct sc27xx_fgu_data {
 	s64 resync_rest_start_ms;
 	s64 resync_last_poll_ms;
 	unsigned int resync_last_hold_uv;
+	int resync_last_gen;
 	unsigned long resync_last_j;
 	bool resync_done_once;
 };
@@ -1158,25 +1159,46 @@ static unsigned int resync_gap_s = SC2721_RESYNC_GAP_FLOOR_S;
 /* the one gauge that owns the resync, under resync_lock */
 static DEFINE_MUTEX(resync_lock);
 static struct sc27xx_fgu_data *resync_data;
+/* serializes enable/disable and removal, held across cancel_delayed_work_sync() */
+static DEFINE_MUTEX(resync_ctl);
 
 static void sc2721_resync_idle(struct sc27xx_fgu_data *data)
 {
 	data->resync_rest_start_ms = 0;
 }
 
+/* forget everything accumulated; the work must not be running */
+static void sc2721_resync_reset(struct sc27xx_fgu_data *data)
+{
+	mutex_lock(&data->lock);
+	data->resync_rest_start_ms = 0;
+	data->resync_last_poll_ms = 0;
+	data->resync_last_hold_uv = 0;
+	data->resync_last_gen = -1;
+	mutex_unlock(&data->lock);
+}
+
 /* CV hold voltage in uV from the charger, 0 when not holding or unknown */
-static unsigned int sc2721_resync_get_hold(bool *charging)
+static unsigned int sc2721_resync_get_hold(bool *charging, int *gen)
 {
 	union power_supply_propval val;
 	struct power_supply *psy;
 	unsigned int hold = 0;
-	int status = -1, online = 0;
+	int status = -1, online = 0, gen1 = -1, gen2 = -2;
 
 	*charging = false;
+	*gen = -1;
 	psy = power_supply_get_by_name("sc2721_charger");
 	if (!psy)
 		return 0;
 
+	/*
+	 * The generation is read before and after the other values: if it
+	 * moved, the snapshot is inconsistent and is treated as not holding.
+	 */
+	if (!power_supply_get_property(psy, POWER_SUPPLY_PROP_CHARGE_COUNTER,
+				       &val))
+		gen1 = val.intval;
 	if (!power_supply_get_property(psy, POWER_SUPPLY_PROP_STATUS, &val))
 		status = val.intval;
 	if (!power_supply_get_property(psy, POWER_SUPPLY_PROP_ONLINE, &val))
@@ -1185,8 +1207,15 @@ static unsigned int sc2721_resync_get_hold(bool *charging)
 				       POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE,
 				       &val) && val.intval > 0)
 		hold = val.intval;
+	if (!power_supply_get_property(psy, POWER_SUPPLY_PROP_CHARGE_COUNTER,
+				       &val))
+		gen2 = val.intval;
 	power_supply_put(psy);
 
+	if (gen1 != gen2)
+		return 0;
+
+	*gen = gen1;
 	*charging = status == POWER_SUPPLY_STATUS_CHARGING && online;
 	return hold;
 }
@@ -1194,7 +1223,7 @@ static unsigned int sc2721_resync_get_hold(bool *charging)
 static void sc2721_resync_step(struct sc27xx_fgu_data *data)
 {
 	unsigned int hold, hold2;
-	int ocv, cur, raw, soc, ret;
+	int ocv, cur, raw, soc, ret, gen, gen2, old_cap, old_clbcnt;
 	bool charging, charging2;
 	s64 now = ktime_to_ms(ktime_get_boottime());
 
@@ -1209,13 +1238,15 @@ static void sc2721_resync_step(struct sc27xx_fgu_data *data)
 		return;
 	}
 
-	hold = sc2721_resync_get_hold(&charging);
+	hold = sc2721_resync_get_hold(&charging, &gen);
 	if (!hold || !charging) {
 		sc2721_resync_idle(data);
 		return;
 	}
-	if (hold != data->resync_last_hold_uv) {
+	/* any CV request / override change since the last poll, even A->B->A */
+	if (hold != data->resync_last_hold_uv || gen != data->resync_last_gen) {
 		data->resync_last_hold_uv = hold;
+		data->resync_last_gen = gen;
 		sc2721_resync_idle(data);
 	}
 
@@ -1250,12 +1281,25 @@ static void sc2721_resync_step(struct sc27xx_fgu_data *data)
 	    time_before(jiffies, data->resync_last_j + resync_gap_s * HZ))
 		goto out;
 
-	/* last check right before the write: still holding and charging */
-	hold2 = sc2721_resync_get_hold(&charging2);
-	if (!READ_ONCE(gauge_resync) || !charging2 || hold2 != hold)
-		goto idle;
-
+	/*
+	 * The charger cannot be locked from here, so the write is applied and
+	 * then verified under the gauge lock (no reader sees the value before
+	 * the verification): if the override, the CV request, the charging
+	 * state or the enable flag changed meanwhile, the previous state is
+	 * restored and nothing has been resynced.
+	 */
+	old_cap = data->init_cap;
+	old_clbcnt = data->init_clbcnt;
 	sc27xx_fgu_adjust_cap(data, soc);
+
+	hold2 = sc2721_resync_get_hold(&charging2, &gen2);
+	if (!READ_ONCE(gauge_resync) || !charging2 || hold2 != hold ||
+	    gen2 != gen) {
+		data->init_cap = old_cap;
+		data->init_clbcnt = old_clbcnt;
+		goto idle;
+	}
+
 	data->resync_last_j = jiffies;
 	data->resync_done_once = true;
 	sc2721_resync_idle(data);
@@ -1287,23 +1331,27 @@ static void sc2721_resync_work(struct work_struct *work)
 
 static int gauge_resync_set(const char *val, const struct kernel_param *kp)
 {
+	struct sc27xx_fgu_data *data;
 	bool on;
 	int ret = kstrtobool(val, &on);
 
 	if (ret)
 		return ret;
 
+	mutex_lock(&resync_ctl);
 	WRITE_ONCE(gauge_resync, on);
 	mutex_lock(&resync_lock);
-	if (resync_data) {
-		if (on)
-			queue_delayed_work(system_freezable_wq,
-					   &resync_data->resync_work,
-					   SC2721_RESYNC_POLL_S * HZ);
-		else
-			cancel_delayed_work(&resync_data->resync_work);
-	}
+	data = resync_data;
+	if (data && on)
+		queue_delayed_work(system_freezable_wq, &data->resync_work,
+				   SC2721_RESYNC_POLL_S * HZ);
 	mutex_unlock(&resync_lock);
+	if (data && !on) {
+		/* flag is clear: wait for a running step, then drop the rest */
+		cancel_delayed_work_sync(&data->resync_work);
+		sc2721_resync_reset(data);
+	}
+	mutex_unlock(&resync_ctl);
 	return 0;
 }
 
@@ -1373,16 +1421,19 @@ static void sc2721_resync_release(void *_data)
 {
 	struct sc27xx_fgu_data *data = _data;
 
+	mutex_lock(&resync_ctl);
 	mutex_lock(&resync_lock);
 	if (resync_data == data)
 		resync_data = NULL;
 	mutex_unlock(&resync_lock);
 	cancel_delayed_work_sync(&data->resync_work);
+	mutex_unlock(&resync_ctl);
 }
 
 static int sc2721_resync_register(struct sc27xx_fgu_data *data)
 {
 	INIT_DELAYED_WORK(&data->resync_work, sc2721_resync_work);
+	data->resync_last_gen = -1;
 
 	mutex_lock(&resync_lock);
 	if (!resync_data) {

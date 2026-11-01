@@ -113,9 +113,26 @@ link dependency on the charger module, and the existing gauge already reads the 
 "CV reached" is not read from CHGR_STATUS (not implemented in the charger, see SC2721_CHARGER_MAP.md): as in 4.4 it is
 implied by the relaxed current and the OCV being at the hold voltage.
 
-Differences to 4.4: the capacity is in percent (4.4 uses 0.1 %), so the 5 point threshold is 5 %. The "raw" capacity is the
+CV generation: the charger keeps `sc2721_cv_gen` (the 4.4 `cv_gen`), bumped under `sc2721_cv_lock` on every change of the CV
+request or of the override, so A->B->A between two polls is seen. It is exposed as `POWER_SUPPLY_PROP_CHARGE_COUNTER` of
+`sc2721_charger` (SC2721 only, value masked to a non-negative int). This is not a charge counter: a standard integer property
+was reused to avoid a new property id or an exported symbol, and the doc/comments say so. The gauge reads the generation
+before and after STATUS / ONLINE / hold voltage; if it moved the snapshot is discarded. A change of the generation or of the
+hold voltage resets the accumulated rest.
+
+Serialization of the write: the gauge cannot take the charger locks (4.4 holds `b->lock` and `cv_lock` across the final check
+and the write). Equivalent used here: under the gauge lock (readers of the gauge, including `get_capacity`, are blocked) the
+rebase is applied, then charging, hold voltage and generation are read again; if anything changed or `gauge_resync` was
+cleared, `init_cap` / `init_clbcnt` are restored to the saved values, so the result is the same as if the write had not
+happened.
+
+Disabling: `gauge_resync=0` clears the flag, then `cancel_delayed_work_sync()` waits for a running step (the step also
+re-checks the flag before and after the rebase), then the accumulated rest, poll time, hold and generation are cleared under
+the gauge lock. The enable/disable path and removal are serialized by `resync_ctl`, which is held across the synchronous
+cancel; the work only takes the short `resync_lock`, so there is no lock inversion.
+
+Other differences to 4.4: the capacity is in percent (4.4 uses 0.1 %), so the 5 point threshold is 5 %. The "raw" capacity is the
 pure coulomb counter value (`sc27xx_fgu_get_raw_capacity()`, split out of `sc27xx_fgu_get_capacity()`, which is unchanged),
-not `sprdfgu_read_soc()` with its side effects. There is no generation counter for A->B->A changes of the override within
-one poll: the hold voltage and charging state are re-read right before the write and must be unchanged. The write is the
+not `sprdfgu_read_soc()` with its side effects. The write is the
 existing `sc27xx_fgu_adjust_cap()`, which re-bases `init_cap` / `init_clbcnt` (it does not rewrite the counter registers).
 Units: OCV and hold in uV, current in mA (`mA * mOhm = uV`), thresholds converted once (`mV * 1000`). Untested on hardware.

@@ -98,6 +98,8 @@ struct sc2720_charger_info {
 /* SC2721 CV override ("battery hold"), 0 = off, see sc2721_cv_override_ops */
 static DEFINE_MUTEX(sc2721_cv_lock);
 static unsigned int sc2721_cv_override_mv;
+/* bumped under sc2721_cv_lock on every change of the request or the override */
+static unsigned int sc2721_cv_gen;
 /* the one SC2721 charger that owns the override, under sc2721_cv_lock */
 static struct sc2720_charger_info *sc2721_cv_info;
 
@@ -240,6 +242,18 @@ static unsigned int sc2721_cv_hold_uv(struct sc2720_charger_info *info)
 	return hold * 1000;
 }
 
+/* CV change generation, see sc2721_cv_gen (wraps, only compared for equality) */
+static unsigned int sc2721_cv_generation(void)
+{
+	unsigned int gen;
+
+	mutex_lock(&sc2721_cv_lock);
+	gen = sc2721_cv_gen;
+	mutex_unlock(&sc2721_cv_lock);
+
+	return gen;
+}
+
 /*
  * Write END_V and the CV code. The code goes through 0 first so that the
  * change is monotone, then END_V, then the final code. Caller holds
@@ -318,6 +332,8 @@ static int sc2721_set_termination_voltage(struct sc2720_charger_info *info,
 		return -EINVAL;
 
 	mutex_lock(&sc2721_cv_lock);
+	if (info->cv_last_req_mv != mv)
+		sc2721_cv_gen++;
 	info->cv_last_req_mv = mv;
 	ret = sc2721_program_cccv(info, mv);
 	mutex_unlock(&sc2721_cv_lock);
@@ -393,6 +409,8 @@ static int sc2721_cv_override_apply(unsigned int mv)
 		goto out;
 	}
 
+	if (sc2721_cv_override_mv != mv)
+		sc2721_cv_gen++;
 	WRITE_ONCE(sc2721_cv_override_mv, mv);
 	/* reprogram now if a charge has already requested a CV */
 	if (info && info->cv_last_req_mv)
@@ -884,6 +902,20 @@ static int sc2720_charger_usb_get_property(struct power_supply *psy,
 		val->intval = sc2721_cv_hold_uv(info);
 		break;
 
+	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
+		/*
+		 * SC2721 only: not a charge counter. CV change generation, a
+		 * counter bumped on every change of the CV request or the
+		 * override (4.4 cv_gen), for the gauge resync.
+		 */
+		if (!info->data->is_sc2721) {
+			ret = -EINVAL;
+			goto out;
+		}
+
+		val->intval = sc2721_cv_generation() & INT_MAX;
+		break;
+
 	case POWER_SUPPLY_PROP_ONLINE:
 		ret = sc2720_charger_get_online(info, &online);
 		if (ret)
@@ -1020,6 +1052,7 @@ static enum power_supply_property sc2720_usb_props[] = {
 static enum power_supply_property sc2721_usb_props[] = {
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE_MAX,
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE,
+	POWER_SUPPLY_PROP_CHARGE_COUNTER,
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT,
 	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
 	POWER_SUPPLY_PROP_USB_TYPE,
