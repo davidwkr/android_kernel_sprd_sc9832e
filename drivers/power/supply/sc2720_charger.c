@@ -146,8 +146,6 @@ static bool sc2721_cv_model(unsigned int mv, unsigned int cal,
 {
 	int cv, e = 0, c = (int)cal;
 
-	if (mv > SC2721_END_V_MAX_MV)
-		return false;
 	if (mv >= SC2721_END_V_BASE_MV) {
 		if (mv < SC2721_END_V_BASE_MV + SC2720_TERM_VOLTAGE_STEP) {
 			cv = SC2721_CV_STEP_ROUND(mv - SC2721_END_V_BASE_MV) + c;
@@ -161,6 +159,13 @@ static bool sc2721_cv_model(unsigned int mv, unsigned int cal,
 			cv = SC2721_CV_STEP_ROUND(mv - (SC2721_END_V_BASE_MV +
 					SC2720_TERM_VOLTAGE_STEP)) + c;
 			if (cv > SC2720_CHG_CCCV_MAXIMUM) {
+				/*
+				 * Above 4400 mV only END_V 1 with a high CV code
+				 * reaches the target; the 4.4 arithmetic would wrap
+				 * here, so refuse.
+				 */
+				if (mv > SC2721_END_V_MAX_MV)
+					return false;
 				e = 2;
 				cv = c - SC2721_CV_STEP_ROUND(
 					SC2721_END_V_MAX_MV - mv);
