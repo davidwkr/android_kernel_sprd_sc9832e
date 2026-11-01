@@ -34,7 +34,7 @@ Result column: OK = same value proven for SC2721, DIFF = mismatch, NP = not prov
 | CV_V field | GENMASK(10,5) (D:46) | BITS_CHGR_CV_V 6 bits at 5 (G:2312) | OK |
 | CC_I field | GENMASK(13,10), 4 bits (D:49) | BITS_CHGR_CC_I 0x1F<<10, 5 bits (G:2325); sc2720 header has 4 bits (G0:1601) | DIFF: 5 bits on SC2721 |
 | OVP field | GENMASK(1,0), 2 bits (D:38) | BITS_VCHG_OVP_V 0x3F<<0, 6 bits (G:2327); sc2720 header has 2 bits (G0:1602) | DIFF: 6 bits, 100 mV steps from 5600 (C:90, H:21-22) |
-| OVP value written | 0x01 ("6500 mV") (D:229-236) | sc2721 level comes from board `ovp_stop` (C:956) | NP: value is board policy, not in the 4.4 sources reviewed; not written for SC2721 |
+| OVP value written | 0x01 ("6500 mV") (D:229-236) | `sprdchg_set_chg_ovp(ovp_stop)` (C:80-101, called from `sprdchg_chip_init()` C:956): clamp 5600..9000 mV (H:21-22), code `(mV - 5600) / 100` into `BITS_VCHG_OVP_V` (CTRL1 bits 5..0, G:2327, CTRL1 = G:195), CC_EN (G:2310) cleared before and set after the write (C:92-100) | OK, ported (`sc2721_set_ovp()`), level from DT `sprd,ovp-microvolt`; DM63 stock `ovp-stop` 6500 mV = code 9 |
 | CC current min | 300 mA (D:26) | SPRDBAT_CHG_CUR_LEVEL_MIN 300 (H:24, C:123) | OK |
 | CC current max | none (clamp absent) | 1300 mA (H:25, C:120-121) | DIFF: SC2721 clamps at 1300 mA |
 | CC current step | 50 mA below 800, 100 mA from 800, reg 0x0a at 800 (D:27-30, D:279-287) | 50 mA per code from 300: `(cur-300)/50` (C:127); the 1400+ branch (C:129-130, +0x16) is unreachable after the 1300 clamp | DIFF: linear 50 mA, code = (mA-300)/50 |
@@ -65,7 +65,7 @@ n <= 2, `& ~1` on the CV code, calibration 6 bits + validity flag + default 0x20
 | Recharge enable (BIT_RECHG BIT(11)) set on start, cleared on stop | C:895-917, G:2311 | not implemented, start/stop only touch PD |
 | Charge-power-down external (BIT_CHGR_PD_EXT BIT(15)) | G:2306 | not used by 4.4 driver either, ignored |
 | CV status read (BIT_CHGR_CV_STATUS BIT(4) of CHGR_STATUS 0x02C8) | C:926-933, G:196, G:2345 | not implemented; needed by step 3 ("CV reached") |
-| Input over-voltage (OVP) level, 100 mV steps from 5600 up to 9000 | C:80-101, H:21-22 | not implemented for SC2721 (value is board `ovp_stop`) |
+| Input over-voltage (OVP) level, 100 mV steps from 5600 up to 9000 | C:80-101, H:21-22 | implemented, `sc2721_set_ovp()` (section 4 item 1) |
 | VCHG over-voltage and CV GPIO interrupts (`chg-ovi-gpios`, `chg-cv-gpios`) | C:960-995, C:1030-1050 | not implemented |
 | BC1.2 detection disable (`DP_DM_BC_ENB` in `CHGR_DET_FGU_CTRL`) | C:884-893 | not implemented, USB charger type comes from the usb_phy in 4.14 |
 | Charge timer (separate block, 32768 Hz load value, enable BIT(1), int enable BIT(0)) | `sprd2721_chg_timer.c`:34-82 | not implemented; separate DT node with its own `reg` and irq |
@@ -96,9 +96,10 @@ code; the 4.14 port always follows the monotone order above, including with the 
 
 ## 4. Left disabled for SC2721 (cannot be proven from the 4.4 sources)
 
-1. Input over-voltage protection: field width (6 bits) and step (100 mV from 5600) are proven, the programmed value
-   is board data (`ovp_stop`) not found in the SC2721 sources. Not written. TODO: add a DT property once the
-   board value is known.
+1. Input over-voltage protection: ported. `sc2721_set_ovp()` is the 4.4 `sprdchg_set_chg_ovp()` (C:80-101, field G:2327,
+   limits H:21-22, call C:956). The level is board data, read from the DT property `sprd,ovp-microvolt` (uV). When the
+   property is absent the register is left as is and a warning is printed once. Stock DM63: `ovp-stop` 0x1964 = 6500 mV.
+   Not ported: the VCHG over-voltage interrupt (`chg-ovi-gpios`, C:960-995) and `ovp-restart`.
 2. DPM value 2 (sc2720 path for vmax < 4300 mV): SC2721 always programs 3 (C:953).
 3. Termination current (ITERM) and recharge bit: not written. TODO (hardware validation first).
 4. END_V code 3 / targets above 4400 mV: not representable per 4.4, rejected.
