@@ -39,3 +39,12 @@ Not in the requested list, noticed while porting: 4.4 `91f9efcfa2aa` ("wcn_power
 ## Needs a device
 
 Everything: failed-start unwind (rail and domain counts, `set WCN SYS TOP PD`), retry after calibration failure with Wi-Fi/BT on and off, `sleep` reporting, suspend behaviour. Use the 4.4 hardware test steps 1-9 unchanged.
+
+## Locking (review follow-up, 4.14 only)
+
+The 4.4 versions of c29f325e7e78 and cc53423f781e have two races, which the 4.14 port fixes in a follow-up commit:
+
+- `gnss_power_on()` did the state check, the cooldown check and the move to `POWERON_GOING` with no common lock, so two concurrent writers to `gnss_power_enable` could both pass and the second one would retry `start_marlin()` without seeing the cooldown set by the first failure. 4.14 now serializes the whole transaction with the mutex `gnss_ctl_lock` (held across `start_marlin()`/`stop_marlin()`, which sleep).
+- "Keep ASSERT" was a check followed by an assignment, not atomic against `gnss_dump_mem_ctrl_co()` setting `ASSERT`. 4.14 protects every `gnss_status` write with the spinlock `gnss_status_lock` and uses conditional transitions (`gnss_status_move(from, to)`); the dump callback sets `ASSERT` through `gnss_status_set()`. A start that returns success also no longer overwrites an `ASSERT` set meanwhile. The dump callback does not take `gnss_ctl_lock`, because the dump can be triggered from inside `start_marlin()`/`stop_marlin()` and may sleep, so a spinlock only covers the state word.
+
+4.4 TODO (not touched here): the same two races exist in the 4.4 tree.
