@@ -144,3 +144,4 @@ interface (mmc_access_rpmb), because the Android 8.1 vendor userspace uses
 | 4.14.260 | conflict | drivers/usb/gadget/function/u_ether.c: gether_register_netdev(): kept vendor uether_rx kthread creation and CONFIG_SPRD_SIPA register/debugfs path; took stable pre-register memcpy(net->dev_addr)+NET_ADDR_RANDOM and dropped post-register dev_set_mac_address() block and 'struct sockaddr sa' (JUDGEMENT); 0 skipped |
 | 4.14.261 | clean | - |
 | 4.14.262 | clean | - |
+| 4.14.263 | clean | - |
