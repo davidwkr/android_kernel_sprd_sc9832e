@@ -212,3 +212,4 @@ interface (mmc_access_rpmb), because the Android 8.1 vendor userspace uses
 | 4.14.328 | conflict | drivers/usb/musb/musb_host.c: vendor musb_advance_schedule() already re-fetched qh after musb_giveback() (with is_ready NULL guard), so stable's duplicate re-fetch was dropped and its 'qh &&' condition kept; musb_urb_dequeue(): took stable 'ready &&' with vendor musb_ep_set_qh(ep, ...); drivers/usb/musb/musb_debugfs.c: HWVers width 16 (stable/Android; vendor had 8) (JUDGEMENT); 0 skipped; semantically matches Google's 4.14.328 merge (Android is stock musb without the vendor NULL guard) |
 | 4.14.329 | clean | - |
 | 4.14.330 | clean | - |
+| 4.14.331 | clean | - |
