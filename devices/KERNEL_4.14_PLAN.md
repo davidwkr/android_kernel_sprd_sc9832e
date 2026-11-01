@@ -72,19 +72,19 @@ ported/re-implemented, MISSING = in neither tree or needs new work.
 |---|---|---|---|
 | CPU/clk/pinctrl/DMA/I2C/SPI/GPIO/timers, sharkle SoC DT | yes | `sc9832e-clk`, `pinctrl-sprd-sharkle`, `sharkle.dtsi`, etc. | PRESENT |
 | Display stack | ADF (`drivers/video/adf/sprd`, `sprd-adf`, `sprd-panel-if`) | DRM/KMS (`drivers/gpu/drm/sprd`: `sprd_dpu`, `sprd_dsi`, `sprd_dphy`, `sprd_panel`, `sharkle/global_*`, `dpu_lite_r1p0/r2p0`) | PRESENT but different model (see below) |
-| Panels CO5300 (3 variants), ST77916 (3), ST7801, CH13613, SH8601(2), GC9B71(2), ST7797, `lcd_id` selection | per-panel DT nodes (`init-data`, `power-on-sequence`, `oled-backlight`), selected by `lcd_id=` bootarg and `panel-drivers` list | no panel driver per IC: one `sprd,generic-mipi-panel` driver with `sprd,initial-command` byte streams in `lcd/*.dtsi`; OLED hooks exist (`sprd,reg-lock/unlock`, `default-brightness-level`, `sprd,max-level`); no `lcd_id` bootarg selection | PORT: translate each panel's init data and timings into the DRM DT format, re-implement `lcd_id` selection (or pick via DT overlay/bootloader), check brightness-level table handling (our OLED brightness uses a command table) |
+| Panels CO5300 (3 variants), ST77916 (3), ST7801, CH13613, SH8601(2), GC9B71(2), ST7797, `lcd_id` selection | per-panel DT nodes (`init-data`, `power-on-sequence`, `oled-backlight`), selected by `lcd_id=` bootarg and `panel-drivers` list | no panel driver per IC: one `sprd,generic-mipi-panel` driver with `sprd,initial-command` byte streams in `lcd/*.dtsi`; OLED hooks exist (`sprd,reg-lock/unlock`, `default-brightness-level`, `sprd,max-level`); no `lcd_id` bootarg selection | CO5300 DONE (3 variants, `lcd/lcd_co5300_*.dtsi`, `lcd_id=` selection via `sprd,lcd-id`, `sprd,refresh-rate`, stock avdd sequence; see `dm63/PANEL_414.md`); other panels PORT |
 | AOD (`sprd_aod_idle`) | custom, in 4.4 | not present | PORT (re-plumb on DRM atomic suspend and the new panel code) |
 | WCN (Marlin/SC2342 integrated, BT, FM) | `drivers/misc/sprdwcn_bsp` + `sprd_bt_lpm` | `drivers/misc/sprdwcn` (new generation: SC2342_INTEG, SC2355, UMW265x; `sprdwcn_temp` duplicate) | PRESENT, different generation: compatibles `sprd,integrate_marlin`, `sprd,marlin3` exist; WCN firmware loading and our BT/GNSS wakelock tweaks need re-checking |
 | GNSS (GE2, `gnss_common_ctl`, our `gnss_engine_state`, retry limits) | yes | `sprdwcn/platform/gnss` with `sprd,integrate_gnss`, `gnss_dump` | PORT of our GNSS fail-path/power tweaks onto the new driver; basic support PRESENT |
 | SIPC / modem | `sprd,sipc-v1`, sblock/swcn_blk/sipx/spool + our peer checks | `drivers/soc/sprd/modem/sipc` and `sipc_v2`, `SPRD_SIPC_*` set in defconfig | PRESENT; PORT our `security/sipc-peer` hardening |
 | SC2721 PMIC core, regulators, ADC, EFUSE, RTC, EIC, BLTC/LED, 7sreset | `sprd,sc2721-*` | `sc2721-regulator.c`, `sc2721.dtsi`, `mfd/sprd-sc27xx-spi.c`, `sc27xx-*` drivers | PRESENT (DT compatibles differ: stock uses `sprd,sc2721-*`, 4.14 uses `sprd,sc27xx-*` with `sc2721-*` second) |
-| SC2721 charger (`sprd_2721_charge`, chg-timer, fchg, chg-wdt, `batt_idle`, CV tweak) | yes | only `sc2720_charger`, `sc2731_charger`, `sc2730_fast_charger`; **no sc2721 charger** | PORT (`sprd_2721_charge` family or adapt `sc2720_charger`) plus our charge-cv and typec/OTG role pieces |
-| Fuel gauge (`sprd_27xx_fgu`, `gauge-resync`) | yes | mainline-style `sc27xx_fuel_gauge.c` (sc2720/30/31 data; DT lists `sprd,sc2720-fgu` fallback) | PRESENT in principle; PORT calibration/OCV tables and our resync tweak; verify the sc2720 data is right for sc2721 |
+| SC2721 charger (`sprd_2721_charge`, chg-timer, fchg, chg-wdt, `batt_idle`, CV tweak) | yes | only `sc2720_charger`, `sc2731_charger`, `sc2730_fast_charger`; **no sc2721 charger** | DONE compile-only: `sprd,sc2721-charger` in `sc2720_charger.c` with CV override, input OVP, adapter current cap (`SC2721_CHARGER_MAP.md`); chg-timer, fchg, ITERM/recharge, OVP/CV interrupts still PORT |
+| Fuel gauge (`sprd_27xx_fgu`, `gauge-resync`) | yes | mainline-style `sc27xx_fuel_gauge.c` (sc2720/30/31 data; DT lists `sprd,sc2720-fgu` fallback) | DONE compile-only: `sprd,sc2721-fgu` data, optional battery-detect gpio, CV-hold resync (off by default) (`SC2721_FGU_MAP.md`) |
 | USB MUSB, PHY, role | `musb_sprd`, our `USB_MUSB_SPRD_ROLE_SYSFS`, host idle timeout | `musb_sprd.c` (`sprd,sharkle-musb`), `phy-sprd-sharkle.c` (`sprd,sharkle-phy`), `MUSB_DUAL_ROLE` | PRESENT; PORT role sysfs and `host_idle_timeout` |
 | GPU Mali Midgard | out-of-tree kbase, UK ABI 11.13 (`drivers/gpu/arm/midgard`, `mali.ko`) | only DT node `sprd,mali-midgard` (`gpu@60000000`); **no kbase source** | PORT kbase (4.4 source against the 4.14 API: DRM/ion/dma-buf/timer API changes); userspace blob compatibility must be kept |
 | Camera (DCAM/ISP/CSI, sensors) | `drivers/misc/sprd_camera` | only mipi-csi-phy DT stubs; no camera driver | MISSING in 4.14 (PORT from 4.4 if the watches need it; DM63/DW100U camera use must be confirmed) |
-| Touch: CST0xx (DM63), Hynitron `hyn_ts` / CST9217 (DW100U), Goodix | `cst0xx_ts`, `hynitron_ts`, `hynitron_cst9217`, `goodix5`/`goodix_5xxx` | `adaptive-ts` (FocalTech/MStar/dummy), `goodix.c`, `edt-ft5x06`, `chipone`, `stmfts` | PORT (cst0xx, hynitron, CST9217; Goodix GT1x only if used) |
-| Sensors: sc7a22, qma6981, och1970, hrs3xxx | `drivers/input/misc/*` (our drivers) | only generic IIO accel drivers and `iio/sprd_hub` sensor hub | PORT (all four are our own/vendor input drivers) |
+| Touch: CST0xx (DM63), Hynitron `hyn_ts` / CST9217 (DW100U), Goodix | `cst0xx_ts`, `hynitron_ts`, `hynitron_cst9217`, `goodix5`/`goodix_5xxx` | `adaptive-ts` (FocalTech/MStar/dummy), `goodix.c`, `edt-ft5x06`, `chipone`, `stmfts` | CST0xx and CST9217 PORTED (compile only); `hynitron_ts` and Goodix not ported |
+| Sensors: sc7a22, qma6981, och1970, hrs3xxx | `drivers/input/misc/*` (our drivers) | only generic IIO accel drivers and `iio/sprd_hub` sensor hub | PORTED (compile only) |
 | Fingerprint (Goodix TEE, DW100U) | `goodix_fp`, `gf-keys`, netlink 29 | none | PORT |
 | Trusty | `drivers/trusty` | `drivers/trusty` (same layout, plus virtio/ipc/irq) | PRESENT; check against the TEE image the watches ship |
 | Watchdog | sprd wdt | `sprd_wdt.c` exists, but `CONFIG_WATCHDOG_CORE` is not set in defconfig, `SPRD_WATCHDOG` off | PRESENT (enable) |
@@ -92,7 +92,7 @@ ported/re-implemented, MISSING = in neither tree or needs new work.
 | Audio (VBC/codec sc2721) | yes | `sound/soc/sprd` with `vbc-rxpx-codec-sc27xx`, `audiosipc` | PRESENT (DT differs, `sprd-sound-sharkl.dtsi`) |
 | ION | yes | `ION`, `ION_SPRD` | PRESENT; our `security/ion-lifetime` fixes to re-check |
 | VSP/JPG | `sprd_vsp/jpg` | `sprd_vsp`, `sprd_jpg`, both with sharkle compatibles | PRESENT |
-| Security backports (stable, CIP, UNISOC bulletins) | 4.4.302+ | 4.14.336 (all 4.14.y stable releases applied, see `KERNEL_4.14_STABLE.md`); 2019 BSP base | DONE for stable; Android-specific `android-4.14-stable` patches and UNISOC bulletins still to audit |
+| Security backports (stable, CIP, UNISOC bulletins) | 4.4.302+ | 4.14.336 (all 4.14.y stable releases applied, see `KERNEL_4.14_STABLE.md`); 2019 BSP base | DONE for stable; `android-4.14-stable` audited (`ANDROID_4.14_AUDIT.md`), 14 of the top 15 picks plus an f_accessory sync applied; UNISOC bulletins still to audit |
 
 ### DT binding comparison (stock watch DT vs 4.14 drivers, high level)
 
@@ -146,16 +146,17 @@ ported/re-implemented, MISSING = in neither tree or needs new work.
 
 ## 6. Recommended next step
 
-1. Bring up `sl8541e-1h10.dts`-based `sp9832e-1h10-<dev>` DTS in the 4.14 tree (the stale
-   `sp9832e-1h10.dts` should be replaced) and boot an ILI9881C reference path on one watch to prove
-   Image + DTB + ramdisk, console and USB.
-2. Done: every 4.14.y stable release (4.14.134 to 4.14.336) is applied, one commit per release,
-   with conflicts and skips logged in `KERNEL_4.14_STABLE.md`. Project decisions recorded there:
-   RPMB stays the vendor block-device interface, `android_setup()` keeps the `gi->slock` unbind guard,
-   `module.lds` uses the Android `.plt 0` form. Next: audit the Android-only patches on
-   `android-4.14-stable` (not in stable) the same way as the 4.4 `android-4.4-p` audit.
-3. Then port, in order: display DT conversion for one OLED panel (CO5300), the sc2721 charger/FGU,
-   Mali kbase, touch and sensors.
+Done (compile only, nothing booted): 4.14.y stable to 4.14.336, the top `android-4.14-stable` fixes, input
+drivers, SC2721 charger and gauge, the DM63 board DTS (`sp9832e-1h10-dm63.dts`, `dm63/DTS_414.md`) and the
+CO5300 panels on DRM.
+
+Next:
+1. First boot of the DM63 on 4.14 (needs the user's OK to flash): console, USB, eMMC, then display. The first
+   charge must be attended (see `dm63/DTS_414.md`).
+2. Userspace: the Android 8.1 vendor hwcomposer/gralloc use ADF; on 4.14 DRM a DRM-capable composer is needed,
+   which ties a 4.14 kernel to a newer Android build (GSI with a DRM HWC) rather than the stock vendor image.
+3. Mali kbase port (needs the kbase source tarballs).
+4. Board DTS for the other watches (DW100U next), AOD on DRM, WCN/GNSS tweaks, SIPC hardening.
 
 ## 7. Driver port status (branch `kernel-4.14-ports`)
 
