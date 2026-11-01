@@ -1223,7 +1223,9 @@ static bool cm_manager_adjust_current(struct charger_manager *cm,
 	return true;
 }
 
-static int cm_manager_get_jeita_status(struct charger_manager *cm, int cur_temp)
+/* Zone selection for the four entry table, unchanged from the original code. */
+static int cm_manager_get_jeita_status_4(struct charger_manager *cm,
+					 int cur_temp)
 {
 	struct charger_desc *desc = cm->desc;
 	static int jeita_status;
@@ -1264,6 +1266,67 @@ static int cm_manager_get_jeita_status(struct charger_manager *cm, int cur_temp)
 	default:
 		jeita_status = STATUS_BELOW_T0;
 		break;
+	}
+
+	return jeita_status;
+}
+
+/*
+ * Zone selection for a table with N = jeita_tab_size entries. Zone 0 is below
+ * entry 0 and zone N above entry N - 1 (both stop charging), zone z (1 <= z
+ * <= N - 1) is [entry z - 1, entry z) and uses the current and voltage of
+ * entry z.
+ *
+ * An entry with recovery_temp above its temp is a lower boundary: a rising
+ * temperature only enters the zone above it once recovery_temp is reached.
+ * An entry with recovery_temp below its temp is an upper boundary: a falling
+ * temperature only returns to the zone below it once recovery_temp is
+ * reached. The four entry table keeps its original selection code.
+ */
+static int cm_manager_get_jeita_status(struct charger_manager *cm, int cur_temp)
+{
+	struct charger_desc *desc = cm->desc;
+	static int jeita_status;
+	int n = desc->jeita_tab_size;
+	struct charger_jeita_table *tab = desc->jeita_tab;
+	int i, z;
+	bool keep;
+
+	if (n == 4)
+		return cm_manager_get_jeita_status_4(cm, cur_temp);
+
+	for (i = n - 1; i >= 0; i--) {
+		if ((cur_temp >= tab[i].temp && i > 0) ||
+		    (cur_temp > tab[i].temp && i == 0)) {
+			break;
+		}
+	}
+
+	if (i < 0) {
+		jeita_status = 0;
+	} else if (i == n - 1) {
+		jeita_status = n;
+	} else if (i == 0) {
+		if (jeita_status != 0 || cur_temp >= tab[0].recovery_temp)
+			jeita_status = 1;
+	} else {
+		z = i + 1;
+		keep = false;
+
+		/* falling out of the zone above through an upper boundary */
+		if (jeita_status == z + 1 &&
+		    tab[i + 1].recovery_temp < tab[i + 1].temp &&
+		    cur_temp > tab[i + 1].recovery_temp)
+			keep = true;
+
+		/* rising out of the zone below through a lower boundary */
+		if (jeita_status == z - 1 &&
+		    tab[i].recovery_temp > tab[i].temp &&
+		    cur_temp < tab[i].recovery_temp)
+			keep = true;
+
+		if (!keep)
+			jeita_status = z;
 	}
 
 	return jeita_status;
@@ -2483,6 +2546,11 @@ static int cm_init_jeita_table(struct charger_desc *desc, struct device *dev)
 		return 0;
 
 	desc->jeita_tab_size = size / (4 * sizeof(__be32));
+	if (desc->jeita_tab_size < 2) {
+		dev_warn(dev, "cm-jeita-temp-table needs at least two entries, ignored\n");
+		desc->jeita_tab_size = 0;
+		return 0;
+	}
 	desc->jeita_tab = devm_kzalloc(dev, sizeof(struct charger_jeita_table) *
 				       (desc->jeita_tab_size + 1), GFP_KERNEL);
 	if (!desc->jeita_tab)
