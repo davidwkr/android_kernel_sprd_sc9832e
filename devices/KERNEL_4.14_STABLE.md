@@ -156,3 +156,4 @@ interface (mmc_access_rpmb), because the Android 8.1 vendor userspace uses
 | 4.14.272 | clean | - |
 | 4.14.273 | clean | - |
 | 4.14.274 | conflict | drivers/nfc/st21nfca/se.c: vendor already carries the later upstream params_len/skb->len validation with devm_kfree(); kept it and added both stable checks (aid_len > sizeof(aid), params_len vs allocated size) verbatim (JUDGEMENT: the two new -EINVAL returns do not devm_kfree, same as stable); 0 skipped |
+| 4.14.275 | conflict | arch/arm64/kernel/entry.S kernel_exit: Spectre-BHB rework moves the lr/sp restore into the el0 alternative and the el1 branch; vendor CONFIG_SPRD_DEBUG STACK_KEEP_SIZE pop moved into the el1 (.else) branch, symmetric with kernel_entry. Builds with MITIGATE_SPECTRE_BRANCH_HISTORY=y |
