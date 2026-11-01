@@ -82,13 +82,13 @@ struct acc_dev {
 	/* online indicates state of function_set_alt & function_unbind
 	 * set to 1 when we connect
 	 */
-	int online:1;
+	int online;
 
 	/* disconnected indicates state of open & release
 	 * Set to 1 when we disconnect.
 	 * Not cleared until our file is closed.
 	 */
-	int disconnected:1;
+	int disconnected;
 
 	/* strings sent by the host */
 	char manufacturer[ACC_STRING_SIZE];
@@ -378,13 +378,11 @@ static void acc_complete_set_string(struct usb_ep *ep, struct usb_request *req)
 		if (length >= ACC_STRING_SIZE)
 			length = ACC_STRING_SIZE - 1;
 
-		if (length > 0) {
-			spin_lock_irqsave(&dev->lock, flags);
-			memcpy(string_dest, req->buf, length);
-			/* ensure zero termination */
-			string_dest[length] = 0;
-			spin_unlock_irqrestore(&dev->lock, flags);
-		}
+		spin_lock_irqsave(&dev->lock, flags);
+		memcpy(string_dest, req->buf, length);
+		/* ensure zero termination */
+		string_dest[length] = 0;
+		spin_unlock_irqrestore(&dev->lock, flags);
 	} else {
 		pr_err("unknown accessory string index %d\n",
 			dev->string_index);
@@ -603,8 +601,11 @@ fail:
 	pr_err("acc_bind() could not allocate requests\n");
 	while ((req = req_get(dev, &dev->tx_idle)))
 		acc_request_free(req, dev->ep_in);
-	for (i = 0; i < RX_REQ_MAX; i++)
+	for (i = 0; i < RX_REQ_MAX; i++) {
 		acc_request_free(dev->rx_req[i], dev->ep_out);
+		dev->rx_req[i] = NULL;
+	}
+
 	return -1;
 }
 
@@ -614,6 +615,7 @@ static ssize_t acc_read(struct file *fp, char __user *buf,
 	struct acc_dev *dev = fp->private_data;
 	struct usb_request *req;
 	ssize_t r = count;
+	ssize_t data_length;
 	unsigned xfer;
 	int ret = 0;
 
@@ -635,6 +637,21 @@ static ssize_t acc_read(struct file *fp, char __user *buf,
 		goto done;
 	}
 
+	if (!dev->rx_req[0]) {
+		pr_warn("acc_read: USB request already handled/freed");
+		r = -EINVAL;
+		goto done;
+	}
+
+	/*
+	 * Calculate the data length by considering termination character.
+	 * Then compansite the difference of rounding up to
+	 * integer multiple of maxpacket size.
+	 */
+	data_length = count;
+	data_length += dev->ep_out->maxpacket - 1;
+	data_length -= data_length % dev->ep_out->maxpacket;
+
 	if (dev->rx_done) {
 		// last req cancelled. try to get it.
 		req = dev->rx_req[0];
@@ -644,10 +661,7 @@ static ssize_t acc_read(struct file *fp, char __user *buf,
 requeue_req:
 	/* queue a request */
 	req = dev->rx_req[0];
-	req->length = count;
-	if (count < dev->ep_out->maxpacket)
-		req->length = dev->ep_out->maxpacket;
-
+	req->length = data_length;
 	dev->rx_done = 0;
 	ret = usb_ep_queue(dev->ep_out, req, GFP_KERNEL);
 	if (ret < 0) {
@@ -900,12 +914,6 @@ int acc_ctrlrequest(struct usb_composite_dev *cdev,
 	 */
 	if (!dev)
 		return -ENODEV;
-/*
-	printk(KERN_INFO "acc_ctrlrequest "
-			"%02x.%02x v%04x i%04x l%u\n",
-			b_requestType, b_request,
-			w_value, w_index, w_length);
-*/
 
 	if (b_requestType == (USB_DIR_OUT | USB_TYPE_VENDOR)) {
 		if (b_request == ACCESSORY_START) {
@@ -996,6 +1004,26 @@ err:
 	return value;
 }
 EXPORT_SYMBOL_GPL(acc_ctrlrequest);
+
+int acc_ctrlrequest_composite(struct usb_composite_dev *cdev,
+			      const struct usb_ctrlrequest *ctrl)
+{
+	u16 w_length = le16_to_cpu(ctrl->wLength);
+
+	if (w_length > USB_COMP_EP0_BUFSIZ) {
+		if (ctrl->bRequestType & USB_DIR_IN) {
+			/* Cast away the const, we are going to overwrite on purpose. */
+			__le16 *temp = (__le16 *)&ctrl->wLength;
+
+			*temp = cpu_to_le16(USB_COMP_EP0_BUFSIZ);
+			w_length = USB_COMP_EP0_BUFSIZ;
+		} else {
+			return -EINVAL;
+		}
+	}
+	return acc_ctrlrequest(cdev, ctrl);
+}
+EXPORT_SYMBOL_GPL(acc_ctrlrequest_composite);
 
 static int
 __acc_function_bind(struct usb_configuration *c,
@@ -1099,8 +1127,10 @@ acc_function_unbind(struct usb_configuration *c, struct usb_function *f)
 
 	while ((req = req_get(dev, &dev->tx_idle)))
 		acc_request_free(req, dev->ep_in);
-	for (i = 0; i < RX_REQ_MAX; i++)
+	for (i = 0; i < RX_REQ_MAX; i++) {
 		acc_request_free(dev->rx_req[i], dev->ep_out);
+		dev->rx_req[i] = NULL;
+	}
 
 	acc_hid_unbind(dev);
 }
@@ -1392,7 +1422,6 @@ static struct usb_function_instance *acc_alloc_inst(void)
 	err = acc_setup();
 	if (err) {
 		kfree(fi_acc);
-		pr_err("Error setting ACCESSORY\n");
 		return ERR_PTR(err);
 	}
 
@@ -1419,8 +1448,6 @@ int acc_ctrlrequest_configfs(struct usb_function *f,
 static struct usb_function *acc_alloc(struct usb_function_instance *fi)
 {
 	struct acc_dev *dev = get_acc_dev();
-
-	pr_info("acc_alloc\n");
 
 	dev->function.name = "accessory";
 	dev->function.strings = acc_strings,
