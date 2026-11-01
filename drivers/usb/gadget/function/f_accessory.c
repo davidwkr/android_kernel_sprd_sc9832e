@@ -1238,6 +1238,11 @@ EXPORT_SYMBOL_GPL(acc_disconnect);
 static void acc_cleanup(void)
 {
 	misc_deregister(&acc_device);
+
+	/* Cancel any async work */
+	cancel_delayed_work_sync(&_acc_dev->start_work);
+	cancel_work_sync(&_acc_dev->hid_work);
+
 	kfree(_acc_dev);
 	_acc_dev = NULL;
 }
