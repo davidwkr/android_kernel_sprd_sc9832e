@@ -71,6 +71,9 @@ Base: 4.14.133 (UNISOC downstream). Each release applied as
 | 4.14.197 | conflict | drivers/block/zram/zram_drv.h: SECTOR_SHIFT define removed per stable (now in blkdev.h); vendor already lacks max_zpage_size block; 0 skipped |
 | 4.14.198 | clean | - |
 | 4.14.199 | clean | - |
+| 4.14.200 | clean | - |
 
 Builds: sprd_sharkle_defconfig Image + dtbs built OK at 4.14.147, at 4.14.150
-(merged with the watch_414 fragment) and at 4.14.151.
+(merged with the watch_414 fragment) and at 4.14.151. Checked with
+sprd_sharkle_defconfig + watch_414 fragment at 4.14.171, 182, 192 and 200 (all
+OK; breaks found at 182 and 200 were fixed in 4.14.175 and 4.14.196).
