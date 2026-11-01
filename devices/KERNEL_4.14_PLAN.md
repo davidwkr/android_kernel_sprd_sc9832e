@@ -92,7 +92,7 @@ ported/re-implemented, MISSING = in neither tree or needs new work.
 | Audio (VBC/codec sc2721) | yes | `sound/soc/sprd` with `vbc-rxpx-codec-sc27xx`, `audiosipc` | PRESENT (DT differs, `sprd-sound-sharkl.dtsi`) |
 | ION | yes | `ION`, `ION_SPRD` | PRESENT; our `security/ion-lifetime` fixes to re-check |
 | VSP/JPG | `sprd_vsp/jpg` | `sprd_vsp`, `sprd_jpg`, both with sharkle compatibles | PRESENT |
-| Security backports (stable, CIP, UNISOC bulletins) | 4.4.302+ | 4.14.133 (stable is at 4.14.336); 2019 BSP | MISSING: merge `stable`/`aosp` 4.14.y first, then re-audit vendor drivers |
+| Security backports (stable, CIP, UNISOC bulletins) | 4.4.302+ | 4.14.336 (all 4.14.y stable releases applied, see `KERNEL_4.14_STABLE.md`); 2019 BSP base | DONE for stable; Android-specific `android-4.14-stable` patches and UNISOC bulletins still to audit |
 
 ### DT binding comparison (stock watch DT vs 4.14 drivers, high level)
 
@@ -136,8 +136,8 @@ ported/re-implemented, MISSING = in neither tree or needs new work.
    (11.13) must stay compatible.
 3. Charging path: no sc2721 charger in 4.14; battery safety (CV, timers, watchdog) must be revalidated
    on hardware, which we cannot do now.
-4. The tree is a 2019 BSP snapshot (4.14.133) with no history; merging 4.14.y stable (about 200
-   releases) is a large security-relevant step and conflicts with vendor changes are likely.
+4. The tree is a 2019 BSP snapshot with no history. 4.14.y stable is now applied up to 4.14.336
+   (53 of 203 releases had conflicts, resolved by hand); none of it is boot-tested.
 5. `-Wno-error` and warning suppressions mask real defects in vendor code.
 6. Our 4.4 watch features (AOD, OTG role, GNSS/SIPC tweaks, four sensors, three touch drivers,
    Goodix FP) all need porting; none exist in 4.14.
@@ -149,8 +149,11 @@ ported/re-implemented, MISSING = in neither tree or needs new work.
 1. Bring up `sl8541e-1h10.dts`-based `sp9832e-1h10-<dev>` DTS in the 4.14 tree (the stale
    `sp9832e-1h10.dts` should be replaced) and boot an ILI9881C reference path on one watch to prove
    Image + DTB + ramdisk, console and USB.
-2. In parallel, merge `aosp` `android-4.14-stable` (or `stable` 4.14.y) in a throwaway branch to
-   measure the conflict count with the vendor BSP.
+2. Done: every 4.14.y stable release (4.14.134 to 4.14.336) is applied, one commit per release,
+   with conflicts and skips logged in `KERNEL_4.14_STABLE.md`. Project decisions recorded there:
+   RPMB stays the vendor block-device interface, `android_setup()` keeps the `gi->slock` unbind guard,
+   `module.lds` uses the Android `.plt 0` form. Next: audit the Android-only patches on
+   `android-4.14-stable` (not in stable) the same way as the 4.4 `android-4.4-p` audit.
 3. Then port, in order: display DT conversion for one OLED panel (CO5300), the sc2721 charger/FGU,
    Mali kbase, touch and sensors.
 
