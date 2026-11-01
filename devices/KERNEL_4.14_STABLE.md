@@ -180,3 +180,4 @@ interface (mmc_access_rpmb), because the Android 8.1 vendor userspace uses
 | 4.14.296 | conflict | fs/nilfs2/segment.c: nilfs_lookup_dirty_node_buffers(): stable btnc_inode->i_mapping lookup, kept vendor 3-argument pagevec_lookup_tag() (no PAGEVEC_SIZE nr_pages); not Android-specific; 0 skipped |
 | 4.14.297 | clean | - |
 | 4.14.298 | conflict | drivers/mmc/core/sdio_bus.c: sdio_release_func(): kept vendor CONFIG_MMC_EMBEDDED_SDIO guard and added stable MMC_QUIRK_NONSTD_SDIO check (nested if, same form as Android); matches Google's 4.14.298 merge; 0 skipped |
+| 4.14.299 | clean | - |
