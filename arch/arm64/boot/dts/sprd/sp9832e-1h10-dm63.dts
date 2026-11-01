@@ -216,9 +216,10 @@
 	 * of the 4.14 sl8541e-1h10 reference board, no stock equivalent.
 	 *
 	 * cm-jeita-temp-table: the five entry stock table, converted in
-	 * devices/dm63/DTS_414.md. The stock 0x7fff (no limit) zone is the
-	 * smallest stock adapter current, 430 mA. The 4.4 driver of the watch
-	 * never read these jeita properties, so this is stricter than stock.
+	 * devices/dm63/DTS_414.md. As in the stock 4.4 sprd_battery.c, every
+	 * zone current is capped to the adapter current by the charger
+	 * (sc2720_charger_set_current()); the stock 0x7fff (no limit) zone is
+	 * written as 32767 mA so the adapter current applies.
 	 * cm-wdt-interval is left out: stock chg-wdt is disabled and the
 	 * charger driver has no watchdog property.
 	 */
@@ -243,7 +244,7 @@
 		cm-jeita-temp-table = <900 930 0 4450000>,
 				      <1000 1030 100000 4450000>,
 				      <1100 1130 500000 4450000>,
-				      <1450 1420 430000 4450000>,
+				      <1450 1420 32767000 4450000>,
 				      <1500 1470 700000 4450000>;
 
 		cm-battery-cold = <100>;

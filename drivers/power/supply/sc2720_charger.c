@@ -700,9 +700,32 @@ static int sc2720_charger_stop_charge(struct sc2720_charger_info *info)
 	return ret;
 }
 
+/* charge current of the attached adapter type in uA */
+static u32 sc2720_charger_adapter_cur(struct sc2720_charger_info *info)
+{
+	switch (info->usb_phy->chg_type) {
+	case SDP_TYPE:
+		return info->cur.sdp_cur;
+	case DCP_TYPE:
+		return info->cur.dcp_cur;
+	case CDP_TYPE:
+		return info->cur.cdp_cur;
+	default:
+		return info->cur.unknown_cur;
+	}
+}
+
 static int sc2720_charger_set_current(struct sc2720_charger_info *info, u32 cur)
 {
 	int temp, ret;
+
+	/*
+	 * SC2721: never charge faster than the adapter type allows, whatever
+	 * the request (jeita, thermal, userspace), as the 4.4 driver capped
+	 * every jeita current to the adapter current.
+	 */
+	if (info->data->is_sc2721)
+		cur = min(cur, sc2720_charger_adapter_cur(info));
 
 	cur = cur / 1000;
 	if (cur < SC2720_CHG_CURRENT_MIN)
