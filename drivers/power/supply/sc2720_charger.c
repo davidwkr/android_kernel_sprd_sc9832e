@@ -70,6 +70,11 @@
 #define SC2721_CV_SEARCH_MIN_MV			3700
 #define SC2721_CV_OVERRIDE_MIN_MV		4000
 #define SC2721_CV_OVERRIDE_MAX_MV		4400
+/* input over-voltage protection, CHGR_CTRL1 bits 5..0, 100 mV steps */
+#define SC2721_OVP_MASK				GENMASK(5, 0)
+#define SC2721_OVP_MIN_MV			5600
+#define SC2721_OVP_MAX_MV			9000
+#define SC2721_OVP_STEP_MV			100
 
 struct sc2720_charger_data {
 	const struct power_supply_desc *desc;
@@ -94,6 +99,10 @@ struct sc2720_charger_info {
 	u32 cv_cal;
 	u32 cv_vmax_mv;
 	u32 cv_last_req_mv;
+	/* SC2721: last requested charge current in uA, before the adapter cap */
+	u32 cur_req_ua;
+	/* SC2721 only: "sprd,ovp-microvolt", 0 = not set */
+	u32 ovp_uv;
 };
 
 /* SC2721 CV override ("battery hold"), 0 = off, see sc2721_cv_override_ops */
@@ -146,8 +155,6 @@ static bool sc2721_cv_model(unsigned int mv, unsigned int cal,
 {
 	int cv, e = 0, c = (int)cal;
 
-	if (mv > SC2721_END_V_MAX_MV)
-		return false;
 	if (mv >= SC2721_END_V_BASE_MV) {
 		if (mv < SC2721_END_V_BASE_MV + SC2720_TERM_VOLTAGE_STEP) {
 			cv = SC2721_CV_STEP_ROUND(mv - SC2721_END_V_BASE_MV) + c;
@@ -161,6 +168,13 @@ static bool sc2721_cv_model(unsigned int mv, unsigned int cal,
 			cv = SC2721_CV_STEP_ROUND(mv - (SC2721_END_V_BASE_MV +
 					SC2720_TERM_VOLTAGE_STEP)) + c;
 			if (cv > SC2720_CHG_CCCV_MAXIMUM) {
+				/*
+				 * Above 4400 mV only END_V 1 with a high CV code
+				 * reaches the target; the 4.4 arithmetic would wrap
+				 * here, so refuse.
+				 */
+				if (mv > SC2721_END_V_MAX_MV)
+					return false;
 				e = 2;
 				cv = c - SC2721_CV_STEP_ROUND(
 					SC2721_END_V_MAX_MV - mv);
@@ -525,6 +539,33 @@ static int sc2720_set_termination_voltage(struct sc2720_charger_info *info,
 	return ret;
 }
 
+/*
+ * SC2721 input over-voltage protection, port of the 4.4
+ * sprdchg_set_chg_ovp(): clamp to 5600..9000 mV, code = (mV - 5600) / 100 in
+ * CHGR_CTRL1 bits 5..0, with CC_EN cleared around the write.
+ */
+static int sc2721_set_ovp(struct sc2720_charger_info *info)
+{
+	u32 mv = info->ovp_uv / 1000;
+	int ret;
+
+	mv = clamp_t(u32, mv, SC2721_OVP_MIN_MV, SC2721_OVP_MAX_MV);
+
+	ret = regmap_update_bits(info->regmap, info->base + SC2720_CHG_CFG0,
+				 SC2720_CHG_CC_MODE, 0);
+	if (ret)
+		return ret;
+
+	ret = regmap_update_bits(info->regmap, info->base + SC2720_CHG_CFG1,
+				 SC2721_OVP_MASK,
+				 (mv - SC2721_OVP_MIN_MV) / SC2721_OVP_STEP_MV);
+	if (ret)
+		return ret;
+
+	return regmap_update_bits(info->regmap, info->base + SC2720_CHG_CFG0,
+				  SC2720_CHG_CC_MODE, SC2720_CHG_CC_MODE);
+}
+
 static int sc2720_charger_hw_init(struct sc2720_charger_info *info)
 {
 	struct power_supply_battery_info bat_info = { };
@@ -603,12 +644,22 @@ static int sc2720_charger_hw_init(struct sc2720_charger_info *info)
 		}
 
 		/*
-		 * SC2721: the OVP field is 6 bits wide and the value is board
-		 * data that is not in the 4.4 sources, so it is not written.
-		 * TODO: add a DT property for it.
+		 * SC2721: the OVP level is board data, read from
+		 * "sprd,ovp-microvolt". Without it the register keeps the
+		 * value it has (current behaviour).
 		 */
-		if (info->data->is_sc2721)
-			return 0;
+		if (info->data->is_sc2721) {
+			if (!info->ovp_uv) {
+				dev_warn_once(info->dev,
+					      "no sprd,ovp-microvolt, input OVP register left as is\n");
+				return 0;
+			}
+
+			ret = sc2721_set_ovp(info);
+			if (ret)
+				dev_err(info->dev, "failed to set charger ovp\n");
+			return ret;
+		}
 
 		/* Set charge over voltage protection value 6500mv */
 		ret = regmap_update_bits(info->regmap,
@@ -651,9 +702,34 @@ static int sc2720_charger_stop_charge(struct sc2720_charger_info *info)
 	return ret;
 }
 
+/* charge current of the attached adapter type in uA */
+static u32 sc2720_charger_adapter_cur(struct sc2720_charger_info *info)
+{
+	switch (READ_ONCE(info->usb_phy->chg_type)) {
+	case SDP_TYPE:
+		return info->cur.sdp_cur;
+	case DCP_TYPE:
+		return info->cur.dcp_cur;
+	case CDP_TYPE:
+		return info->cur.cdp_cur;
+	default:
+		return info->cur.unknown_cur;
+	}
+}
+
 static int sc2720_charger_set_current(struct sc2720_charger_info *info, u32 cur)
 {
 	int temp, ret;
+
+	/*
+	 * SC2721: never charge faster than the adapter type allows, whatever
+	 * the request (jeita, thermal, userspace), as the 4.4 driver capped
+	 * every jeita current to the adapter current.
+	 */
+	if (info->data->is_sc2721) {
+		info->cur_req_ua = cur;
+		cur = min(cur, sc2720_charger_adapter_cur(info));
+	}
 
 	cur = cur / 1000;
 	if (cur < SC2720_CHG_CURRENT_MIN)
@@ -818,6 +894,15 @@ static void sc2720_charger_work(struct work_struct *data)
 			goto out;
 
 		info->charging = true;
+	} else if (info->data->is_sc2721 && info->limit > 0 &&
+		   info->charging && present) {
+		/*
+		 * The adapter type may have changed while charging: apply the
+		 * last request again so the cap follows the current type.
+		 */
+		ret = sc2720_charger_set_current(info, info->cur_req_ua);
+		if (ret)
+			goto out;
 	} else if ((!info->limit && info->charging) || !present) {
 		/* Stop charging */
 		info->charging = false;
@@ -1149,6 +1234,9 @@ static int sc2720_charger_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "failed to get register address\n");
 		return -ENODEV;
 	}
+
+	if (info->data->is_sc2721)
+		of_property_read_u32(np, "sprd,ovp-microvolt", &info->ovp_uv);
 
 	info->usb_notify.notifier_call = sc2720_charger_usb_change;
 	ret = usb_register_notifier(info->usb_phy, &info->usb_notify);

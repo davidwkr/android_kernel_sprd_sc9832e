@@ -1908,19 +1908,27 @@ static int sc27xx_fgu_probe(struct platform_device *pdev)
 		return PTR_ERR(data->charge_cha);
 	}
 
-	data->gpiod = devm_gpiod_get(&pdev->dev, "bat-detect", GPIOD_IN);
+	/*
+	 * The detect GPIO is optional: boards without one (DM63) have the
+	 * battery fixed in the case, it is always present then.
+	 */
+	data->gpiod = devm_gpiod_get_optional(&pdev->dev, "bat-detect", GPIOD_IN);
 	if (IS_ERR(data->gpiod)) {
 		dev_err(&pdev->dev, "failed to get battery detection GPIO\n");
 		return PTR_ERR(data->gpiod);
 	}
 
-	ret = gpiod_get_value_cansleep(data->gpiod);
-	if (ret < 0) {
-		dev_err(&pdev->dev, "failed to get gpio state\n");
-		return ret;
-	}
+	if (data->gpiod) {
+		ret = gpiod_get_value_cansleep(data->gpiod);
+		if (ret < 0) {
+			dev_err(&pdev->dev, "failed to get gpio state\n");
+			return ret;
+		}
 
-	data->bat_present = !!ret;
+		data->bat_present = !!ret;
+	} else {
+		data->bat_present = true;
+	}
 	mutex_init(&data->lock);
 	data->dev = &pdev->dev;
 	data->variant = pdata;
@@ -1968,6 +1976,9 @@ static int sc27xx_fgu_probe(struct platform_device *pdev)
 		dev_err(data->dev, "failed to request fgu IRQ\n");
 		return ret;
 	}
+
+	if (!data->gpiod)
+		return 0;
 
 	irq = gpiod_to_irq(data->gpiod);
 	if (irq < 0) {
