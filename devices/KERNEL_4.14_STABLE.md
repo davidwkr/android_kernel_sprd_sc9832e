@@ -102,6 +102,7 @@ Base: 4.14.133 (UNISOC downstream). Each release applied as
 | 4.14.228 | clean | - |
 | 4.14.229 | conflict | drivers/usb/musb/musb_core.c: 1 hunk skipped, vendor musb lacks musb_pm_runtime_check_session()/MUSB_QUIRK_* (older musb), so the B_DISCONNECT_99 retry fix has nothing to patch |
 | 4.14.230 | clean | - |
+| 4.14.231 | clean | - |
 
 Builds: sprd_sharkle_defconfig Image + dtbs built OK at 4.14.147, at 4.14.150
 (merged with the watch_414 fragment) and at 4.14.151. Checked with
