@@ -86,6 +86,15 @@ static ssize_t spool_read(struct file *filp,
 		timeout = 0;
 
 	if (sblock->is_hold) {
+		/* ppos is user-seekable (default_llseek): keep it inside the held block */
+		if (*ppos < 0 || *ppos > sblock->hold.length) {
+			sblock->is_hold = 0;
+			if (sblock_release(sblock->dst, sblock->channel,
+					   &sblock->hold))
+				pr_err("failed to release block!\n");
+			*ppos = 0;
+			return -EINVAL;
+		}
 		if (count < sblock->hold.length - *ppos) {
 			rdsize = count;
 		} else {
