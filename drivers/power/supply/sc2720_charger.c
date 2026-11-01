@@ -219,6 +219,28 @@ static unsigned int sc2721_cv_effective(struct sc2720_charger_info *info,
 }
 
 /*
+ * The CV in uV the override holds the battery at, 0 when it is not holding:
+ * override off, no CV requested yet, the request is already at or below the
+ * override, or the override is not representable on this unit (the 4.4
+ * gr_hold_target_mv() conditions). Read by the fuel gauge for its resync.
+ */
+static unsigned int sc2721_cv_hold_uv(struct sc2720_charger_info *info)
+{
+	unsigned int req, eff, e, c, hold = 0;
+
+	mutex_lock(&sc2721_cv_lock);
+	req = info->cv_last_req_mv;
+	if (READ_ONCE(sc2721_cv_override_mv) && req) {
+		eff = sc2721_cv_effective(info, req);
+		if (eff < req && sc2721_cv_floor(eff, info->cv_cal, &e, &c))
+			hold = eff;
+	}
+	mutex_unlock(&sc2721_cv_lock);
+
+	return hold * 1000;
+}
+
+/*
  * Write END_V and the CV code. The code goes through 0 first so that the
  * change is monotone, then END_V, then the final code. Caller holds
  * sc2721_cv_lock.
@@ -852,6 +874,16 @@ static int sc2720_charger_usb_get_property(struct power_supply *psy,
 		}
 		break;
 
+	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE:
+		/* SC2721 only: CV held by the override in uV, 0 = not holding */
+		if (!info->data->is_sc2721) {
+			ret = -EINVAL;
+			goto out;
+		}
+
+		val->intval = sc2721_cv_hold_uv(info);
+		break;
+
 	case POWER_SUPPLY_PROP_ONLINE:
 		ret = sc2720_charger_get_online(info, &online);
 		if (ret)
@@ -985,6 +1017,17 @@ static enum power_supply_property sc2720_usb_props[] = {
 	POWER_SUPPLY_PROP_HEALTH,
 };
 
+static enum power_supply_property sc2721_usb_props[] = {
+	POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE_MAX,
+	POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE,
+	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT,
+	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
+	POWER_SUPPLY_PROP_USB_TYPE,
+	POWER_SUPPLY_PROP_STATUS,
+	POWER_SUPPLY_PROP_ONLINE,
+	POWER_SUPPLY_PROP_HEALTH,
+};
+
 static const struct power_supply_desc sc2720_charger_desc = {
 	.name			= "sc2720_charger",
 	.type			= POWER_SUPPLY_TYPE_USB,
@@ -1000,8 +1043,8 @@ static const struct power_supply_desc sc2720_charger_desc = {
 static const struct power_supply_desc sc2721_charger_desc = {
 	.name			= "sc2721_charger",
 	.type			= POWER_SUPPLY_TYPE_USB,
-	.properties		= sc2720_usb_props,
-	.num_properties		= ARRAY_SIZE(sc2720_usb_props),
+	.properties		= sc2721_usb_props,
+	.num_properties		= ARRAY_SIZE(sc2721_usb_props),
 	.get_property		= sc2720_charger_usb_get_property,
 	.set_property		= sc2720_charger_usb_set_property,
 	.property_is_writeable	= sc2720_charger_property_is_writeable,

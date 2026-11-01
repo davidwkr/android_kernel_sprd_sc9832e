@@ -3,7 +3,7 @@ Spreadtrum SC27XX PMICs Fuel Gauge Unit Power Supply Bindings
 Required properties:
 - compatible: Should be one of the following:
   "sprd,sc2720-fgu",
-  "sprd,sc2721-fgu",
+  "sprd,sc2721-fgu" (own data: counter read/write timing, AA chip power-on OCV; must be listed before "sprd,sc2720-fgu" in a compatible list),
   "sprd,sc2723-fgu",
   "sprd,sc2730-fgu",
   "sprd,sc2731-fgu".

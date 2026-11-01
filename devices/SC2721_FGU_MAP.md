@@ -95,3 +95,27 @@ Left disabled (cannot be proven from the 4.4 chip level sources, all BOARD data 
 DTS note (out of scope, not changed): `sc2721.dtsi` lists `"sprd,sc27xx-fgu", "sprd,sc2720-fgu", "sprd,sc2721-fgu"`. The OF
 core takes the first listed compatible that matches, which is `sprd,sc2720-fgu`, so `sc2721_info` is not selected until the
 `sprd,sc2721-fgu` string is listed before it.
+
+## 5. Gauge resync (plan 7.2 step 3)
+
+Implemented in `sc27xx_fuel_gauge.c` for `sprd,sc2721-fgu` only, off by default (`gauge_resync=0`). It is a port of the
+4.4 `gauge_resync` in `sprd_2721_charge.c:505-735`; the 4.4 thresholds are kept: poll 60 s (C:536), rest 600 s (range
+600..86400), relaxed current 30 mA (1..100), OCV within 60 mV of the hold (10..200), difference 5 points (1..50), gap 1800 s
+(floor 1800), OCV capacity not 0 %, not 100 % unless the OCV is at or above the first table entry, CHARGING with the charger
+online, rest continuous (a gap above 2 polls restarts it). The thresholds are read-only module parameters
+(`sc27xx_fuel_gauge.gauge_resync_*`), range checked.
+
+Mechanism: the charger (`sc2720_charger.c`, SC2721 only) answers `POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE` with the CV in
+uV the override holds the battery at, 0 when not holding (the 4.4 `gr_hold_target_mv()` conditions: override on, a CV
+requested, effective CV below the request, effective CV representable). The gauge reads it, with STATUS and ONLINE, through
+`power_supply_get_by_name("sc2721_charger")`. Chosen over an exported function because the gauge (`=y` or `=m`) then has no
+link dependency on the charger module, and the existing gauge already reads the charger this way (`sc27xx_fgu_get_status()`).
+"CV reached" is not read from CHGR_STATUS (not implemented in the charger, see SC2721_CHARGER_MAP.md): as in 4.4 it is
+implied by the relaxed current and the OCV being at the hold voltage.
+
+Differences to 4.4: the capacity is in percent (4.4 uses 0.1 %), so the 5 point threshold is 5 %. The "raw" capacity is the
+pure coulomb counter value (`sc27xx_fgu_get_raw_capacity()`, split out of `sc27xx_fgu_get_capacity()`, which is unchanged),
+not `sprdfgu_read_soc()` with its side effects. There is no generation counter for A->B->A changes of the override within
+one poll: the hold voltage and charging state are re-read right before the write and must be unchanged. The write is the
+existing `sc27xx_fgu_adjust_cap()`, which re-bases `init_cap` / `init_clbcnt` (it does not rewrite the counter registers).
+Units: OCV and hold in uV, current in mA (`mA * mOhm = uV`), thresholds converted once (`mV * 1000`). Untested on hardware.
