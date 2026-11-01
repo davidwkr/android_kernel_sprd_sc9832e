@@ -55,6 +55,7 @@ Base: 4.14.133 (UNISOC downstream). Each release applied as
 | 4.14.181 | conflict | fs/f2fs/xattr.c: vendor f2fs API names kept in 4 hunks (f2fs_get_node_page, inline_xattr_addr(inode,page), f2fs_kzalloc); stable bounds checks applied; 0 skipped |
 | 4.14.182 | clean | - |
 | 4.14.183 | conflict | include/uapi/linux/xfrm.h: kept vendor XFRMA_* enum (SET_MARK/IF_ID), took stable comment fix on XFRMA_OFFLOAD_DEV; 0 skipped |
+| 4.14.184 | clean | - |
 
 Builds: sprd_sharkle_defconfig Image + dtbs built OK at 4.14.147, at 4.14.150
 (merged with the watch_414 fragment) and at 4.14.151.
