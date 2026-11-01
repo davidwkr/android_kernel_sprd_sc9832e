@@ -56,7 +56,7 @@
 /* debugging macros */
 #define SIPX_INFO(x...)		pr_info("SIPX: " x)
 #define SIPX_DEBUG(x...)	pr_debug("SIPX: " x)
-#define SIPX_ERR(x...)		pr_err("SIPX: [E] " x)
+#define SIPX_ERR(x...)		pr_err_ratelimited("SIPX: [E] " x)
 
 /* #define UL_TEST */
 
@@ -123,7 +123,7 @@ static int sipx_get_item_from_pool(struct sipx_pool *pool, struct sblock *blk)
 		pool->fifo_info->fifo_rdptr = rd + 1;
 		if (!sipx_peer_item_ok(index, 0, 0, pool->fifo_size,
 				       pool->blk_size)) {
-			pr_err_ratelimited("SIPX: [E] bad pool block index %u dropped\n",
+			SIPX_ERR("bad pool block index %u dropped\n",
 					   index);
 			ret = -EIO;
 			goto out;
@@ -264,32 +264,43 @@ static int sipx_get_item_from_ring(struct sipx_ring *ring, struct sblock *blk)
 		ring->fifo_info->fifo_rdptr = wr;
 		ret = -EIO;
 	} else {
-		pos = sblock_get_ringpos(rd, ring->fifo_size);
-		item = ring->fifo_buf[pos];
-		/* force compiler do one 4-bytes operation */
-		/* item = ring->fifo_buf[pos]; */
-		(*(u32 *)&item) = (*(u32 *)(&ring->fifo_buf[pos]));
+		u32 tries;
 
-		ring->fifo_info->fifo_rdptr = rd + 1;
-		SIPX_PARSE_DESC(item.desc, &length, &offset);
-		if (!sipx_peer_item_ok(item.index, offset, length,
-				       ring->fifo_size, ring->blk_size)) {
-			pr_err_ratelimited("SIPX: [E] bad ring item index %u off %u len %u dropped\n",
-					   item.index, offset, length);
-			ret = -EIO;
-			goto out;
-		}
-		blk->length = length;
-		blk->offset = offset;
-		blk->index = item.index;
-		blk->addr = ring->blks_buf +  ((u32)blk->index * ring->blk_size) +
-			blk->offset;
+		/*
+		 * Skip bad entries: the peer only signals on empty to
+		 * non-empty, so give up only when nothing valid is left.
+		 */
+		ret = -EIO;
+		for (tries = 0; tries < ring->fifo_size && rd != wr;
+		     tries++, rd++) {
+			pos = sblock_get_ringpos(rd, ring->fifo_size);
+			/* force compiler do one 4-bytes operation */
+			(*(u32 *)&item) = (*(u32 *)(&ring->fifo_buf[pos]));
+
+			ring->fifo_info->fifo_rdptr = rd + 1;
+			SIPX_PARSE_DESC(item.desc, &length, &offset);
+			if (!sipx_peer_item_ok(item.index, offset, length,
+					       ring->fifo_size,
+					       ring->blk_size)) {
+				SIPX_ERR("bad ring item index %u off %u len %u dropped\n",
+					 item.index, offset, length);
+				continue;
+			}
+			blk->length = length;
+			blk->offset = offset;
+			blk->index = item.index;
+			blk->addr = ring->blks_buf +
+				((u32)blk->index * ring->blk_size) +
+				blk->offset;
 
 #ifdef CONFIG_SPRD_SIPC_MEM_CACHE_EN
-		SIPC_DATA_TO_SKB_CACHE_INV(blk->addr, blk->addr + blk->length);
+			SIPC_DATA_TO_SKB_CACHE_INV(blk->addr,
+						   blk->addr + blk->length);
 #endif
+			ret = 0;
+			break;
+		}
 	}
-out:
 	spin_unlock_irqrestore(&ring->lock, flags);
 
 	return ret;
@@ -329,7 +340,8 @@ static void sipx_drain_ring(struct sipx_ring *ring, struct sipx_pool *pool,
 	if (cnt > ring->fifo_size) {
 		SIPX_ERR("%s: bad %s occupancy %u (wr=%u rd=%u)\n",
 			 __func__, name, cnt, wr, rd);
-		cnt = ring->fifo_size;
+		/* drop the entries: moving them would duplicate pool indexes */
+		cnt = 0;
 	}
 
 	while (cnt--) {
@@ -552,6 +564,7 @@ static int create_sipx_pool_ctrl(struct sipx_pool **out,
 				 volatile struct sipx_fifo_info *fifo_info,
 				 void *fifo_virt,
 				 void *blk_virt,
+				 u32 fifo_size, u32 blk_size,
 				 struct sipx_mgr *sipx)
 {
 	struct sipx_pool *pool = NULL;
@@ -565,9 +578,9 @@ static int create_sipx_pool_ctrl(struct sipx_pool **out,
 
 	pool->fifo_info = fifo_info;
 	pool->fifo_buf = fifo_virt;
-	pool->fifo_size = fifo_info->fifo_size;
+	pool->fifo_size = fifo_size;
 	pool->blks_buf = blk_virt;
-	pool->blk_size = fifo_info->blk_size;
+	pool->blk_size = blk_size;
 	pool->sipx = sipx;
 
 	if (blk_virt) {
@@ -750,12 +763,14 @@ static int create_sipx_mgr(struct sipx_mgr **out, struct sipx_init_data *pdata)
 				    fifo_info,
 				    sipx->smem_virt + offset_dl_fifo,
 				    sipx->smem_cached_virt + offset_dl_blk,
+				    sipx->dl_pool_size, sipx->blk_size,
 				    sipx);
 #else
 	ret = create_sipx_pool_ctrl(&sipx->dl_pool,
 				    fifo_info,
 				    sipx->smem_virt + offset_dl_fifo,
 				    sipx->smem_virt + offset_dl_blk,
+				    sipx->dl_pool_size, sipx->blk_size,
 				    sipx);
 #endif
 
@@ -776,12 +791,14 @@ static int create_sipx_mgr(struct sipx_mgr **out, struct sipx_init_data *pdata)
 				    fifo_info,
 				    sipx->smem_virt + offset_dl_ack_fifo,
 				    sipx->smem_cached_virt + offset_dl_ack_blk,
+				    sipx->dl_ack_pool_size, sipx->ack_blk_size,
 				    sipx);
 #else
 	ret = create_sipx_pool_ctrl(&sipx->dl_ack_pool,
 				    fifo_info,
 				    sipx->smem_virt + offset_dl_ack_fifo,
 				    sipx->smem_virt + offset_dl_ack_blk,
+				    sipx->dl_ack_pool_size, sipx->ack_blk_size,
 				    sipx);
 #endif
 
@@ -805,11 +822,13 @@ static int create_sipx_mgr(struct sipx_mgr **out, struct sipx_init_data *pdata)
 				    fifo_info,
 				    sipx->smem_virt + offset_ul_fifo,
 				    sipx->smem_cached_virt + offset_ul_blk,
+				    sipx->ul_pool_size, sipx->blk_size,
 				    sipx);
 #else
 	ret = create_sipx_pool_ctrl(&sipx->ul_pool, fifo_info,
 				    sipx->smem_virt + offset_ul_fifo,
 				    sipx->smem_virt + offset_ul_blk,
+				    sipx->ul_pool_size, sipx->blk_size,
 				    sipx);
 #endif
 	if (ret)
@@ -830,12 +849,14 @@ static int create_sipx_mgr(struct sipx_mgr **out, struct sipx_init_data *pdata)
 				    fifo_info,
 				    sipx->smem_virt + offset_ul_ack_fifo,
 				    sipx->smem_cached_virt + offset_ul_ack_blk,
+				    sipx->ul_ack_pool_size, sipx->ack_blk_size,
 				    sipx);
 #else
 	ret = create_sipx_pool_ctrl(&sipx->ul_ack_pool,
 				    fifo_info,
 				    sipx->smem_virt + offset_ul_ack_fifo,
 				    sipx->smem_virt + offset_ul_ack_blk,
+				    sipx->ul_ack_pool_size, sipx->ack_blk_size,
 				    sipx);
 #endif
 	if (ret)
@@ -1389,6 +1410,7 @@ static int create_sipx_ring_ctrl(struct sipx_ring **out,
 				 volatile struct sipx_fifo_info *fifo_info,
 				 void *fifo_virt,
 				 void *blk_virt,
+				 u32 fifo_size, u32 blk_size,
 				 struct sipx_mgr *sipx)
 {
 	struct sipx_ring *ring = NULL;
@@ -1401,9 +1423,9 @@ static int create_sipx_ring_ctrl(struct sipx_ring **out,
 
 	ring->fifo_info = fifo_info;
 	ring->fifo_buf = fifo_virt;
-	ring->fifo_size = fifo_info->fifo_size;
+	ring->fifo_size = fifo_size;
 	ring->blks_buf = blk_virt;
-	ring->blk_size = fifo_info->blk_size;
+	ring->blk_size = blk_size;
 	ring->sipx = sipx;
 
 	spin_lock_init(&ring->lock);
@@ -1433,6 +1455,7 @@ static int init_sipx_channel_fifos(struct sipx_mgr *sipx,
 	ret = create_sipx_ring_ctrl(&sipx_chan->dl_ring, fifo_info,
 				    sipx_chan->smem_virt + offset,
 				    sipx->dl_pool->blks_buf,
+				    sipx->dl_pool_size, sipx->blk_size,
 				    sipx);
 	if (ret)
 		return ret;
@@ -1456,6 +1479,7 @@ static int init_sipx_channel_fifos(struct sipx_mgr *sipx,
 	ret = create_sipx_ring_ctrl(&sipx_chan->dl_ack_ring, fifo_info,
 				    sipx_chan->smem_virt + offset,
 				    sipx->dl_ack_pool->blks_buf,
+				    sipx->dl_ack_pool_size, sipx->ack_blk_size,
 				    sipx);
 	if (ret)
 		return ret;
@@ -1483,6 +1507,7 @@ static int init_sipx_channel_fifos(struct sipx_mgr *sipx,
 				    fifo_info,
 				    sipx_chan->smem_virt + offset,
 				    sipx->ul_pool->blks_buf,
+				    sipx->ul_pool_size, sipx->blk_size,
 				    sipx);
 	if (ret)
 		return ret;
@@ -1515,6 +1540,7 @@ static int init_sipx_channel_fifos(struct sipx_mgr *sipx,
 	ret = create_sipx_ring_ctrl(&sipx_chan->ul_ack_ring, fifo_info,
 				    sipx_chan->smem_virt + offset,
 				    sipx->ul_ack_pool->blks_buf,
+				    sipx->ul_ack_pool_size, sipx->ack_blk_size,
 				    sipx);
 
 	return ret;
