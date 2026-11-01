@@ -139,3 +139,28 @@ rm -rf $B
 ```
 
 TSV columns: `aosp, status, class, prio, built, area, cve, reason, evidence, nfiles, subject, files`. `evidence` is `applied=A notapplied=B unknown=C` hunk counts.
+
+## Backported (kernel-4.14-ack1)
+
+Applied from `aosp/android-4.14-stable`, one commit each (subject kept, `(cherry picked from aosp android-4.14-stable <sha>)` footer):
+
+| Top 15 | aosp | Result |
+|---|---|---|
+| 1 | `ec932f3932e5` | applied; conflict in `psi_write()` (tree had `sizeof(buf) - 1`), took the ACK form |
+| 2 | `21e1e64073ff` | applied clean |
+| 3 | `921be923551b` | applied clean |
+| 4 | `fe7096ab25ac` | applied clean (two sites changed, not one) |
+| 5 | `ae4a7b9165c7` | applied clean |
+| 6 | `bb80e7ded12e` | applied clean |
+| 7 | `a4873af07a5a` | applied clean |
+| 8 | `33f17703cceb` | applied clean |
+| 9 | `3af44e7d523f` | applied adapted: no refcounting in the tree yet, so the cancel went into `acc_cleanup()`; moved into `__put_acc_dev()` by the `d1f0db7be7fc` commit |
+| 10 | `6dff19ec15ca`, `d1f0db7be7fc`, `88409856fb88`, `ff547623ce6c` | applied; `d1f0db7be7fc` (refcounting) was not on the list but the others need it. `acc_disconnect()` and `acc_alloc_inst()` written in the final ACK form (early return on NULL dev from `9eb20cbc45bb`, needed because `put_acc_dev(NULL)` would oops) |
+| 11 | `d5e62e55287d` | applied clean (after 10, so `acc_ctrlrequest()` has a NULL window between the two commits only) |
+| 12 | `0ac69147fd8c` | applied clean |
+| 13 | dma-buf series | skipped as requested |
+| 14 | `460dc7c31cef` | applied clean |
+| 14 | `24ae15a0f6da` | skipped: already present (`compute_write_bytes()` exists in `uid_sys_stats.c`) |
+| 15 | `7b860d58c10c` | applied clean |
+
+f_accessory end state: `a5f7ea4426e7` syncs `f_accessory.c` with the final ACK file, adding `338cdd129815` (bitfields), `c0a1a632dca5` (freed rx request, read length), `2021317cc8a9` (composite ctrl buffer size; `android_setup()` now calls `acc_ctrlrequest_composite()`) and the cleanups `74ee3eed8bcf`, `407e85baca42`, `4b8d9e341fb4`. Local fix on top (not in ACK): `7215df8fc31d` frees `acc_dev` from process context; ACK final can drop the last reference in `acc_ctrlrequest()` (atomic) and then call `cancel_*_sync()`. Build: `sprd_sharkle_defconfig` + `watch_414.fragment`, `Image dtbs` OK after picks 5, 11 and at the end; every touched `.c` object is built in that config.
