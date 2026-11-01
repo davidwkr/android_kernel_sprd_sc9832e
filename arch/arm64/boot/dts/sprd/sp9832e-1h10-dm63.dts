@@ -731,6 +731,14 @@
 		sprd,default-panel = "lcd_co5300_oled213_mipi";
 		power-supply = <&lcd_nosupply>;
 		avdd-gpio = <&ap_gpio 33 GPIO_ACTIVE_HIGH>;
+		/*
+		 * Stock power-on-sequence 33 1 20 (avdd, 20 ms) before the reset
+		 * pulses; power-off-sequence 50 0 20, 33 0 20 (reset low, then
+		 * avdd low).
+		 */
+		sprd,avdd-on-delay-ms = <20>;
+		sprd,avdd-off-delay-ms = <20>;
+		sprd,avdd-off-after-reset;
 		reset-gpio = <&ap_gpio 50 GPIO_ACTIVE_HIGH>;
 
 		port {

@@ -32,9 +32,9 @@ Two nodes carry panel data, read by `sprd_panel.c`:
   `default-brightness-level` (initial 0..255 backlight value, default 25), `sprd,max-level` (default 255).
   It registers a backlight class device named `sprd_backlight`.
 
-Sequence in the driver: `prepare` = `regulator_enable(power)`, avdd gpio high + 5 ms, avee gpio high + 5 ms, walk the
+Sequence in the driver: `prepare` = `regulator_enable(power)`, avdd gpio high + 5 ms (`sprd,avdd-on-delay-ms`), avee gpio high + 5 ms, walk the
 reset-on sequence on the reset gpio. `enable` = send the initial command stream, then update the PWM backlight
-if a `sprd,backlight` exists. `disable` = send sleep-in. `unprepare` = avee low + 5 ms, avdd low + 5 ms, reset-off
+if a `sprd,backlight` exists. `disable` = send sleep-in. `unprepare` = avee low + 5 ms, avdd low + 5 ms (after the reset-off sequence with `sprd,avdd-off-after-reset`), reset-off
 sequence, `regulator_disable`. `sprd,sleep-out-command` is parsed but never sent; `enable` re-sends the whole
 initial command stream after a resume instead (the 4.4 driver also re-ran `init-data` on resume).
 
@@ -104,7 +104,7 @@ datasheet, the bytes are copied.
 | (no counterpart) pixel clock | `clock-frequency = <128000000>` | stock dispc `clock-src` = 0x16e36000 (384 MHz), 0x7a12000 (128 MHz); assumed that the 4.4 edpi path ran from the second one, unverified |
 | `need-check-esd 0`, `esd-*` | `sprd,esd-check-enable = <0>`, register 0x0a, value 0x9c, period 2000, mode 0 | off as in stock |
 | `width-mm`, `height-mm` | `sprd,width-mm = <68>`, `sprd,height-mm = <121>` | equal to the 4.14 defaults |
-| `power-on-sequence` `33 1 20, 50 1 20, 50 0 20, 50 1 50` | board `avdd-gpio = <&ap_gpio 33>`, `reset-gpio = <&ap_gpio 50>`; `sprd,reset-on-sequence = <1 20>, <0 20>, <1 50>` | gpio 33 high with 20 ms wait becomes avdd high with the driver's fixed 5 ms |
+| `power-on-sequence` `33 1 20, 50 1 20, 50 0 20, 50 1 50` | board `avdd-gpio = <&ap_gpio 33>`, `reset-gpio = <&ap_gpio 50>`; `sprd,reset-on-sequence = <1 20>, <0 20>, <1 50>` | gpio 33 high with 20 ms wait becomes avdd high with `sprd,avdd-on-delay-ms = <20>` |
 | `power-off-sequence` `50 0 20, 33 0 20` | `sprd,reset-off-sequence = <0 20>`, avdd low in the driver | order differs, see risks |
 | `init-data`, `sleep-in`, `sleep-out` | `sprd,initial-command`, `sprd,sleep-in-command`, `sprd,sleep-out-command` | byte encoding below |
 | `oled-backlight` `default-brightness` | `default-brightness-level` (120 / 120 / 25) | |
@@ -161,7 +161,9 @@ only after an ESD recovery); whether the Android side rewrites the level on scre
 * DPI clock and refresh rate: the mode keeps the stock 128 MHz DPI clock (stock dispc `sprd,dpi_clk_div = 1`),
   so the computed refresh would be `128 MHz / (412 * vtotal)`, around 600 Hz. `sprd,refresh-rate = <60>` (stock
   `fps`) sets the reported vrefresh instead; the frame rate itself follows the panel TE in command mode.
-* avdd timing: stock waits 20 ms after gpio 33, the 4.14 driver 5 ms. Not compensated (no invented values).
+* avdd timing and order: the panel node sets `sprd,avdd-on-delay-ms = <20>`, `sprd,avdd-off-delay-ms = <20>` and
+  `sprd,avdd-off-after-reset` (new optional properties, default 5 ms / avdd first), so power on is avdd, 20 ms, the
+  reset pulses, and power off is reset low, 20 ms, avdd low, 20 ms, as in stock.
 
 ## Risks for a first boot
 
@@ -173,9 +175,6 @@ only after an ESD recovery); whether the Android side rewrites the level on scre
   pages, the TE, colour depth, brightness and windows, nothing that changes panel voltages; no variant-specific
   voltage register is written (the vendor page writes of the 1.952 / 2.06 inch streams were not decoded, they
   are the stock bytes).
-* Power-off order: the 4.14 driver cuts avdd (gpio 33) and then pulls reset low; stock pulled reset low first,
-  then avdd. The panel is in sleep-in (0x28, 0x10) at that point, so damage is not expected, but a panel
-  with reset still high and no supply is a state stock never produced.
 * TE: the init stream turns the TE output on and the edpi path waits for TE. If the TE pad is not muxed as in
   stock the DPU waits for the TE timeout (blank or very slow refresh). No pinctrl for the TE pad is in the DTS
   (the stock DT has none either; who muxes the pad was not checked).

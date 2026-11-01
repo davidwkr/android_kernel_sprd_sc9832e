@@ -117,9 +117,9 @@ static int sprd_panel_unprepare(struct drm_panel *p)
 		mdelay(5);
 	}
 
-	if (panel->info.avdd_gpio) {
+	if (panel->info.avdd_gpio && !panel->info.avdd_off_after_reset) {
 		gpiod_direction_output(panel->info.avdd_gpio, 0);
-		mdelay(5);
+		mdelay(panel->info.avdd_off_ms);
 	}
 
 	if (panel->info.reset_gpio) {
@@ -130,6 +130,11 @@ static int sprd_panel_unprepare(struct drm_panel *p)
 						timing[i].level);
 			mdelay(timing[i].delay);
 		}
+	}
+
+	if (panel->info.avdd_gpio && panel->info.avdd_off_after_reset) {
+		gpiod_direction_output(panel->info.avdd_gpio, 0);
+		mdelay(panel->info.avdd_off_ms);
 	}
 
 	regulator_disable(panel->supply);
@@ -151,7 +156,7 @@ static int sprd_panel_prepare(struct drm_panel *p)
 
 	if (panel->info.avdd_gpio) {
 		gpiod_direction_output(panel->info.avdd_gpio, 1);
-		mdelay(5);
+		mdelay(panel->info.avdd_on_ms);
 	}
 
 	if (panel->info.avee_gpio) {
@@ -428,6 +433,20 @@ static int sprd_panel_gpio_request(struct device *dev,
 	if (IS_ERR_OR_NULL(panel->info.avdd_gpio))
 		DRM_WARN("can't get panel avdd gpio: %ld\n",
 				 PTR_ERR(panel->info.avdd_gpio));
+
+	/*
+	 * Optional: avdd settle time after power on and after power off
+	 * (default 5 ms each), and dropping avdd only after the reset-off
+	 * sequence, for panels whose vendor sequence requires it.
+	 */
+	panel->info.avdd_on_ms = 5;
+	panel->info.avdd_off_ms = 5;
+	of_property_read_u32(dev->of_node, "sprd,avdd-on-delay-ms",
+			     &panel->info.avdd_on_ms);
+	of_property_read_u32(dev->of_node, "sprd,avdd-off-delay-ms",
+			     &panel->info.avdd_off_ms);
+	panel->info.avdd_off_after_reset =
+		of_property_read_bool(dev->of_node, "sprd,avdd-off-after-reset");
 
 	panel->info.avee_gpio = devm_gpiod_get_optional(dev,
 					"avee", GPIOD_ASIS);
