@@ -204,3 +204,4 @@ interface (mmc_access_rpmb), because the Android 8.1 vendor userspace uses
 | 4.14.320 | clean | - |
 | 4.14.321 | clean | - |
 | 4.14.322 | conflict | net/ipv4/netfilter/nf_socket_ipv4.c, net/ipv6/netfilter/nf_socket_ipv6.c: kept vendor 'struct sock *sk = skb->sk' local, took stable removal of uninitialized_var(); not Android-specific; 0 skipped |
+| 4.14.323 | clean | - |
