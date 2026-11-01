@@ -72,6 +72,56 @@ Base: 4.14.133 (UNISOC downstream). Each release applied as
 | 4.14.198 | clean | - |
 | 4.14.199 | clean | - |
 | 4.14.200 | clean | - |
+| 4.14.201 | conflict | mm/page_alloc.c: include-list adjacency (vendor linux/psi.h vs stable linux/khugepaged.h); kept both; 0 skipped |
+| 4.14.202 | clean | - |
+| 4.14.203 | clean | - |
+| 4.14.204 | conflict | fs/ext4/namei.c, fs/f2fs/namei.c: kept vendor (already uses fscrypt_prepare_link/rename helpers returning -EXDEV, so the EPERM->EXDEV hunks are redundant); drivers/staging/typec/{pd.h,tcpm.c} hunks applied to vendor drivers/usb/typec/tcpm/tcpm.c and include/linux/usb/pd.h; 0 skipped |
+| 4.14.205 | clean | - |
+| 4.14.206 | clean | - |
+| 4.14.207 | clean | - |
+| 4.14.208 | clean | - |
+| 4.14.209 | clean | - |
+| 4.14.210 | clean | - |
+| 4.14.211 | clean | - |
+| 4.14.212 | clean | - |
+| 4.14.213 | clean | - |
+| 4.14.214 | clean | - |
+| 4.14.215 | clean | - |
+| 4.14.216 | clean | - |
+| 4.14.217 | clean | - |
+| 4.14.218 | clean | - |
+| 4.14.219 | clean | - |
+| 4.14.220 | clean | - |
+| 4.14.221 | clean | - |
+| 4.14.222 | conflict | drivers/usb/gadget/function/u_ether.c: kept vendor SIPA/tx-wq block, took stable GETHER_MAX_MTU_SIZE/ETH_FRAME_LEN defines + min/max_mtu in both setup paths; vendor change_mtu limit switched to GETHER_MAX_MTU_SIZE (JUDGEMENT); scripts/Makefile.build: vendor CONFIG_LTO_CLANG endif kept inside new CC_USING_RECORD_MCOUNT ifndef; 0 skipped |
+| 4.14.223 | clean | - |
+| 4.14.224 | conflict | arch/arm64/kernel/module.lds: kept vendor (no NOLOAD on .plt sections, so stable '0 (NOLOAD)' fix not applicable) (JUDGEMENT); drivers/block/zram/zram_drv.c: kept vendor mm_stat/bd_stat layout, applied atomic_long_read(&pool_stats.pages_compacted) (zsmalloc type change applied); 0 skipped |
+| 4.14.225 | clean | - |
+| 4.14.226 | clean | - |
+| 4.14.227 | clean | - |
+| 4.14.228 | clean | - |
+| 4.14.229 | conflict | drivers/usb/musb/musb_core.c: 1 hunk skipped, vendor musb lacks musb_pm_runtime_check_session()/MUSB_QUIRK_* (older musb), so the B_DISCONNECT_99 retry fix has nothing to patch |
+| 4.14.230 | clean | - |
+| 4.14.231 | clean | - |
+| 4.14.232 | conflict | fs/ext4/namei.c: kept vendor (fscrypt_prepare_rename() called at entry before any buffer is held, so the goto end_rename->release_bh leak fix targets code the vendor no longer has); 0 skipped |
+| 4.14.233 | clean | drivers/staging/typec/tcpci.c hunks applied to vendor drivers/usb/typec/tcpm/tcpci.c; 0 skipped |
+| 4.14.234 | clean | - |
+| 4.14.235 | clean | - |
+| 4.14.236 | conflict | kernel/sched/fair.c: 3-way merge conflicted over the whole file (vendor fair.c is heavily diverged); kept vendor file and hand-applied the select_idle_cpu() cpumask_and(select_idle_mask) change, retaining vendor SPRD_CORE_CTL cpu_isolated() check in the loop (JUDGEMENT); 0 skipped |
+| 4.14.237 | clean | - |
+| 4.14.238 | clean | - |
+| 4.14.239 | conflict | mm/huge_memory.c: unmap_page(): kept vendor 3-arg try_to_unmap(page, flags, NULL), took stable VM_WARN_ON_ONCE_PAGE(page_mapped()) in place of unmap_success BUG (JUDGEMENT, core mm; TTU_SYNC/page_vma_mapped/rmap hunks applied cleanly); 0 skipped |
+| 4.14.240 | conflict | fs/fs-writeback.c: took stable removal of block_dump___mark_inode_dirty() (vendor 'block_dump > 1' caller dropped; Android merge did the same) (JUDGEMENT); security/selinux/avc.c: took stable GFP_NOWAIT|__GFP_NOWARN over vendor GFP_ATOMIC|__GFP_NOMEMALLOC at all 6 sites, matching Android's 4.14.240 merge (JUDGEMENT); 0 skipped |
+| 4.14.241 | clean | - |
+| 4.14.242 | clean | - |
+| 4.14.243 | clean | - |
+| 4.14.244 | clean | - |
+| 4.14.245 | clean | - |
+| 4.14.246 | clean | - |
+| 4.14.247 | conflict | fs/f2fs/segment.c: kept vendor (newer f2fs backport already has the discard_blks/valid_blocks split-update fix in build_sit_entries()); 0 skipped |
+| 4.14.248 | clean | - |
+| 4.14.249 | clean | - |
+| 4.14.250 | clean | - |
 
 Builds: sprd_sharkle_defconfig Image + dtbs built OK at 4.14.147, at 4.14.150
 (merged with the watch_414 fragment) and at 4.14.151. Checked with
