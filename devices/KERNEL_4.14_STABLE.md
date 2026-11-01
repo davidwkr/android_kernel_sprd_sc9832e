@@ -46,6 +46,7 @@ Base: 4.14.133 (UNISOC downstream). Each release applied as
 | 4.14.172 | clean | - |
 | 4.14.173 | conflict | drivers/tty/sysrq.c: 3 hunks skipped (vendor never raises console_loglevel in __handle_sysrq); u_serial.c: gs_start_tx() call added, vendor tty guard kept |
 | 4.14.174 | clean | - |
+| 4.14.175 | clean | net/xfrm/xfrm_device.c: vendor's no-op xfrm_dev_unregister() stub and its NETDEV_UNREGISTER case dropped in favour of stable's UNREGISTER -> xfrm_dev_down (fixes duplicate case value; 4.14.140 skip left the stub); 0 skipped |
 
 Builds: sprd_sharkle_defconfig Image + dtbs built OK at 4.14.147, at 4.14.150
 (merged with the watch_414 fragment) and at 4.14.151.
