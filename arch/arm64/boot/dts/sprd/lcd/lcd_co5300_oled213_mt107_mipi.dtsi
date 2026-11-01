@@ -1,0 +1,123 @@
+/*
+ * CO5300 AMOLED 2.13 inch MIPI DSI LCD config dtsi for the MT107 (4.14 DRM binding)
+ *
+ * Converted from the stock node lcd5300213@5300213 of devices/mt107/stock.dts
+ * (4.4 ADF binding, panel-name "lcd_co5300_oled213_mipi", lcd_id ID5300213).
+ * The stock node differs from the DM63 one (lcd_co5300_oled213_mipi.dtsi) in
+ * the init stream (extra vendor page writes fe 20 / f4 5a / f5 59 / fe e0 /
+ * 04 20 first) and from the DW100U one (lcd_co5300_oled_213_mipi.dtsi) in the
+ * init stream and in the brightness command type (0x23 here, 0x29 there), so
+ * it has its own file. The commands are the stock bytes, split by the
+ * type wait len-hi len-lo header (script checked, the stream walks exactly).
+ * Stock aod-in / aod-out are not converted (no 4.14 AOD port).
+ * Encoding and binding notes: devices/dm63/PANEL_414.md, board notes
+ * devices/mt107/DTS_414.md. Nothing here has run on a watch.
+ *
+ * SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+ */
+
+/ { lcds {
+	lcd_co5300_oled213_mipi: lcd_co5300_oled213_mipi {
+
+		sprd,dsi-work-mode = <0>; /* command mode (stock work-mode 0) */
+		sprd,dsi-color-format = "rgb888"; /* stock bpp 24 */
+		sprd,dsi-lane-number = <1>; /* stock lane-number 1 */
+
+		/*
+		 * Stock display-timings clock-frequency (0x704e0 = 460000) is the
+		 * DSI bit clock in kbps in the 4.4 ADF driver (phy_freq), not a
+		 * pixel clock.
+		 */
+		sprd,lcd-id = <0x5300213>;	/* stock lcd_id=ID5300213 */
+		sprd,refresh-rate = <60>;	/* stock fps */
+		sprd,phy-bit-clock = <460000>; /* kbps */
+
+		/* stock need-check-esd 0: the esd check stays off, values are stock */
+		sprd,esd-check-enable = <0>;
+		sprd,esd-check-mode = <0>; /* register check */
+		sprd,esd-check-period = <2000>; /* stock esd-timeout, ms */
+		sprd,esd-check-register = <0x0a>;
+		sprd,esd-check-value = <0x9c>;
+
+		sprd,width-mm = <68>;
+		sprd,height-mm = <121>;
+
+		/*
+		 * Stock power-on-sequence (gpio level delay-ms):
+		 * 33 1 20, 50 1 20, 50 0 20, 50 1 50. Gpio 33 is the panel
+		 * avdd-gpio and gpio 50 the reset-gpio, both in the dsi child
+		 * node of the board DTS. The 4.14 driver raises avdd, waits
+		 * sprd,avdd-on-delay-ms (20, board DTS), then walks this table
+		 * on the reset gpio.
+		 * Stock power-off-sequence: 50 0 20, 33 0 20.
+		 */
+		sprd,reset-on-sequence = <1 20>, <0 20>, <1 50>;
+		sprd,reset-off-sequence = <0 20>;
+
+		/* each command: data-type wait-ms len-hi len-lo payload */
+		sprd,initial-command = [
+			23 00 00 02 fe 20
+			23 00 00 02 f4 5a
+			23 00 00 02 f5 59
+			23 00 00 02 fe e0
+			23 00 00 02 04 20
+			23 00 00 02 fe 00
+			23 00 00 02 35 00
+			23 00 00 02 3a 77
+			23 00 00 02 53 20
+			23 00 00 02 51 00
+			23 00 00 02 63 ff
+			29 00 00 05 2a 00 15 01 b0
+			29 00 00 05 2b 00 00 01 f5
+			13 78 00 01 11
+			13 14 00 01 29
+			];
+
+		sprd,sleep-in-command = [
+			13 0a 00 01 28
+			13 78 00 01 10
+			];
+
+		sprd,sleep-out-command = [
+			13 78 00 01 11
+			13 32 00 01 29
+			];
+
+		/*
+		 * Stock horizontal porches and hsync (hback 18, hfront 30, hsync 2)
+		 * are not used in command mode. The 4.14 DPU picks the command
+		 * (edpi) interface only when hdisplay == htotal or vdisplay ==
+		 * vtotal, so the horizontal blanking is 0 here. Vertical values
+		 * are stock. clock-frequency is the DPI clock. 128 MHz is the
+		 * stock dispc clock-src[1] (0x7a12000), assumed to be what the
+		 * 4.4 driver ran the command mode pixel interface at (not
+		 * verified); the 4.14 DPU then picks the 128 MHz source. It makes
+		 * the reported refresh rate far above 60 Hz, see PANEL_414.md.
+		 */
+		display-timings {
+			timing0 {
+				clock-frequency = <128000000>;
+				hactive = <412>;
+				vactive = <502>;
+				hback-porch = <0>;
+				hfront-porch = <0>;
+				hsync-len = <0>;
+				vback-porch = <7>;
+				vfront-porch = <6>;
+				vsync-len = <1>;
+			};
+		};
+
+		/*
+		 * Stock brightness-levels is 256 commands "23 0a 00 02 51 NN", NN
+		 * = index. The 4.14 driver stores 255 command pointers (overflow
+		 * with 256) and patches payload[1] with the level when the table
+		 * has one command, so the single command is the same table.
+		 */
+		oled-backlight {
+			default-brightness-level = <25>;
+			sprd,max-level = <255>;
+			brightness-levels = [23 0a 00 02 51 00];
+		};
+	};
+}; };
