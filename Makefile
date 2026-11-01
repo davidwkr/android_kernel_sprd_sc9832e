@@ -933,6 +933,9 @@ KBUILD_CFLAGS += $(call cc-disable-warning, enum-int-mismatch)
 KBUILD_CFLAGS += $(call cc-disable-warning, dangling-pointer)
 KBUILD_CFLAGS += $(call cc-disable-warning, use-after-free)
 
+# Do not turn the remaining GCC 16 diagnostics on 2019 code into hard errors
+KBUILD_CFLAGS += -Wno-error
+
 # Add any arch overrides and user supplied CPPFLAGS, AFLAGS and CFLAGS as the
 # last assignments
 KBUILD_CPPFLAGS += $(ARCH_CPPFLAGS) $(KCPPFLAGS)
