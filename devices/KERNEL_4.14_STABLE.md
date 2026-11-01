@@ -66,6 +66,7 @@ Base: 4.14.133 (UNISOC downstream). Each release applied as
 | 4.14.192 | conflict | fs/f2fs/dir.c: corrupted-namelen boundary check already present in vendor f2fs; kept vendor (file identical to HEAD), 2 hunks skipped as already applied |
 | 4.14.193 | clean | - |
 | 4.14.194 | clean | - |
+| 4.14.195 | clean | - |
 
 Builds: sprd_sharkle_defconfig Image + dtbs built OK at 4.14.147, at 4.14.150
 (merged with the watch_414 fragment) and at 4.14.151.
