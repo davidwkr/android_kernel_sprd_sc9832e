@@ -1,0 +1,123 @@
+/*
+ * CO5300 AMOLED 1.75 inch MIPI DSI LCD config dtsi for the DM82 (4.14 DRM binding)
+ *
+ * Converted from the stock node lcd5300175@5300175 of devices/dm82/stock.dts (4.4 ADF
+ * binding, panel-name "lcd_co5300_oled175_mipi", lcd_id ID5300175). The stock node has
+ * 468x466, 68x121 mm, fps 60, work-mode 0, bpp 24, one lane, need-check-esd 0 (esd-timeout
+ * 2000, esd-check-reg 0x0a, esd-return-code 0x9c) and non-continue-clk-en 0.
+ * Encoding and binding notes: devices/dm63/PANEL_414.md (same conversion),
+ * board notes devices/dm82/DTS_414.md. Nothing here has run on a watch.
+ *
+ * SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+ */
+
+/ { lcds {
+	lcd_co5300_oled175_mipi: lcd_co5300_oled175_mipi {
+
+		sprd,dsi-work-mode = <0>; /* command mode (stock work-mode 0) */
+		sprd,dsi-color-format = "rgb888"; /* stock bpp 24 */
+		sprd,dsi-lane-number = <1>; /* stock lane-number 1 */
+
+		/*
+		 * Stock display-timings clock-frequency (0x704e0 = 460000) is the
+		 * DSI bit clock in kbps in the 4.4 ADF driver (phy_freq), not a
+		 * pixel clock.
+		 */
+		sprd,lcd-id = <0x5300175>;	/* stock lcd_id=ID5300175 */
+		sprd,refresh-rate = <60>;	/* stock fps */
+		sprd,phy-bit-clock = <460000>; /* kbps */
+
+		/* stock need-check-esd 0: the esd check stays off, values are stock */
+		sprd,esd-check-enable = <0>;
+		sprd,esd-check-mode = <0>; /* register check */
+		sprd,esd-check-period = <2000>; /* stock esd-timeout, ms */
+		sprd,esd-check-register = <0x0a>;
+		sprd,esd-check-value = <0x9c>;
+
+		sprd,width-mm = <68>;
+		sprd,height-mm = <121>;
+
+		/*
+		 * Stock power-on-sequence (gpio level delay-ms):
+		 * 33 1 20, 50 1 20, 50 0 20, 50 1 50. Gpio 33 is the panel
+		 * avdd-gpio and gpio 50 the reset-gpio, both in the dsi child
+		 * node of the board DTS. Stock power-off-sequence: 50 0 20, 33 0 20.
+		 */
+		sprd,reset-on-sequence = <1 20>, <0 20>, <1 50>;
+		sprd,reset-off-sequence = <0 20>;
+
+		/*
+		 * each command: data-type wait-ms len-hi len-lo payload. Stock
+		 * init-data (cell array in the stock DT) as bytes, 112 bytes, 18
+		 * commands. The stock data types equal what the generic write path
+		 * derives from the length (0x23 / 0x29 / 0x13).
+		 */
+		sprd,initial-command = [
+			23 00 00 02 fe 20
+			23 00 00 02 f4 5a
+			23 00 00 02 f5 59
+			23 00 00 02 fe 40
+			23 00 00 02 a0 fc
+			23 00 00 02 61 01
+			23 00 00 02 62 e3
+			23 00 00 02 fe 00
+			23 00 00 02 35 00
+			23 00 00 02 3a 77
+			23 00 00 02 51 00
+			23 00 00 02 53 20
+			23 00 00 02 63 ff
+			29 00 00 05 2a 00 06 01 d9
+			29 00 00 05 2b 00 00 01 d1
+			23 00 00 02 51 00
+			13 64 00 01 11
+			13 0a 00 01 29
+			];
+
+		sprd,sleep-in-command = [
+			13 0a 00 01 28
+			13 78 00 01 10
+			];
+
+		sprd,sleep-out-command = [
+			13 78 00 01 11
+			13 32 00 01 29
+			];
+
+		/*
+		 * Stock horizontal porches and hsync (hback 32, hfront 48, hsync 10)
+		 * are not used in command mode. The 4.14 DPU picks the command
+		 * (edpi) interface only when hdisplay == htotal or vdisplay ==
+		 * vtotal, so the horizontal blanking is 0 here. Vertical values
+		 * are stock (vback 4, vfront 8, vsync 2). clock-frequency is the
+		 * DPI clock: 128 MHz is the stock dispc clock-src[1] (0x7a12000),
+		 * assumed to be what the 4.4 driver ran the command mode pixel
+		 * interface at (not verified, same assumption as the DM63 dtsi).
+		 */
+		display-timings {
+			timing0 {
+				clock-frequency = <128000000>;
+				hactive = <468>;
+				vactive = <466>;
+				hback-porch = <0>;
+				hfront-porch = <0>;
+				hsync-len = <0>;
+				vback-porch = <4>;
+				vfront-porch = <8>;
+				vsync-len = <2>;
+			};
+		};
+
+		/*
+		 * Stock brightness-levels is 256 commands "23 0a 00 02 51 NN",
+		 * NN = index (checked). The 4.14 driver stores 255 command pointers
+		 * (overflow with 256) and patches payload[1] with the level when the
+		 * table has one command, so the single command is the same table.
+		 * Stock aod-in / aod-out (sprd_aod_idle) have no 4.14 port.
+		 */
+		oled-backlight {
+			default-brightness-level = <25>;
+			sprd,max-level = <255>;
+			brightness-levels = [23 0a 00 02 51 00];
+		};
+	};
+}; };

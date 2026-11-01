@@ -202,24 +202,28 @@ static int sc2721_cv_v10(unsigned int end_v, unsigned int code,
 }
 
 /*
- * Highest representable CV not above target_mv (searched down to 3700 mV).
- * Returns false if even the lowest representable CV is above it.
+ * Highest legal CV not above target_mv, over every END_V / even code pair.
+ * Returns false if none is at or above 3700 mV (nothing sensible to program).
  */
 static bool sc2721_cv_floor(unsigned int target_mv, unsigned int cal,
 			    unsigned int *end_v, unsigned int *code)
 {
-	unsigned int mv, e, c;
+	int best = -1, v;
+	unsigned int e, c;
 
-	for (mv = target_mv; mv >= SC2721_CV_SEARCH_MIN_MV; mv--) {
-		if (!sc2721_cv_model(mv, cal, &e, &c))
-			continue;
-		if (sc2721_cv_v10(e, c, cal) <= (int)target_mv * 10) {
+	/* every legal register pair: END_V 0..2, even CV codes 0..0x3e */
+	for (e = 0; e <= 2; e++) {
+		for (c = 0; c <= SC2720_CHG_CCCV_MAXIMUM; c += 2) {
+			v = sc2721_cv_v10(e, c, cal);
+			if (v > (int)target_mv * 10 || v <= best)
+				continue;
+			best = v;
 			*end_v = e;
 			*code = c;
-			return true;
 		}
 	}
-	return false;
+
+	return best >= (int)SC2721_CV_SEARCH_MIN_MV * 10;
 }
 
 /* override capped to the battery profile maximum, then min with request */
@@ -304,9 +308,9 @@ err:
 }
 
 /*
- * Program the CV for a request in mV. Override off: the stock 4.4 value
- * (requests the stock arithmetic cannot represent are refused, nothing is
- * written). Override on: the highest representable CV not above
+ * Program the CV for a request in mV. Override off: the stock 4.4 value;
+ * where the stock arithmetic would wrap, the highest representable CV not
+ * above the request. Override on: the highest representable CV not above
  * min(request, battery maximum, override); if none exists the lowest
  * representable CV, or the stock value if that is lower still. Caller holds
  * sc2721_cv_lock.
@@ -317,8 +321,18 @@ static int sc2721_program_cccv(struct sc2720_charger_info *info,
 	unsigned int e, c;
 
 	if (!READ_ONCE(sc2721_cv_override_mv)) {
-		if (!sc2721_cv_model(req, info->cv_cal, &e, &c))
+		if (sc2721_cv_model(req, info->cv_cal, &e, &c))
+			return sc2721_program_end_cv(info, e, c);
+		/*
+		 * The stock arithmetic would wrap for this calibration (4.4
+		 * then writes an arbitrary code): take the highest
+		 * representable CV not above the request instead.
+		 */
+		if (!sc2721_cv_floor(req, info->cv_cal, &e, &c))
 			return -EINVAL;
+		dev_warn(info->dev, "CV %u mV not representable, using %d.%d mV\n",
+			 req, sc2721_cv_v10(e, c, info->cv_cal) / 10,
+			 sc2721_cv_v10(e, c, info->cv_cal) % 10);
 		return sc2721_program_end_cv(info, e, c);
 	}
 
