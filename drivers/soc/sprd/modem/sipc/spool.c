@@ -33,6 +33,8 @@ struct spool_sblock {
 	u8			dst;
 	u8			channel;
 	bool			is_hold;
+	/* AP-side rx block size (sblock rounds the DT value up to a long) */
+	u32			rxblksz;
 	struct sblock	hold;
 };
 
@@ -56,6 +58,7 @@ static int spool_open(struct inode *inode, struct file *filp)
 	sblock->dst = spool->init->dst;
 	sblock->channel = spool->init->channel;
 	sblock->is_hold = 0;
+	sblock->rxblksz = ALIGN(spool->init->rxblocksize, sizeof(long));
 
 	return 0;
 }
@@ -109,6 +112,18 @@ static ssize_t spool_read(struct file *filp,
 		if (ret < 0) {
 			pr_err("spool_read: failed to receive block!\n");
 			return ret;
+		}
+		/*
+		 * blk comes from the peer; sblock_receive() already bounds it,
+		 * but this is the copy to user space: never trust a length
+		 * larger than the AP-side rx block size.
+		 */
+		if (blk.length > sblock->rxblksz) {
+			pr_err_ratelimited("spool_read: bad block length %u (max %u)\n",
+					   blk.length, sblock->rxblksz);
+			if (sblock_release(sblock->dst, sblock->channel, &blk))
+				pr_err("failed to release block!\n");
+			return -EIO;
 		}
 		if (blk.length <= count)
 			rdsize = blk.length;
