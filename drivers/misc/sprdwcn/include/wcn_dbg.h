@@ -19,6 +19,9 @@ extern u32 wcn_print_level;
 #define WCN_ERR(fmt, args...)\
 	pr_err(" error: " fmt, ## args)
 
+#define WCN_ERR_RATELIMITED(fmt, args...)\
+	pr_err_ratelimited(" error: " fmt, ## args)
+
 #define WCN_DBG(fmt, args...)\
 	pr_debug(" dbg: " fmt, ## args)
 

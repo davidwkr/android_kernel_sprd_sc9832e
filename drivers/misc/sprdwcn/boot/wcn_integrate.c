@@ -210,7 +210,7 @@ int wcn_read_data_from_phy_addr(phys_addr_t phy_addr,
 		return 0;
 	}
 
-	WCN_ERR("wcn_mem_ram_vmap_nocache fail\n");
+	WCN_ERR_RATELIMITED("wcn_mem_ram_vmap_nocache fail\n");
 	return -1;
 }
 
