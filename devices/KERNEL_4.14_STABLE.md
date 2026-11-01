@@ -155,3 +155,4 @@ interface (mmc_access_rpmb), because the Android 8.1 vendor userspace uses
 | 4.14.271 | clean | - |
 | 4.14.272 | clean | - |
 | 4.14.273 | clean | - |
+| 4.14.274 | conflict | drivers/nfc/st21nfca/se.c: vendor already carries the later upstream params_len/skb->len validation with devm_kfree(); kept it and added both stable checks (aid_len > sizeof(aid), params_len vs allocated size) verbatim (JUDGEMENT: the two new -EINVAL returns do not devm_kfree, same as stable); 0 skipped |
