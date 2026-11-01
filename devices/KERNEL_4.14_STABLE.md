@@ -213,3 +213,4 @@ interface (mmc_access_rpmb), because the Android 8.1 vendor userspace uses
 | 4.14.329 | clean | - |
 | 4.14.330 | clean | - |
 | 4.14.331 | clean | - |
+| 4.14.332 | clean | - |
