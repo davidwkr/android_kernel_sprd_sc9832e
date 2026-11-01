@@ -503,12 +503,12 @@ static int sc2720_charger_hw_init(struct sc2720_charger_info *info)
 		info->cur.unknown_cur = bat_info.cur.unknown_cur;
 
 		voltage_max_microvolt =
-			bat_info.constant_charge_voltage_max_uv / 1000;
+			bat_info.constant_charge_voltage_max_uv;
 		power_supply_put_battery_info(info->psy_usb, &bat_info);
 
 		if (info->data->is_sc2721) {
 			mutex_lock(&sc2721_cv_lock);
-			info->cv_vmax_mv = voltage_max_microvolt;
+			info->cv_vmax_mv = voltage_max_microvolt / 1000;
 			mutex_unlock(&sc2721_cv_lock);
 		}
 
@@ -532,7 +532,7 @@ static int sc2720_charger_hw_init(struct sc2720_charger_info *info)
 				dev_err(info->dev, "failed to set charger dpm\n");
 				return ret;
 			}
-		} else if (voltage_max_microvolt < SC2720_CHG_DPM_4300MV) {
+		} else if (voltage_max_microvolt / 1000 < SC2720_CHG_DPM_4300MV) {
 			ret = regmap_update_bits(info->regmap,
 						 info->base + SC2720_CHG_CFG0,
 						 SC2720_CHG_DPM_MASK,
