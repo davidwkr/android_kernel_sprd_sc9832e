@@ -132,3 +132,89 @@ Follow-up: the 4.14.164 mmc RPMB character-device conversion (and the 4.14.183
 chardev release-order fix) is reverted to the vendor block-device RPMB
 interface (mmc_access_rpmb), because the Android 8.1 vendor userspace uses
 /dev/block/mmcblk0rpmb. No other mmc fix depends on it.
+| 4.14.251 | clean | - |
+| 4.14.252 | clean | - |
+| 4.14.253 | clean | - |
+| 4.14.254 | clean | - |
+| 4.14.255 | clean | - |
+| 4.14.256 | conflict | kernel/trace/trace.c: set_tracer_flag() RECORD_TGID: took stable kzalloc(pid_max-sized, tgid_map_max + smp_store_release) over vendor kvzalloc(PID_MAX_DEFAULT+1), matching Android's 4.14.256 merge (JUDGEMENT); 0 skipped |
+| 4.14.257 | clean | drivers/staging/typec/tcpm.c hunks applied to vendor drivers/usb/typec/tcpm/tcpm.c; 0 skipped |
+| 4.14.258 | clean | - |
+| 4.14.259 | clean | - |
+| 4.14.260 | conflict | drivers/usb/gadget/function/u_ether.c: gether_register_netdev(): kept vendor uether_rx kthread creation and CONFIG_SPRD_SIPA register/debugfs path; took stable pre-register memcpy(net->dev_addr)+NET_ADDR_RANDOM and dropped post-register dev_set_mac_address() block and 'struct sockaddr sa' (JUDGEMENT); 0 skipped |
+| 4.14.261 | clean | - |
+| 4.14.262 | clean | - |
+| 4.14.263 | clean | - |
+| 4.14.264 | clean | - |
+| 4.14.265 | clean | - |
+| 4.14.266 | clean | - |
+| 4.14.267 | clean | - |
+| 4.14.268 | clean | - |
+| 4.14.269 | conflict | drivers/usb/gadget/function/rndis.c: rndis_free_response()/rndis_get_next_response(): kept vendor list_for_each_safe/list_entry iteration and added stable resp_lock spin_lock around it (stable's r,n list_for_each_entry_safe not used); 0 skipped |
+| 4.14.270 | clean | - |
+| 4.14.271 | clean | - |
+| 4.14.272 | clean | - |
+| 4.14.273 | clean | - |
+| 4.14.274 | conflict | drivers/nfc/st21nfca/se.c: vendor already carries the later upstream params_len/skb->len validation with devm_kfree(); kept it and added both stable checks (aid_len > sizeof(aid), params_len vs allocated size) verbatim (JUDGEMENT: the two new -EINVAL returns do not devm_kfree, same as stable); 0 skipped |
+| 4.14.275 | conflict | arch/arm64/kernel/entry.S kernel_exit: Spectre-BHB rework moves the lr/sp restore into the el0 alternative and the el1 branch; vendor CONFIG_SPRD_DEBUG STACK_KEEP_SIZE pop moved into the el1 (.else) branch, symmetric with kernel_entry. Builds with MITIGATE_SPECTRE_BRANCH_HISTORY=y |
+| 4.14.276 | conflict | include/net/xfrm.h, net/key/af_key.c, net/xfrm/xfrm_policy.c, net/xfrm/xfrm_user.c: vendor xfrm_interface if_id backport vs stable's struct xfrm_mark-based xfrm_policy_bysel_ctx()/byid(); resolved as Android (const struct xfrm_mark *mark, u32 if_id; if_id still matched, if_id read from XFRMA_IF_ID); matches Google's merge; 0 skipped |
+| 4.14.277 | clean | - |
+| 4.14.278 | clean | - |
+| 4.14.279 | clean | - |
+| 4.14.280 | clean | - |
+| 4.14.281 | clean | - |
+| 4.14.282 | conflict | drivers/md/dm-verity-target.c: verity_target: added stable .features = DM_TARGET_IMMUTABLE, kept vendor version {1, 4, 0}; matches Google's 4.14.282 merge; 0 skipped |
+| 4.14.283 | conflict | drivers/nfc/st21nfca/se.c: kept vendor params_len read + combined PARAMETERS tag/skb->len check (already has devm_kfree); took stable devm_kfree on the aid_len/params_len -EINVAL paths and the '||' skb->len fix; 0 skipped. Not Android-specific (Android merge not compared) |
+| 4.14.284 | clean | - |
+| 4.14.285 | conflict | drivers/char/random.c: random.c rewrite (Jason Donenfeld backport) taken wholesale from v4.14.285 with vendor chacha rename (crypto/chacha.h, CHACHA_* macros; vendor 51-line diff vs 4.14.284 was only that rename + __aligned(4) tmp buffers, which the new code no longer has) (JUDGEMENT, security-relevant); init/main.c: kept vendor early_pasr_setup() after setup_arch(), took stable move of add_latent_entropy/add_device_randomness/boot_init_stack_canary to random_init(command_line)+boot_init_stack_canary() after time_init(); drivers/of/fdt.c: vendor locals kept + rng_seed; include/crypto/chacha20.h/lib/chacha20.c/crypto/chacha20_generic.c are vendor-renamed to chacha.h/chacha.c/chacha_generic.c: chacha_constants enum + chacha_init_consts() added to include/crypto/chacha.h; 5 hunks skipped (already in vendor chacha.c/chacha_generic.c/chacha.h: u8* stream signature, put_unaligned_le32 store, aligned stream); random.c matches Android modulo the CHACHA rename |
+| 4.14.286 | clean | - |
+| 4.14.287 | clean | - |
+| 4.14.288 | clean | - |
+| 4.14.289 | clean | - |
+| 4.14.290 | clean | - |
+| 4.14.291 | clean | - |
+| 4.14.292 | clean | - |
+| 4.14.293 | clean | - |
+| 4.14.294 | clean | - |
+| 4.14.295 | clean | - |
+| 4.14.296 | conflict | fs/nilfs2/segment.c: nilfs_lookup_dirty_node_buffers(): stable btnc_inode->i_mapping lookup, kept vendor 3-argument pagevec_lookup_tag() (no PAGEVEC_SIZE nr_pages); not Android-specific; 0 skipped |
+| 4.14.297 | clean | - |
+| 4.14.298 | conflict | drivers/mmc/core/sdio_bus.c: sdio_release_func(): kept vendor CONFIG_MMC_EMBEDDED_SDIO guard and added stable MMC_QUIRK_NONSTD_SDIO check (nested if, same form as Android); matches Google's 4.14.298 merge; 0 skipped |
+| 4.14.299 | clean | - |
+| 4.14.300 | clean | - |
+| 4.14.301 | clean | - |
+| 4.14.302 | clean | - |
+| 4.14.303 | clean | - |
+| 4.14.304 | clean | - |
+| 4.14.305 | conflict | kernel/panic.c: kept vendor CONFIG_SPRD_SYSDUMP sysdump_enter() extern and added stable check_panic_on_warn()/warn_limit before it; check_panic_on_warn matches Google's 4.14.305 merge (sysdump block is vendor-only); 0 skipped |
+| 4.14.306 | clean | - |
+| 4.14.307 | clean | - |
+| 4.14.308 | clean | - |
+| 4.14.309 | clean | - |
+| 4.14.310 | clean | - |
+| 4.14.311 | clean | - |
+| 4.14.312 | clean | - |
+| 4.14.313 | clean | - |
+| 4.14.314 | clean | - |
+| 4.14.315 | clean | - |
+| 4.14.316 | clean | - |
+| 4.14.317 | clean | - |
+| 4.14.318 | clean | - |
+| 4.14.319 | conflict | drivers/mmc/core/block.c: mmc_blk_ioctl_cmd()/multi_cmd(): kept vendor mmc_access_rpmb() direct path and non-RPMB queue path; added stable drv_op_result = -EIO before the queued ioctl (not on the direct RPMB path, which does not use drv_op_result); stable's MMC_DRV_OP_IOCTL_RPMB form dropped per RPMB block-device decision; 0 skipped |
+| 4.14.320 | clean | - |
+| 4.14.321 | clean | - |
+| 4.14.322 | conflict | net/ipv4/netfilter/nf_socket_ipv4.c, net/ipv6/netfilter/nf_socket_ipv6.c: kept vendor 'struct sock *sk = skb->sk' local, took stable removal of uninitialized_var(); not Android-specific; 0 skipped |
+| 4.14.323 | clean | - |
+| 4.14.324 | conflict | drivers/android/binder_alloc.{c,h}: kept vendor int binder_alloc_shrinker_init() and the vendor-backported buffer copy helpers; added stable binder_alloc_shrinker_exit() (declaration + definition after binder_alloc_copy_from_buffer()); binder.c error-path call applied cleanly; matches Google's 4.14.324 merge for the binder_alloc.h declarations and shrinker_exit; 0 skipped |
+| 4.14.325 | clean | - |
+| 4.14.326 | clean | - |
+| 4.14.327 | clean | - |
+| 4.14.328 | conflict | drivers/usb/musb/musb_host.c: vendor musb_advance_schedule() already re-fetched qh after musb_giveback() (with is_ready NULL guard), so stable's duplicate re-fetch was dropped and its 'qh &&' condition kept; musb_urb_dequeue(): took stable 'ready &&' with vendor musb_ep_set_qh(ep, ...); drivers/usb/musb/musb_debugfs.c: HWVers width 16 (stable/Android; vendor had 8) (JUDGEMENT); 0 skipped; semantically matches Google's 4.14.328 merge (Android is stock musb without the vendor NULL guard) |
+| 4.14.329 | clean | - |
+| 4.14.330 | clean | - |
+| 4.14.331 | clean | - |
+| 4.14.332 | clean | - |
+| 4.14.333 | clean | - |
+| 4.14.334 | clean | - |
+| 4.14.335 | clean | - |
+| 4.14.336 | clean | - |
