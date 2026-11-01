@@ -76,6 +76,7 @@ Base: 4.14.133 (UNISOC downstream). Each release applied as
 | 4.14.202 | clean | - |
 | 4.14.203 | clean | - |
 | 4.14.204 | conflict | fs/ext4/namei.c, fs/f2fs/namei.c: kept vendor (already uses fscrypt_prepare_link/rename helpers returning -EXDEV, so the EPERM->EXDEV hunks are redundant); drivers/staging/typec/{pd.h,tcpm.c} hunks applied to vendor drivers/usb/typec/tcpm/tcpm.c and include/linux/usb/pd.h; 0 skipped |
+| 4.14.205 | clean | - |
 
 Builds: sprd_sharkle_defconfig Image + dtbs built OK at 4.14.147, at 4.14.150
 (merged with the watch_414 fragment) and at 4.14.151. Checked with
