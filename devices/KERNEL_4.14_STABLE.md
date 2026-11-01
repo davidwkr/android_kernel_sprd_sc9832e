@@ -137,3 +137,4 @@ interface (mmc_access_rpmb), because the Android 8.1 vendor userspace uses
 | 4.14.253 | clean | - |
 | 4.14.254 | clean | - |
 | 4.14.255 | clean | - |
+| 4.14.256 | conflict | kernel/trace/trace.c: set_tracer_flag() RECORD_TGID: took stable kzalloc(pid_max-sized, tgid_map_max + smp_store_release) over vendor kvzalloc(PID_MAX_DEFAULT+1), matching Android's 4.14.256 merge (JUDGEMENT); 0 skipped |
