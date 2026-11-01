@@ -189,3 +189,4 @@ interface (mmc_access_rpmb), because the Android 8.1 vendor userspace uses
 | 4.14.305 | conflict | kernel/panic.c: kept vendor CONFIG_SPRD_SYSDUMP sysdump_enter() extern and added stable check_panic_on_warn()/warn_limit before it; check_panic_on_warn matches Google's 4.14.305 merge (sysdump block is vendor-only); 0 skipped |
 | 4.14.306 | clean | - |
 | 4.14.307 | clean | - |
+| 4.14.308 | clean | - |
