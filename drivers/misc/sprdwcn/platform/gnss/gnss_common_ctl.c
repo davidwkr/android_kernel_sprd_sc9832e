@@ -18,7 +18,11 @@
 #include "gnss.h"
 #endif
 #include <linux/init.h>
+#include <linux/jiffies.h>
 #include <linux/kernel.h>
+#include <linux/ktime.h>
+#include <linux/limits.h>
+#include <linux/math64.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -27,7 +31,10 @@
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
+#include <linux/mutex.h>
+#include <linux/spinlock.h>
 #include <linux/sysfs.h>
+#include <linux/timekeeping.h>
 #include <misc/marlin_platform.h>
 #include <misc/wcn_bus.h>
 
@@ -370,27 +377,152 @@ static int gnss_tsen_disable(int type)
 #endif
 #endif
 
-static void gnss_power_on(bool enable)
+/*
+ * A start after a failed one is a real retry (calibration up to ~5 s,
+ * download timeout up to ~20 s) done with marlin_lock held, which stalls
+ * Wi-Fi/BT start/stop. Limit them: refuse a start for gnss_retry_min_s
+ * seconds after a failure; after gnss_retry_burst consecutive failures the
+ * wait doubles per further failure up to gnss_retry_max_s. A refused start
+ * leaves the state at POWEROFF and gnss_engine_state at error.
+ */
+static unsigned int gnss_retry_min_s = 30;
+module_param(gnss_retry_min_s, uint, 0644);
+MODULE_PARM_DESC(gnss_retry_min_s, "Seconds before a GNSS start is retried after a failure (0 = no limit)");
+static unsigned int gnss_retry_burst = 3;
+module_param(gnss_retry_burst, uint, 0644);
+MODULE_PARM_DESC(gnss_retry_burst, "Consecutive start failures before the retry wait backs off");
+static unsigned int gnss_retry_max_s = 600;
+module_param(gnss_retry_max_s, uint, 0644);
+MODULE_PARM_DESC(gnss_retry_max_s, "Maximum GNSS start retry wait in seconds");
+
+/* the module parameters are writable: bound what they can ask for */
+#define GNSS_RETRY_CAP_S	(24UL * 60 * 60)
+
+static unsigned int gnss_fail_count;
+static s64 gnss_retry_after_ns;	/* boottime, valid if fail_count */
+static bool gnss_last_start_failed;
+
+static unsigned long gnss_retry_delay_s(void)
+{
+	unsigned long delay = min_t(unsigned long, gnss_retry_min_s,
+				    GNSS_RETRY_CAP_S);
+	unsigned long max_s = min_t(unsigned long, gnss_retry_max_s,
+				    GNSS_RETRY_CAP_S);
+	unsigned int n;
+
+	if (!delay)
+		return 0;
+	for (n = gnss_retry_burst; n < gnss_fail_count; n++) {
+		if (delay >= max_s)
+			break;
+		delay <<= 1;	/* delay < max_s <= cap: no overflow */
+	}
+	if (gnss_fail_count >= gnss_retry_burst && delay > max_s)
+		delay = max_s;
+
+	return min_t(unsigned long, delay, GNSS_RETRY_CAP_S);
+}
+
+/*
+ * Locking. gnss_ctl_lock (mutex) serializes a whole control transaction in
+ * gnss_power_on(): state check, retry bookkeeping, start/stop and the final
+ * state. It is held across start_marlin()/stop_marlin(), which sleep, so it
+ * must never be taken from the dump callback (a start or stop can trigger the
+ * dump from inside start_marlin()/stop_marlin()).
+ * gnss_status_lock (spinlock) only makes the gnss_status transitions atomic:
+ * the dump callback gnss_dump_mem_ctrl_co() sets ASSERT without gnss_ctl_lock,
+ * and ASSERT must not be overwritten by the failure/stop completion.
+ */
+static DEFINE_MUTEX(gnss_ctl_lock);
+static DEFINE_SPINLOCK(gnss_status_lock);
+
+/* unconditional transition (ASSERT from the dump path) */
+static void gnss_status_set(unsigned int to)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&gnss_status_lock, flags);
+	WRITE_ONCE(gnss_common_ctl_dev.gnss_status, to);
+	spin_unlock_irqrestore(&gnss_status_lock, flags);
+}
+
+/* move from -> to only if the state is still from; false if it changed */
+static bool gnss_status_move(unsigned int from, unsigned int to)
+{
+	unsigned long flags;
+	bool moved = false;
+
+	spin_lock_irqsave(&gnss_status_lock, flags);
+	if (gnss_common_ctl_dev.gnss_status == from) {
+		WRITE_ONCE(gnss_common_ctl_dev.gnss_status, to);
+		moved = true;
+	}
+	spin_unlock_irqrestore(&gnss_status_lock, flags);
+
+	return moved;
+}
+
+static void gnss_power_on_locked(bool enable)
 {
 	int ret;
+	unsigned int new_status;
 
 	GNSSCOMM_INFO("%s:enable=%d,current gnss_status=%d\n", __func__,
 			enable, gnss_common_ctl_dev.gnss_status);
-	if (enable && gnss_common_ctl_dev.gnss_status == GNSS_STATUS_POWEROFF) {
-		gnss_common_ctl_dev.gnss_status = GNSS_STATUS_POWERON_GOING;
+	if (enable && READ_ONCE(gnss_common_ctl_dev.gnss_status) ==
+	    GNSS_STATUS_POWEROFF) {
+		s64 left_ns = gnss_retry_after_ns -
+			(s64)ktime_get_boot_ns();
+
+		if (gnss_fail_count && gnss_retry_min_s && left_ns > 0) {
+			GNSSCOMM_ERR("%s: start refused, %u failed, retry in %llus\n",
+				__func__, gnss_fail_count,
+				(unsigned long long)div_u64(left_ns,
+							    NSEC_PER_SEC) + 1);
+			return;
+		}
+		if (!gnss_status_move(GNSS_STATUS_POWEROFF,
+				      GNSS_STATUS_POWERON_GOING)) {
+			GNSSCOMM_INFO("%s: status is not match\n", __func__);
+			return;
+		}
+#ifdef CONFIG_SC2342_INTEG
+		/*
+		 * A failed start has been unwound by the boot code (core
+		 * off, state back to POWEROFF), so a new request is a real
+		 * retry: forget the previous failure.
+		 */
+		if (gnss_get_boot_status() == WCN_BOOT_CP2_ERR_BOOT)
+			gnss_set_boot_status(WCN_BOOT_CP2_OK); /* init val */
+#endif
 #ifdef CONFIG_UMW2652
 		if (wcn_get_xtal_26m_clk_type() == WCN_CLOCK_TYPE_TSX)
 			gnss_tsen_enable(TSEN_EXT);
 #endif
 		ret = start_marlin(gnss_common_ctl_dev.gnss_subsys);
-		if (ret != 0)
+		if (ret != 0) {
 			GNSSCOMM_INFO("%s: start marlin failed ret=%d\n",
 					__func__, ret);
-		else
-			gnss_common_ctl_dev.gnss_status = GNSS_STATUS_POWERON;
-	} else if (!enable && gnss_common_ctl_dev.gnss_status
-			== GNSS_STATUS_POWERON) {
-		gnss_common_ctl_dev.gnss_status = GNSS_STATUS_POWEROFF_GOING;
+			if (gnss_fail_count < UINT_MAX)
+				gnss_fail_count++;
+			gnss_last_start_failed = true;
+			gnss_retry_after_ns = (s64)ktime_get_boot_ns() +
+				(s64)gnss_retry_delay_s() * NSEC_PER_SEC;
+			/* nothing is left powered by the GNSS start: allow
+			 * a retry without a reboot, but do not overwrite an
+			 * ASSERT set by the dump path meanwhile
+			 */
+			gnss_status_move(GNSS_STATUS_POWERON_GOING,
+					 GNSS_STATUS_POWEROFF);
+		} else {
+			gnss_fail_count = 0;
+			gnss_last_start_failed = false;
+			/* an ASSERT set meanwhile is kept */
+			gnss_status_move(GNSS_STATUS_POWERON_GOING,
+					 GNSS_STATUS_POWERON);
+		}
+	} else if (!enable && gnss_status_move(GNSS_STATUS_POWERON,
+					       GNSS_STATUS_POWEROFF_GOING)) {
 #ifdef CONFIG_UMW2652
 		if (wcn_get_xtal_26m_clk_type() == WCN_CLOCK_TYPE_TSX)
 			gnss_tsen_disable(TSEN_EXT);
@@ -399,11 +531,28 @@ static void gnss_power_on(bool enable)
 		if (ret != 0)
 			GNSSCOMM_INFO("%s: stop marlin failed ret=%d\n",
 				 __func__, ret);
-		else
-			gnss_common_ctl_dev.gnss_status = GNSS_STATUS_POWEROFF;
+		/* ret < 0 is an errno. -EINVAL: not opened, nothing to stop.
+		 * Other failures: the stop was refused (dump/loopcheck), the
+		 * core is still up.
+		 */
+		new_status = (ret == 0 || ret == -EINVAL) ?
+			GNSS_STATUS_POWEROFF : GNSS_STATUS_POWERON;
+		/* keep an ASSERT set by the dump path meanwhile */
+		gnss_status_move(GNSS_STATUS_POWEROFF_GOING, new_status);
+		if (new_status == GNSS_STATUS_POWEROFF) {
+			gnss_fail_count = 0;
+			gnss_last_start_failed = false;
+		}
 	} else {
 		GNSSCOMM_INFO("%s: status is not match\n", __func__);
 	}
+}
+
+static void gnss_power_on(bool enable)
+{
+	mutex_lock(&gnss_ctl_lock);
+	gnss_power_on_locked(enable);
+	mutex_unlock(&gnss_ctl_lock);
 }
 
 static ssize_t gnss_power_enable_store(struct device *dev,
@@ -480,13 +629,29 @@ static ssize_t gnss_subsys_show(struct device *dev,
 static DEVICE_ATTR_RW(gnss_subsys);
 
 #ifdef CONFIG_SC2342_INTEG
-static int gnss_status_get(void)
+/*
+ * Read the status word the GNSS firmware keeps in the AP-side DDR carve-out
+ * (enum gnss_cp_status_subtype). The carve-out is mapped per read (vmap and
+ * vunmap in wcn_read_data_from_phy_addr()), so this may sleep and is for
+ * process context only; the value is only meaningful while the core is up.
+ * Returns -1 if the mapping fails (the failure log is rate limited).
+ */
+static int gnss_cp_status_read(void)
 {
 	phys_addr_t phy_addr;
 	u32 magic_value = 0;
 
 	phy_addr = wcn_get_gnss_base_addr() + GNSS_STATUS_OFFSET;
-	wcn_read_data_from_phy_addr(phy_addr, &magic_value, sizeof(u32));
+	if (wcn_read_data_from_phy_addr(phy_addr, &magic_value, sizeof(u32)))
+		return -1;
+
+	return magic_value;
+}
+
+static int gnss_status_get(void)
+{
+	int magic_value = gnss_cp_status_read();
+
 	GNSSCOMM_INFO("[%s] magic_value=%d\n", __func__, magic_value);
 
 	return magic_value;
@@ -508,7 +673,7 @@ void gnss_dump_mem_ctrl_co(void)
 		(gnss_status_get() != GNSS_CP_STATUS_SLEEP))) {
 		flag = (temp_status == GNSS_STATUS_POWERON) ? 0 : 1;
 		gnss_dump_mem(flag);
-		gnss_common_ctl_dev.gnss_status = GNSS_STATUS_ASSERT;
+		gnss_status_set(GNSS_STATUS_ASSERT);
 	}
 	complete(&gnss_dump_complete);
 }
@@ -524,7 +689,7 @@ static int gnss_dump_mem_ctrl(void)
 	dump_flag = 1;
 	if (gnss_common_ctl_dev.gnss_status == GNSS_STATUS_POWERON) {
 		ret = gnss_dump_mem(0);
-		gnss_common_ctl_dev.gnss_status = GNSS_STATUS_ASSERT;
+		gnss_status_set(GNSS_STATUS_ASSERT);
 	}
 
 	return ret;
@@ -579,6 +744,75 @@ static ssize_t gnss_status_show(struct device *dev,
 	return i;
 }
 static DEVICE_ATTR_RO(gnss_status);
+
+/*
+ * gnss_engine_state: read-only, diagnostic only. Takes no locks and does
+ * not access the GNSS core: it reads the driver state and one status word
+ * from the AP-side DDR carve-out (mapped per read, may sleep).
+ *   off         software control state POWEROFF (never started or stopped via
+ *               gnss_power_enable). A failed start is unwound (core, rail and
+ *               sys domain off) and also lands here, shown as error
+ *   transition  start or stop in progress (POWERON_GOING/POWEROFF_GOING)
+ *               (shown as error if the boot status is ERR_BOOT)
+ *   assert      the core asserted and a memory dump was taken
+ *   error       calibration/boot failed (WCN_BOOT_CP2_ERR_BOOT). The failed
+ *               start was unwound and the state is back to POWEROFF; the
+ *               value is kept until the next successful start.
+ *               Start requests are rate limited after a failure (module
+ *               parameters gnss_retry_*); a refused start stays here
+ *   sleep       driver state POWERON and the firmware reports status 6
+ *   on          driver state POWERON and any other firmware status
+ *   unknown     POWERON but the status word could not be read
+ */
+static ssize_t gnss_engine_state_show(struct device *dev,
+				      struct device_attribute *attr,
+				      char *buf)
+{
+	const char *state = "unknown";
+
+	switch (READ_ONCE(gnss_common_ctl_dev.gnss_status)) {
+	case GNSS_STATUS_POWEROFF:
+		state = "off";
+#ifdef CONFIG_SC2342_INTEG
+		/* last start failed and was unwound; a retry is possible */
+		if (gnss_get_boot_status() == WCN_BOOT_CP2_ERR_BOOT)
+			state = "error";
+#endif
+		if (gnss_last_start_failed)
+			state = "error";
+		break;
+	case GNSS_STATUS_POWERON_GOING:
+	case GNSS_STATUS_POWEROFF_GOING:
+		state = "transition";
+#ifdef CONFIG_SC2342_INTEG
+		if (gnss_get_boot_status() == WCN_BOOT_CP2_ERR_BOOT)
+			state = "error";
+#endif
+		break;
+	case GNSS_STATUS_ASSERT:
+		state = "assert";
+		break;
+	case GNSS_STATUS_POWERON:
+#ifdef CONFIG_SC2342_INTEG
+		if (gnss_get_boot_status() == WCN_BOOT_CP2_ERR_BOOT) {
+			state = "error";
+		} else {
+			int cp = gnss_cp_status_read();
+
+			if (cp == GNSS_CP_STATUS_SLEEP)
+				state = "sleep";
+			else if (cp >= 0)
+				state = "on";
+		}
+#else
+		state = "on";
+#endif
+		break;
+	}
+
+	return scnprintf(buf, PAGE_SIZE, "%s\n", state);
+}
+static DEVICE_ATTR_RO(gnss_engine_state);
 
 #ifdef CONFIG_UMW2652
 static ssize_t gnss_clktype_show(struct device *dev,
@@ -686,6 +920,7 @@ static struct attribute *gnss_common_ctl_attrs[] = {
 	&dev_attr_gnss_power_enable.attr,
 	&dev_attr_gnss_dump.attr,
 	&dev_attr_gnss_status.attr,
+	&dev_attr_gnss_engine_state.attr,
 	&dev_attr_gnss_subsys.attr,
 #ifdef CONFIG_UMW2652
 	&dev_attr_gnss_clktype.attr,

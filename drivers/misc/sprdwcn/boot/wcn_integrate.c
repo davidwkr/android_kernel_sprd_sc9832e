@@ -101,7 +101,7 @@ retry1:
 			usleep_range(8000, 10000);
 			goto retry1;
 		} else {
-			WCN_ERR("malloc err\n");
+			WCN_ERR_RATELIMITED("malloc err\n");
 			return NULL;
 		}
 	}
@@ -117,7 +117,7 @@ retry2:
 			usleep_range(8000, 10000);
 			goto retry2;
 		} else {
-			WCN_ERR("vmap err\n");
+			WCN_ERR_RATELIMITED("vmap err\n");
 			goto out;
 		}
 	} else {
@@ -210,7 +210,7 @@ int wcn_read_data_from_phy_addr(phys_addr_t phy_addr,
 		return 0;
 	}
 
-	WCN_ERR("wcn_mem_ram_vmap_nocache fail\n");
+	WCN_ERR_RATELIMITED("wcn_mem_ram_vmap_nocache fail\n");
 	return -1;
 }
 
@@ -741,6 +741,11 @@ int wcn_power_enable_vddcon(bool enable)
 	if (s_wcn_device.vddwcn) {
 		if (enable) {
 			ret = regulator_enable(s_wcn_device.vddwcn);
+			if (ret) {
+				WCN_ERR("vddcon enable failed ret=%d\n", ret);
+				mutex_unlock(&s_wcn_device.vddwcn_lock);
+				return ret;
+			}
 			s_wcn_device.vddwcn_en_count++;
 			if (wcn_platform_chip_type() ==
 				WCN_PLATFORM_TYPE_SHARKLE)
