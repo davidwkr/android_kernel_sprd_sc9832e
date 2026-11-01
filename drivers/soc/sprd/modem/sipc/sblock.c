@@ -34,6 +34,46 @@
 
 static struct sblock_mgr *sblocks[SIPC_ID_NR][SMSG_VALID_CH_NR];
 
+/*
+ * The ring/pool headers and the block descriptors live in shared memory
+ * the peer can write. Everything that sizes or positions an access is taken
+ * from the AP-side values cached in struct sblock_mgr, and a peer-written
+ * block descriptor is only used after sblock_peer_blk() accepted it.
+ */
+
+/*
+ * Validate a peer-supplied block (mapped address + length) against the pool
+ * [base, base + num * size). On success *idx is the block index.
+ */
+static int sblock_peer_blk(u32 addr, u32 len, u32 base, u32 num, u32 size,
+			   u32 *idx)
+{
+	u64 off;
+
+	if (!size || addr < base)
+		return -EINVAL;
+	off = addr - base;
+	if (off >= (u64)num * size || off % size || len > size)
+		return -EINVAL;
+	*idx = (u32)(off / size);
+	return 0;
+}
+
+/* Index of an AP-side block pointer in its pool; false if out of range. */
+static bool sblock_ap_index(void *addr, void *pool_virt, u32 num, u32 size,
+			    u32 *idx)
+{
+	unsigned long off;
+
+	if (!size || addr < pool_virt)
+		return false;
+	off = (unsigned long)(addr - pool_virt) / size;
+	if (off >= num)
+		return false;
+	*idx = (u32)off;
+	return true;
+}
+
 void sblock_put(u8 dst, u8 channel, struct sblock *blk)
 {
 	struct sblock_mgr *sblock;
@@ -41,7 +81,7 @@ void sblock_put(u8 dst, u8 channel, struct sblock *blk)
 	volatile struct sblock_ring_header *poolhd;
 	unsigned long flags;
 	int txpos;
-	int index;
+	u32 index;
 	u8 ch_index;
 
 	ch_index = sipc_channel2index(channel);
@@ -57,18 +97,25 @@ void sblock_put(u8 dst, u8 channel, struct sblock *blk)
 	ring = sblock->ring;
 	poolhd = (volatile struct sblock_ring_header *)(&ring->header->pool);
 
+	if (!sblock_ap_index(blk->addr, ring->txblk_virt, sblock->txblknum,
+			     sblock->txblksz, &index)) {
+		pr_err_ratelimited("%s: sblock-%d-%d block %p outside the tx pool\n",
+				   __func__, dst, channel, blk->addr);
+		return;
+	}
+
 	spin_lock_irqsave(&ring->p_txlock, flags);
 	txpos = sblock_get_ringpos(poolhd->txblk_rdptr - 1,
-				   poolhd->txblk_count);
-	ring->r_txblks[txpos].addr = blk->addr -
+				   sblock->txblknum);
+	ring->p_txblks[txpos].addr = blk->addr -
 				     sblock->smem_virt +
 				     sblock->mapped_smem_addr;
-	ring->r_txblks[txpos].length = poolhd->txblk_size;
+	ring->p_txblks[txpos].length = sblock->txblksz;
+	wmb();
 	poolhd->txblk_rdptr = poolhd->txblk_rdptr - 1;
+	mb();
 	if ((int)(poolhd->txblk_wrptr - poolhd->txblk_rdptr) == 1)
 		wake_up_interruptible_all(&(ring->getwait));
-	index = sblock_get_index((blk->addr - ring->txblk_virt),
-				 sblock->txblksz);
 	ring->txrecord[index] = SBLOCK_BLK_STATE_DONE;
 
 	spin_unlock_irqrestore(&ring->p_txlock, flags);
@@ -110,10 +157,10 @@ static int sblock_recover(u8 dst, u8 channel)
 	spin_lock_irqsave(&ring->p_txlock, qflags);
 	/* recover txblks pool */
 	poolhd->txblk_rdptr = poolhd->txblk_wrptr;
-	for (i = 0, j = 0; i < poolhd->txblk_count; i++) {
+	for (i = 0, j = 0; i < sblock->txblknum; i++) {
 		if (ring->txrecord[i] == SBLOCK_BLK_STATE_DONE) {
 			ring->p_txblks[j].addr = i * sblock->txblksz +
-						 poolhd->txblk_addr;
+						 sblock->txblk_base;
 			ring->p_txblks[j].length = sblock->txblksz;
 			poolhd->txblk_wrptr = poolhd->txblk_wrptr + 1;
 			j++;
@@ -129,10 +176,10 @@ static int sblock_recover(u8 dst, u8 channel)
 	spin_lock_irqsave(&ring->p_rxlock, qflags);
 	/* recover rxblks pool */
 	poolhd->rxblk_wrptr = poolhd->rxblk_rdptr;
-	for (i = 0, j = 0; i < poolhd->rxblk_count; i++) {
+	for (i = 0, j = 0; i < sblock->rxblknum; i++) {
 		if (ring->rxrecord[i] == SBLOCK_BLK_STATE_DONE) {
 			ring->p_rxblks[j].addr = i * sblock->rxblksz +
-						 poolhd->rxblk_addr;
+						 sblock->rxblk_base;
 			ring->p_rxblks[j].length = sblock->rxblksz;
 			poolhd->rxblk_wrptr = poolhd->rxblk_wrptr + 1;
 			j++;
@@ -264,7 +311,7 @@ int sblock_create_ex(u8 dst, u8 channel,
 	struct sipc_device *sdev;
 	volatile struct sblock_ring_header *ringhd;
 	volatile struct sblock_ring_header *poolhd;
-	u32 hsize;
+	u32 hsize, off_rtx, off_rrx, off_ptx, off_prx;
 	int i, result;
 	u8 ch_index;
 
@@ -390,29 +437,33 @@ int sblock_create_ex(u8 dst, u8 channel,
 		return -ENOMEM;
 	}
 
+	/* computed here, not read back from the peer-writable header */
+	sblock->txblk_base = sblock->mapped_smem_addr + hsize;
+	sblock->rxblk_base = sblock->txblk_base + txblocknum * txblocksize;
+
 	sblock->ring->header = sblock->smem_virt;
-	sblock->ring->txblk_virt = sblock->smem_virt +
-		(ringhd->txblk_addr - sblock->mapped_smem_addr);
-	sblock->ring->r_txblks = sblock->smem_virt +
-		(ringhd->txblk_blks - sblock->mapped_smem_addr);
-	sblock->ring->rxblk_virt = sblock->smem_virt +
-		(ringhd->rxblk_addr - sblock->mapped_smem_addr);
-	sblock->ring->r_rxblks = sblock->smem_virt +
-		(ringhd->rxblk_blks - sblock->mapped_smem_addr);
-	sblock->ring->p_txblks = sblock->smem_virt +
-		(poolhd->txblk_blks - sblock->mapped_smem_addr);
-	sblock->ring->p_rxblks = sblock->smem_virt +
-		(poolhd->rxblk_blks - sblock->mapped_smem_addr);
+	/* every base is derived from the AP's own layout, not the header */
+	off_rtx = hsize + txblocknum * txblocksize + rxblocknum * rxblocksize;
+	off_rrx = off_rtx + txblocknum * sizeof(struct sblock_blks);
+	off_ptx = off_rrx + rxblocknum * sizeof(struct sblock_blks);
+	off_prx = off_ptx + txblocknum * sizeof(struct sblock_blks);
+	sblock->ring->txblk_virt = sblock->smem_virt + hsize;
+	sblock->ring->r_txblks = sblock->smem_virt + off_rtx;
+	sblock->ring->rxblk_virt = sblock->ring->txblk_virt +
+		txblocknum * txblocksize;
+	sblock->ring->r_rxblks = sblock->smem_virt + off_rrx;
+	sblock->ring->p_txblks = sblock->smem_virt + off_ptx;
+	sblock->ring->p_rxblks = sblock->smem_virt + off_prx;
 
 	for (i = 0; i < txblocknum; i++) {
-		sblock->ring->p_txblks[i].addr = poolhd->txblk_addr +
+		sblock->ring->p_txblks[i].addr = sblock->txblk_base +
 						 i * txblocksize;
 		sblock->ring->p_txblks[i].length = txblocksize;
 		sblock->ring->txrecord[i] = SBLOCK_BLK_STATE_DONE;
 		poolhd->txblk_wrptr++;
 	}
 	for (i = 0; i < rxblocknum; i++) {
-		sblock->ring->p_rxblks[i].addr = poolhd->rxblk_addr +
+		sblock->ring->p_rxblks[i].addr = sblock->rxblk_base +
 						 i * rxblocksize;
 		sblock->ring->p_rxblks[i].length = rxblocksize;
 		sblock->ring->rxrecord[i] = SBLOCK_BLK_STATE_DONE;
@@ -546,7 +597,8 @@ int sblock_get(u8 dst, u8 channel, struct sblock *blk, int timeout)
 	struct sblock_ring *ring;
 	volatile struct sblock_ring_header *ringhd;
 	volatile struct sblock_ring_header *poolhd;
-	int txpos, index;
+	int txpos;
+	u32 index, wr, rd;
 	int rval = 0;
 	unsigned long flags;
 	u8 ch_index;
@@ -611,21 +663,44 @@ int sblock_get(u8 dst, u8 channel, struct sblock *blk, int timeout)
 
 	/* multi-gotter may cause got failure */
 	spin_lock_irqsave(&ring->p_txlock, flags);
-	if (poolhd->txblk_rdptr != poolhd->txblk_wrptr &&
-			sblock->state == SBLOCK_STATE_READY) {
-		txpos = sblock_get_ringpos(poolhd->txblk_rdptr,
-					   poolhd->txblk_count);
+	/* one snapshot of the peer-written pointer and descriptor */
+	wr = poolhd->txblk_wrptr;
+	rd = poolhd->txblk_rdptr;
+	/* read the descriptor only after the pointer */
+	rmb();
+	if (wr != rd && sblock->state == SBLOCK_STATE_READY) {
+		u32 baddr;
+
+		if (wr - rd > sblock->txblknum) {
+			pr_err_ratelimited("sblock_get %d-%d: bad tx pool occupancy %u (wr=%u rd=%u)\n",
+					   dst, channel, wr - rd, wr, rd);
+			/* drop everything the peer claims to have returned */
+			poolhd->txblk_rdptr = wr;
+			rval = -EIO;
+			goto unlock_get;
+		}
+		txpos = sblock_get_ringpos(rd, sblock->txblknum);
+		baddr = ring->p_txblks[txpos].addr;
+		/* finish reading the descriptor before giving the slot back */
+		mb();
+		poolhd->txblk_rdptr = rd + 1;
+		/* the pool length is unused: blk->length is the AP txblksz */
+		if (sblock_peer_blk(baddr, 0, sblock->txblk_base,
+				    sblock->txblknum, sblock->txblksz,
+				    &index)) {
+			pr_err_ratelimited("sblock_get %d-%d: bad tx block 0x%x dropped\n",
+					   dst, channel, baddr);
+			rval = -EIO;
+			goto unlock_get;
+		}
 		blk->addr = sblock->smem_virt +
-			    (ring->p_txblks[txpos].addr -
-			     sblock->mapped_smem_addr);
-		blk->length = poolhd->txblk_size;
-		poolhd->txblk_rdptr = poolhd->txblk_rdptr + 1;
-		index = sblock_get_index((blk->addr - ring->txblk_virt),
-					 sblock->txblksz);
+			    (baddr - sblock->mapped_smem_addr);
+		blk->length = sblock->txblksz;
 		ring->txrecord[index] = SBLOCK_BLK_STATE_PENDING;
 	} else {
 		rval = sblock->state == SBLOCK_STATE_READY ? -EAGAIN : -EIO;
 	}
+unlock_get:
 	spin_unlock_irqrestore(&ring->p_txlock, flags);
 
 	return rval;
@@ -639,7 +714,8 @@ static int sblock_send_ex(u8 dst, u8 channel,
 	struct sblock_ring *ring;
 	volatile struct sblock_ring_header *ringhd;
 	struct smsg mevt;
-	int txpos, index;
+	int txpos;
+	u32 index;
 	int rval = 0;
 	unsigned long flags;
 	u8 ch_index;
@@ -663,9 +739,16 @@ static int sblock_send_ex(u8 dst, u8 channel,
 	ring = sblock->ring;
 	ringhd = (volatile struct sblock_ring_header *)(&ring->header->ring);
 
+	if (!sblock_ap_index(blk->addr, ring->txblk_virt, sblock->txblknum,
+			     sblock->txblksz, &index)) {
+		pr_err_ratelimited("%s: sblock-%d-%d block %p outside the tx pool\n",
+				   __func__, dst, channel, blk->addr);
+		return -EINVAL;
+	}
+
 	spin_lock_irqsave(&ring->r_txlock, flags);
 
-	txpos = sblock_get_ringpos(ringhd->txblk_wrptr, ringhd->txblk_count);
+	txpos = sblock_get_ringpos(ringhd->txblk_wrptr, sblock->txblknum);
 	ring->r_txblks[txpos].addr = blk->addr -
 				     sblock->smem_virt +
 				     sblock->mapped_smem_addr;
@@ -673,7 +756,10 @@ static int sblock_send_ex(u8 dst, u8 channel,
 	pr_debug("sblock_send: channel=%d, wrptr=%d, txpos=%d, addr=%x\n",
 		 channel, ringhd->txblk_wrptr,
 		 txpos, ring->r_txblks[txpos].addr);
+	/* descriptor visible before the pointer, pointer before the peek */
+	wmb();
 	ringhd->txblk_wrptr = ringhd->txblk_wrptr + 1;
+	mb();
 
 	if (sblock->state == SBLOCK_STATE_READY) {
 		if (yell) {
@@ -688,8 +774,6 @@ static int sblock_send_ex(u8 dst, u8 channel,
 				ring->yell = 1;
 		}
 	}
-	index = sblock_get_index((blk->addr - ring->txblk_virt),
-				 sblock->txblksz);
 	ring->txrecord[index] = SBLOCK_BLK_STATE_DONE;
 
 	spin_unlock_irqrestore(&ring->r_txlock, flags);
@@ -750,7 +834,8 @@ int sblock_receive(u8 dst, u8 channel,
 	struct sblock_mgr *sblock;
 	struct sblock_ring *ring;
 	volatile struct sblock_ring_header *ringhd;
-	int rxpos, index, rval = 0;
+	int rxpos, rval = 0;
+	u32 index, wr, rd;
 	unsigned long flags;
 	u8 ch_index;
 
@@ -818,23 +903,58 @@ int sblock_receive(u8 dst, u8 channel,
 	/* multi-receiver may cause recv failure */
 	spin_lock_irqsave(&ring->r_rxlock, flags);
 
-	if (ringhd->rxblk_wrptr != ringhd->rxblk_rdptr &&
-			sblock->state == SBLOCK_STATE_READY) {
-		rxpos = sblock_get_ringpos(ringhd->rxblk_rdptr,
-					   ringhd->rxblk_count);
-		blk->addr = ring->r_rxblks[rxpos].addr -
-			    sblock->mapped_smem_addr +
+	/* one snapshot of the peer-written wrptr and block descriptor */
+	wr = ringhd->rxblk_wrptr;
+	rd = ringhd->rxblk_rdptr;
+	/* read the descriptor only after the pointer */
+	rmb();
+	if (wr != rd && sblock->state == SBLOCK_STATE_READY) {
+		u32 baddr, blen, tries;
+
+		if (wr - rd > sblock->rxblknum) {
+			pr_err_ratelimited("sblock_receive %d-%d: bad rx ring occupancy %u (wr=%u rd=%u)\n",
+					   dst, channel, wr - rd, wr, rd);
+			/* resynchronise: drop what the peer claims to have sent */
+			ringhd->rxblk_rdptr = wr;
+			rval = -EIO;
+			goto unlock_recv;
+		}
+		/*
+		 * Skip bad descriptors: the peer only signals on empty to
+		 * non-empty, so give up only when nothing valid is left.
+		 */
+		rval = -EIO;
+		for (tries = 0; tries < sblock->rxblknum && rd != wr;
+		     tries++, rd++) {
+			rxpos = sblock_get_ringpos(rd, sblock->rxblknum);
+			baddr = ring->r_rxblks[rxpos].addr;
+			blen = ring->r_rxblks[rxpos].length;
+			/* finish reading the descriptor before giving the slot back */
+			mb();
+			ringhd->rxblk_rdptr = rd + 1;
+			/* clamp, so the block still returns to the pool */
+			if (blen > sblock->rxblksz)
+				blen = sblock->rxblksz;
+			if (sblock_peer_blk(baddr, blen, sblock->rxblk_base,
+					    sblock->rxblknum, sblock->rxblksz,
+					    &index)) {
+				pr_err_ratelimited("sblock_receive %d-%d: bad rx block 0x%x len %u dropped\n",
+						   dst, channel, baddr, blen);
+				continue;
+			}
+			blk->addr = baddr - sblock->mapped_smem_addr +
 			    sblock->smem_virt;
-		blk->length = ring->r_rxblks[rxpos].length;
-		ringhd->rxblk_rdptr = ringhd->rxblk_rdptr + 1;
-		pr_debug("sblock_receive: channel=%d, rxpos=%d, addr=%p, len=%d\n",
-			channel, rxpos, blk->addr, blk->length);
-		index = sblock_get_index((blk->addr - ring->rxblk_virt),
-					 sblock->rxblksz);
-		ring->rxrecord[index] = SBLOCK_BLK_STATE_PENDING;
+			blk->length = blen;
+			pr_debug("sblock_receive: channel=%d, rxpos=%d, addr=%p, len=%d\n",
+				channel, rxpos, blk->addr, blk->length);
+			ring->rxrecord[index] = SBLOCK_BLK_STATE_PENDING;
+			rval = 0;
+			break;
+		}
 	} else {
 		rval = sblock->state == SBLOCK_STATE_READY ? -EAGAIN : -EIO;
 	}
+unlock_recv:
 	spin_unlock_irqrestore(&ring->r_rxlock, flags);
 
 	return rval;
@@ -915,7 +1035,7 @@ int sblock_release(u8 dst, u8 channel, struct sblock *blk)
 	struct smsg mevt;
 	unsigned long flags;
 	int rxpos;
-	int index;
+	u32 index;
 	u8 ch_index;
 
 	ch_index = sipc_channel2index(channel);
@@ -937,13 +1057,22 @@ int sblock_release(u8 dst, u8 channel, struct sblock *blk)
 	ringhd = (volatile struct sblock_ring_header *)(&ring->header->ring);
 	poolhd = (volatile struct sblock_ring_header *)(&ring->header->pool);
 
+	if (!sblock_ap_index(blk->addr, ring->rxblk_virt, sblock->rxblknum,
+			     sblock->rxblksz, &index)) {
+		pr_err_ratelimited("%s: sblock-%d-%d block %p outside the rx pool\n",
+				   __func__, dst, channel, blk->addr);
+		return -EINVAL;
+	}
+
 	spin_lock_irqsave(&ring->p_rxlock, flags);
-	rxpos = sblock_get_ringpos(poolhd->rxblk_wrptr, poolhd->rxblk_count);
+	rxpos = sblock_get_ringpos(poolhd->rxblk_wrptr, sblock->rxblknum);
 	ring->p_rxblks[rxpos].addr = blk->addr -
 				     sblock->smem_virt +
 				     sblock->mapped_smem_addr;
-	ring->p_rxblks[rxpos].length = poolhd->rxblk_size;
+	ring->p_rxblks[rxpos].length = sblock->rxblksz;
+	wmb();
 	poolhd->rxblk_wrptr = poolhd->rxblk_wrptr + 1;
+	mb();
 	pr_debug("sblock_release: addr=%x\n", ring->p_rxblks[rxpos].addr);
 
 	if ((int)(poolhd->rxblk_wrptr - poolhd->rxblk_rdptr) == 1 &&
@@ -956,8 +1085,6 @@ int sblock_release(u8 dst, u8 channel, struct sblock *blk)
 		smsg_send(dst, &mevt, -1);
 	}
 
-	index = sblock_get_index((blk->addr - ring->rxblk_virt),
-				 sblock->rxblksz);
 	ring->rxrecord[index] = SBLOCK_BLK_STATE_DONE;
 
 	spin_unlock_irqrestore(&ring->p_rxlock, flags);
@@ -1025,12 +1152,31 @@ int sblock_query(u8 dst, u8 channel)
 EXPORT_SYMBOL_GPL(sblock_query);
 
 #if defined(CONFIG_DEBUG_FS)
+/* one READ_ONCE per shared field; the dump only prints the copy */
+static void sblock_debug_snap(volatile struct sblock_ring_header *hd,
+			      struct sblock_ring_header *s)
+{
+	s->txblk_addr = READ_ONCE(hd->txblk_addr);
+	s->txblk_count = READ_ONCE(hd->txblk_count);
+	s->txblk_size = READ_ONCE(hd->txblk_size);
+	s->txblk_blks = READ_ONCE(hd->txblk_blks);
+	s->txblk_rdptr = READ_ONCE(hd->txblk_rdptr);
+	s->txblk_wrptr = READ_ONCE(hd->txblk_wrptr);
+	s->rxblk_addr = READ_ONCE(hd->rxblk_addr);
+	s->rxblk_count = READ_ONCE(hd->rxblk_count);
+	s->rxblk_size = READ_ONCE(hd->rxblk_size);
+	s->rxblk_blks = READ_ONCE(hd->rxblk_blks);
+	s->rxblk_rdptr = READ_ONCE(hd->rxblk_rdptr);
+	s->rxblk_wrptr = READ_ONCE(hd->rxblk_wrptr);
+}
+
 static int sblock_debug_show(struct seq_file *m, void *private)
 {
 	struct sblock_mgr *sblock;
 	struct sblock_ring  *ring;
 	volatile struct sblock_ring_header *ringhd;
 	volatile struct sblock_ring_header *poolhd;
+	struct sblock_ring_header rh, ph;
 	int i, j;
 
 	for (i = 0; i < SIPC_ID_NR; i++) {
@@ -1043,6 +1189,9 @@ static int sblock_debug_show(struct seq_file *m, void *private)
 						      header->ring);
 			poolhd = (volatile struct sblock_ring_header *)(&sblock->ring->
 						      header->pool);
+			/* the header is peer-writable: read each field once */
+			sblock_debug_snap(ringhd, &rh);
+			sblock_debug_snap(poolhd, &ph);
 
 			sipc_debug_putline(m, '*', 170);
 			seq_printf(m, "sblock dst %d, channel: %3d, state: %d, smem_virt: 0x%lx, smem_addr: 0x%0x, mapped_smem_addr: 0x%0x, smem_size: 0x%0x, txblksz: %d, rxblksz: %d\n",
@@ -1059,27 +1208,27 @@ static int sblock_debug_show(struct seq_file *m, void *private)
 				   (unsigned long)ring->txblk_virt,
 				   (unsigned long)ring->rxblk_virt);
 			seq_printf(m, "sblock ring header: rxblk_addr :0x%0x, rxblk_rdptr :0x%0x, rxblk_wrptr :0x%0x, rxblk_size :%d, rxblk_count :%d, rxblk_blks: 0x%0x\n",
-				   ringhd->rxblk_addr, ringhd->rxblk_rdptr,
-				   ringhd->rxblk_wrptr, ringhd->rxblk_size,
-				   (int)(ringhd->rxblk_wrptr - ringhd->rxblk_rdptr),
-				   ringhd->rxblk_blks);
+				   rh.rxblk_addr, rh.rxblk_rdptr,
+				   rh.rxblk_wrptr, rh.rxblk_size,
+				   (int)(rh.rxblk_wrptr - rh.rxblk_rdptr),
+				   rh.rxblk_blks);
 			seq_printf(m, "sblock ring header: txblk_addr :0x%0x, txblk_rdptr :0x%0x, txblk_wrptr :0x%0x, txblk_size :%d, txblk_count :%d, txblk_blks: 0x%0x\n",
-				   ringhd->txblk_addr, ringhd->txblk_rdptr,
-				   ringhd->txblk_wrptr, ringhd->txblk_size,
-				   (int)(ringhd->txblk_wrptr - ringhd->txblk_rdptr),
-				   ringhd->txblk_blks);
+				   rh.txblk_addr, rh.txblk_rdptr,
+				   rh.txblk_wrptr, rh.txblk_size,
+				   (int)(rh.txblk_wrptr - rh.txblk_rdptr),
+				   rh.txblk_blks);
 			seq_printf(m, "sblock pool header: rxblk_addr :0x%0x, rxblk_rdptr :0x%0x, rxblk_wrptr :0x%0x, rxblk_size :%d, rxpool_count :%d, rxblk_blks: 0x%0x\n",
-				   poolhd->rxblk_addr, poolhd->rxblk_rdptr,
-				   poolhd->rxblk_wrptr, poolhd->rxblk_size,
-				   (int)(poolhd->rxblk_wrptr -
-				   poolhd->rxblk_rdptr),
-				   poolhd->rxblk_blks);
+				   ph.rxblk_addr, ph.rxblk_rdptr,
+				   ph.rxblk_wrptr, ph.rxblk_size,
+				   (int)(ph.rxblk_wrptr -
+				   ph.rxblk_rdptr),
+				   ph.rxblk_blks);
 			seq_printf(m, "sblock pool header: txblk_addr :0x%0x, txblk_rdptr :0x%0x, txblk_wrptr :0x%0x, txblk_size :%d, txpool_count :%d, txblk_blks: 0x%0x\n",
-				   poolhd->txblk_addr, poolhd->txblk_rdptr,
-				   poolhd->txblk_wrptr, poolhd->txblk_size,
-				   (int)(poolhd->txblk_wrptr -
-				   poolhd->txblk_rdptr),
-				   poolhd->txblk_blks);
+				   ph.txblk_addr, ph.txblk_rdptr,
+				   ph.txblk_wrptr, ph.txblk_size,
+				   (int)(ph.txblk_wrptr -
+				   ph.txblk_rdptr),
+				   ph.txblk_blks);
 		}
 	}
 	return 0;

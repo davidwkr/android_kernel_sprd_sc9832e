@@ -52,6 +52,9 @@ struct sbuf_ring {
 
 	void			*txbuf_virt;
 	void			*rxbuf_virt;
+	/* AP-side copies of the ring sizes: the shared header is peer-writable */
+	int			tx_size;
+	int			rx_size;
 
 	/* send/recv wait queue */
 	wait_queue_head_t	txwait;
