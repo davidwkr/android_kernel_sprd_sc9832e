@@ -153,3 +153,4 @@ interface (mmc_access_rpmb), because the Android 8.1 vendor userspace uses
 | 4.14.269 | conflict | drivers/usb/gadget/function/rndis.c: rndis_free_response()/rndis_get_next_response(): kept vendor list_for_each_safe/list_entry iteration and added stable resp_lock spin_lock around it (stable's r,n list_for_each_entry_safe not used); 0 skipped |
 | 4.14.270 | clean | - |
 | 4.14.271 | clean | - |
+| 4.14.272 | clean | - |
