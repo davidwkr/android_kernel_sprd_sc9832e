@@ -1,0 +1,101 @@
+/*
+ * DW100U V13M (firmware V13M, 4.4 V battery with NTC) board DTS for the 4.14
+ * tree
+ *
+ * Common part: sp9832e-1h10-dw100u.dtsi. This file carries what differs in
+ * the stock DT of the V13M unit (devices/dw100u-v13m/stock.dts of the 4.4
+ * tree): battery profile, NTC table, charge currents, jeita table and the
+ * keys. That unit was never connected, its values come from a firmware dump
+ * only (SPEC.md): the lcd_id and the touch controller are not confirmed.
+ * devices/dw100u/DTS_414.md has the table. Do not use it on the silver unit
+ * (other battery, other charge voltage).
+ *
+ * Compile only, nothing here has run on a watch.
+ *
+ * This file is licensed under a dual GPLv2 or X11 license.
+ */
+/dts-v1/;
+
+#include "sp9832e-1h10-dw100u.dtsi"
+
+/ {
+	model = "Spreadtrum SL8541e Board";
+};
+
+/*
+ * Battery profile (stock battery node of the V13M unit).
+ *
+ *   cnom 0x437 = 1079 mAh             charge-full-design-microamp-hours
+ *   rint 0x167 = 359 mOhm             factory-internal-resistance-micro-ohms
+ *   chg-end-vol 0x114e = 4430 mV      constant_charge_voltage_max_microvolt
+ *   ocv-tab-vol (mV) / ocv-tab-cap    ocv-capacity-table-0 (uV, percent), 20 degC
+ *   temp-tab-val / temp-tab-temp      voltage-temp-table (uV, deci degC + 1000)
+ *   adp-sdp/cdp/dcp/unknown-cur       800 / 800 / 800 / 780 mA, first cell
+ *
+ * temp-support is 1: the battery NTC table is the stock one (identical to the
+ * DM63 table). 4430 mV is representable by the SC2721 charger model: END_V 1
+ * (4300 mV) plus round(130 / 7.5) = 17 code steps over the efuse calibration
+ * (default 0x20, the code must stay within 0x3f).
+ */
+&bat {
+	charge-full-design-microamp-hours = <1079000>;
+	factory-internal-resistance-micro-ohms = <359000>;
+	constant_charge_voltage_max_microvolt = <4430000>;
+	ocv-capacity-table-0 = <4417000 100>, <4343000 95>, <4273000 90>,
+			       <4211000 85>, <4153000 80>, <4098000 75>,
+			       <4048000 70>, <4001000 65>, <3957000 60>,
+			       <3909000 55>, <3868000 50>, <3840000 45>,
+			       <3819000 40>, <3802000 35>, <3788000 30>,
+			       <3770000 25>, <3750000 20>, <3725000 15>,
+			       <3695000 10>, <3683000 5>, <3400000 0>;
+	voltage-temp-table = <1052000 750>, <953000 800>, <858000 850>,
+			     <762000 900>, <671000 950>, <584000 1000>,
+			     <504000 1050>, <434000 1100>, <372000 1150>,
+			     <318000 1200>, <271000 1250>, <234000 1300>,
+			     <198000 1350>, <165000 1400>, <140000 1450>,
+			     <119000 1500>, <104000 1550>, <88000 1600>;
+	charge-sdp-current-microamp = <800000 500000>;
+	charge-dcp-current-microamp = <800000 3000000>;
+	charge-cdp-current-microamp = <800000 1500000>;
+	charge-unknown-current-microamp = <780000 500000>;
+};
+
+/*
+ * Stock chg-end-vol-check 0x1144 = 4420 mV is the full battery voltage.
+ *
+ * Stock jeita table (devices/dm63/DTS_414.md describes the conversion):
+ *   jeita-temp-tab          900 1000 1100 1450 1500
+ *   jeita-temp-recovery-tab 930 1030 1130 1420 1470
+ *   jeita-cur-tab (mA)      0 500 800 0x7fff 800 0
+ *   jeita-cccv-tab (mV)     4450 in every zone
+ * Zone 0 and zone 5 stop charging. The zone current is capped to the
+ * adapter current (800 mA, unknown adapter 780 mA) by the charger.
+ * Note the zone CV (4450 mV) is 20 mV above chg-end-vol (4430 mV), as in stock.
+ */
+&cm {
+	cm-fullbatt-voltage = <4420000>;	/* [stock] chg-end-vol-check */
+	cm-jeita-temp-table = <900 930 0 4450000>,
+			      <1000 1030 500000 4450000>,
+			      <1100 1130 800000 4450000>,
+			      <1450 1420 32767000 4450000>,
+			      <1500 1470 800000 4450000>;
+};
+
+/*
+ * Stock gpio-keys of the V13M unit: Power (common part) and Function (code
+ * 0x43, ap-eic pin 12 = eic_debounce channel 12, 50 ms debounce, wakeup,
+ * active low). There is no Volume Down key. Stock gpio-controller@40210000
+ * (sprd,ap-eic) is the 4.14 eic_debounce (same registers); pin 12 is taken as
+ * the same channel (bank 1, channel 4, 8 pins per bank), as the DM63 does
+ * for its volume key. Not checked against the 4.4 eic driver.
+ */
+&keys {
+	key-function {
+		label = "Function Key";
+		linux,code = <0x43>;
+		gpios = <&eic_debounce 12 GPIO_ACTIVE_LOW>;
+		debounce-interval = <50>;
+		gpio-key,wakeup;
+		gpio-key,level-trigger;
+	};
+};

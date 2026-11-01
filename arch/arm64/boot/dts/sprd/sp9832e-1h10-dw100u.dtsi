@@ -1,0 +1,732 @@
+/*
+ * DW100U watch (SC9832E / SC2721) common board part for the 4.14 tree
+ *
+ * Included by sp9832e-1h10-dw100u-silver.dts (firmware V11H) and
+ * sp9832e-1h10-dw100u-v13m.dts (firmware V13M). Hardware values come from
+ * the decompiled stock DTs of the two units (devices/dw100u-silver/stock.dts
+ * and devices/dw100u-v13m/stock.dts of the 4.4 tree). The binding names are
+ * the ones the 4.14 drivers read. devices/dw100u/DTS_414.md has the node by
+ * node table, the silver / v13m difference and the open points. The layout
+ * follows sp9832e-1h10-dm63.dts (devices/dm63/DTS_414.md).
+ *
+ * Compile only, nothing here has run on a watch.
+ *
+ * This file is licensed under a dual GPLv2 or X11 license.
+ */
+#include <dt-bindings/gpio/gpio.h>
+#include "sc9832e.dtsi"
+#include "sp9832e-mach.dtsi"
+#include "sc9832e-wcn.dtsi"
+#include "sc2721.dtsi"
+#include "lcd/lcd_co5300_oled178_mipi.dtsi"
+#include "lcd/lcd_co5300_oled1952_mipi.dtsi"
+#include "lcd/lcd_co5300_oled204_mipi.dtsi"
+#include "lcd/lcd_co5300_oled206_dw100u_mipi.dtsi"
+#include "lcd/lcd_co5300_oled_213_mipi.dtsi"
+
+/ {
+	model = "Spreadtrum SL8541e Board";
+	compatible = "sprd,sp9832e-1h10", "sprd,sc9832e";
+	cpuinfo_hardware = "Spreadtrum SC9832e";
+	sprd,sc-id = <9832 1 0x20000>;
+
+	aliases {
+		serial1 = &uart1;
+	};
+
+	/* stock: memory@80000000, 2 GiB window (MemTotal is lower, see reserved-memory) */
+	memory: memory@80000000 {
+		device_type = "memory";
+		reg = <0x0 0x80000000 0x0 0x80000000>;
+	};
+
+	/* bootargs exactly as stock */
+	chosen {
+		stdout-path = &uart1;
+		bootargs = "earlycon=sprd_serial,0x70100000,115200n8 console=ttyS1,115200n8 loglevel=1 init=/init root=/dev/ram0 rw androidboot.hardware=sl8541e_1h10";
+	};
+
+	ipi: interrupt-controller {
+		compatible = "android,CustomIPI";
+		#interrupt-cells = <1>;
+		interrupt-controller;
+	};
+
+	trusty {
+		compatible = "android,trusty-smc-v1";
+
+		irq {
+			compatible = "android,trusty-irq-v1";
+			interrupt-templates = <&ipi 0>,
+						<&gic 1 GIC_PPI 0>,
+						<&gic 1 GIC_SPI 0>;
+			interrupt-ranges = < 0  15 0>,
+						<16  31 1>,
+						<32 223 2>;
+		};
+
+		virtio {
+			compatible = "android,trusty-virtio-v1";
+		};
+
+		log {
+			compatible = "android,trusty-log-v1";
+		};
+	};
+
+	/*
+	 * stock ion heaps. The 4.14 sprd_ion driver reads reg, label, type and
+	 * memory-region of each child. The stock "phys-offset" property is not
+	 * read by 4.14 and is dropped.
+	 */
+	ion {
+		compatible = "sprd,ion";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		heap@0 {
+			reg = <0>;
+			label = "system";
+			type = <0>;
+		};
+
+		heap@2 {
+			reg = <2>;
+			label = "carveout_overlay";
+			type = <2>;
+			memory-region = <&overlay_reserved>;
+		};
+
+		heap@3 {
+			reg = <3>;
+			label = "carveout_fb";
+			type = <2>;
+			memory-region = <&fb_reserved>;
+		};
+
+		heap@4 {
+			reg = <4>;
+			label = "carveout_camera";
+			type = <2>;
+			memory-region = <&cam_reserved>;
+		};
+	};
+
+	/* 4.14 compatible is "sprd,map-user" (stock: "sprd,sprd_map_user") */
+	sprd-map-user {
+		compatible = "sprd,map-user";
+	};
+
+	sprd-wlan {
+		compatible = "sprd,sp9832e";
+	};
+
+	/*
+	 * Board NTC (stock bd-tsensor@10, io-channel 3). The stock channel
+	 * numbers are 4.4 logical channels (even = big scale, odd = small
+	 * scale, two per hardware channel): 3 -> ADCI1 = hardware channel 1,
+	 * which is the 4.14 channel number. Table: stock temp-tab-val (mV) and
+	 * temp-tab-temp ((value - 1000) / 10 degC) converted to the
+	 * generic-adc-thermal format (mV, milli degC).
+	 */
+	tboard_thermistor: thermal-sensor {
+		compatible = "generic-adc-thermal";
+		#thermal-sensor-cells = <0>;
+		io-channels = <&pmic_adc 1>;
+		io-channel-names = "sensor-channel";
+		temperature-lookup-table = <	(-39700) 1131
+						(-29800) 1110
+						(-19500) 1074
+						(-4800) 983
+						10100 838
+						24800 654
+						44900 413
+						54900 316
+						64900 238
+						74900 178
+						84900 133
+						94900 100
+						104900 75
+						114900 57
+						124900 43 >;
+	};
+
+	/*
+	 * USB cable detection. Stock: musb "sprd,cable-detection-method" =
+	 * "typec", "sprd,vbus-gpios" = PMIC EIC 0 (active high), typec node
+	 * mode 2. 4.14 takes both as extcon devices: VBUS from the gpio
+	 * extcon, the typec extcon from the PMIC typec block.
+	 */
+	extcon_gpio: extcon-gpio {
+		compatible = "linux,extcon-usb-gpio";
+		vbus-gpio = <&pmic_eic 0 GPIO_ACTIVE_HIGH>;
+	};
+
+	/*
+	 * Battery (stock "battery" node, sprd,sprd-battery) as a simple-battery
+	 * with the property names this tree's power_supply_get_battery_info()
+	 * reads (note the underscore name of the two constant_charge_* ones). Only
+	 * the values the two units share are here; the sp9832e-1h10-dw100u-*.dts
+	 * files add the battery profile (capacity, resistance, CV, OCV table,
+	 * adapter charge currents and, on the unit with a battery NTC, the NTC
+	 * table).
+	 *
+	 *   chg-end-cur 60 mA                 charge-term-current-microamp
+	 *   alm-vol 3450 mV                   voltage-min-design-microvolt
+	 *                                     (low voltage alarm, same role, see SC2721_FGU_MAP.md)
+	 *   adp-*-cur-limit 500/1500/3000/500 second cell of charge-*-current-microamp
+	 *
+	 * TODO: stock cnom-temp-tab and rint-temp-tab (capacity and resistance
+	 * against temperature, identical to the DM63) are not mapped: the 4.4
+	 * tables are scaled and the 4.14 capacity-temp-table and
+	 * resistance-temp-table use value / 10 degC, units not proven equal.
+	 */
+	bat: battery {
+		compatible = "simple-battery";
+		charge-term-current-microamp = <60000>;
+		voltage-min-design-microvolt = <3450000>;
+		ocv-capacity-celsius = <20>;
+	};
+
+	/*
+	 * charger-manager (psy based in this tree, no regulator child: the
+	 * charger is the internal SC2721 one and is started by the charger
+	 * driver and by STATUS writes from charger-manager).
+	 * [stock] = value derived from the stock battery node, [base] = value
+	 * of the 4.14 sl8541e-1h10 reference board, no stock equivalent.
+	 * The per unit values (cm-fullbatt-voltage, cm-jeita-temp-table) are added
+	 * by the sp9832e-1h10-dw100u-*.dts files.
+	 *
+	 * cm-jeita-temp-table: the five entry stock table, converted in
+	 * devices/dm63/DTS_414.md. As in the stock 4.4 sprd_battery.c, every
+	 * zone current is capped to the adapter current by the charger
+	 * (sc2720_charger_set_current()); the stock 0x7fff (no limit) zone is
+	 * written as 32767 mA so the adapter current applies.
+	 * cm-wdt-interval is left out: stock chg-wdt is disabled and the
+	 * charger driver has no watchdog property. Stock rechg-vol (4320 / 4370
+	 * mV) has no 4.14 property, the [base] vchkdrop values stay.
+	 */
+	cm: charger-manager {
+		compatible = "charger-manager";
+		cm-name = "battery";
+		cm-poll-mode = <2>;			/* [base] */
+		cm-poll-interval = <15000>;		/* [base] */
+		cm-battery-stat = <2>;			/* [base] fuel gauge PRESENT (always 1 here) */
+
+		cm-fullbatt-vchkdrop-ms = <30000>;	/* [base] */
+		cm-fullbatt-vchkdrop-volt = <60000>;	/* [base] */
+		cm-fullbatt-current = <60000>;		/* [stock] chg-end-cur */
+		cm-fullbatt-capacity = <100>;		/* [base] */
+
+		cm-num-chargers = <1>;
+		cm-chargers = "sc2721_charger";
+		cm-fuel-gauge = "sc27xx-fgu";
+
+		/* [stock] outer limits of jeita-temp-tab: -10 and 50 degC, 3 degC hysteresis */
+		cm-battery-cold = <100>;
+		cm-battery-cold-in-minus;
+		cm-battery-hot = <500>;
+		cm-battery-temp-diff = <30>;
+
+		cm-charging-max = <21600000>;		/* [stock] chg-timeout 21600 s */
+		cm-discharging-max = <2700000>;		/* [base] */
+
+		cm-shutdown-voltage = <3050000>;	/* [stock] soft-vbat-uvlo */
+		cm-tickle-time-out = <1500>;		/* [base] */
+		cm-one-cap-time = <30>;			/* [stock] cap-one-per-time */
+
+		cm-charge-voltage-max = <6500000>;	/* [stock] ovp-stop */
+		cm-charge-voltage-drop = <700000>;	/* [stock] ovp-stop - ovp-restart (6500 - 5800) */
+	};
+
+	/*
+	 * stock gpio-keys, common part. The 4.14 gpio_keys reads gpio-key,wakeup
+	 * and debounce-interval; gpio-key,level-trigger / edge-trigger and
+	 * linux,can-async are not read (4.14 takes the trigger from the gpio,
+	 * both edges). linux,code values are the stock ones (0x74 = 116). The
+	 * Volume Down and Function keys differ per unit and are added by the
+	 * sp9832e-1h10-dw100u-*.dts files. There is no rotary crown.
+	 */
+	keys: gpio-keys {
+		compatible = "gpio-keys";
+		input-name = "sprd-gpio-keys";
+
+		key-power {
+			label = "Power Key";
+			linux,code = <0x74>;
+			gpios = <&pmic_eic 1 GPIO_ACTIVE_LOW>;
+			gpio-key,wakeup;
+			gpio-key,level-trigger;
+		};
+	};
+};
+
+/*
+ * SIPC pipes. sc9832e-wcn.dtsi / sc9832e-modem.dtsi carry the same layout as
+ * stock except two ring buffer sizes (base values 0x1000 and 0x20000, the
+ * latter with a comment that says 256 KiB); stock values used.
+ */
+/ {
+	wcn_spipe {
+		spipe_cpwcn {
+			sprd,size-rxbuf = <0x2400>;
+		};
+	};
+
+	sprd-spipe {
+		spipe@3 {
+			sprd,size-rxbuf = <0x40000>;	/* sdiag_lte */
+		};
+	};
+};
+
+/*
+ * reserved-memory: addresses and sizes copied from the stock DT. The
+ * sl8541e/mach.dtsi layout (1 GiB board) differs, so the nodes that differ are
+ * deleted and declared again with the same labels.
+ *
+ * Stock has no logo buffer: logo_reserved (0x9e000000, mach.dtsi) and the
+ * dpu "sprd,logo-memory" property that points at it are removed (the driver
+ * only prints "no sprd,logo-memory specified"). TODO with the display step.
+ */
+/delete-node/ &logo_reserved;
+/delete-node/ &wcn_reserved;
+/delete-node/ &gnss_reserved;
+/delete-node/ &cp_reserved;
+/delete-node/ &iq_reserved;
+/delete-node/ &tos_reserved;
+/delete-node/ &pstore_reserved;
+
+&reserved_memory {
+	wcn_reserved: wcn-mem@88000000 {
+		reg = <0x0 0x88000000 0x0 0x300000>;
+	};
+
+	gnss_reserved: gnss-mem@88300000 {
+		reg = <0x0 0x88300000 0x0 0x15a800>;
+	};
+
+	/* ramoops lives here in stock (ramoops node memory-region = pstore) */
+	pstore_reserved: ramoops@8845a800 {
+		compatible = "ramoops";
+		reg = <0x0 0x8845a800 0x0 0x40000>;
+		record-size = <0x8000>;
+		console-size = <0x8000>;
+		pmsg-size = <0x8000>;
+	};
+
+	/* stock size includes the 0x280000 debug region (sprd,cpdbg-size) */
+	cp_reserved: cp-modem@89600000 {
+		reg = <0x0 0x89600000 0x0 0x4240000>;
+		sprd,cpdbg-size = <0x280000>;
+	};
+
+	audio_dma_reserved: audio-dma@8d840000 {
+		reg = <0x0 0x8d840000 0x0 0x80000>;
+	};
+
+	tos_reserved: tos-mem@94020000 {
+		reg = <0x0 0x94020000 0x0 0x1fe0000>;
+	};
+
+	sh_reserved: sh-mem@96000000 {
+		reg = <0x0 0x96000000 0x0 0x100000>;
+	};
+
+	iq_reserved: iq-mem@98100000 {
+		compatible = "sprd,iq-mem";
+		reg = <0x0 0x98100000 0x0 0x4000000>;
+	};
+
+	cam_reserved: camera@bdf64000 {
+		reg = <0x0 0xbdf64000 0x0 0x500000>;
+	};
+
+	fb_reserved: fb@be464000 {
+		reg = <0x0 0xbe464000 0x0 0xe10000>;
+	};
+
+	overlay_reserved: overlaybuffer@bf274000 {
+		reg = <0x0 0xbf274000 0x0 0xa8c000>;
+	};
+};
+
+&dpu {
+	/delete-property/ sprd,logo-memory;
+	status = "okay";
+};
+
+&uart1 {
+	status = "okay";
+};
+
+/*
+ * eMMC (stock sdio@20600000) and SD (sdio@20300000). The 4.14 driver names
+ * (sprd,sdhc-r10, sprd,*-dly, sprd,sdio-adma) are the same as stock. Delays,
+ * bus width, caps and supplies are the stock ones (mach.dtsi carries the
+ * reference board delays for the eMMC, overridden here).
+ */
+&sdio3 {
+	sprd,hs400es-dly = <0x5a 0x7f 0x30 0x30>;
+	sprd,hs400-dly = <0x5a 0x8c 0x30 0x30>;
+	sprd,hs200-dly = <0x7f 0x8c 0x8e 0x8e>;
+	sprd,ddr52-dly = <0x9f 0xb3 0x1e 0x1e>;
+	vmmc-supply = <&vddemmccore>;
+};
+
+&sdio0 {
+	sprd,sdr104-dly = <0x7f 0x94 0xa7 0xa7>;
+	sprd,sdr50-dly = <0x7f 0x4a 0x4a 0x4a>;
+	vmmc-supply = <&vddsdcore>;
+	vqmmc-supply = <&vddsdio>;
+};
+
+/*
+ * USB. Stock: sprd,usb (musb), dr-mode "peripheral", phy sprd,usb-phy with
+ * tune-value 0x5af33, vdd-voltage 3300000 and vdd-supply = vddusb33. 4.14:
+ * sprd,sharkle-musb / sprd,sharkle-phy (already in sharkle.dtsi, same
+ * tune-value and vdd-voltage). The 4.14 musb takes its mode from Kconfig
+ * (dr-mode is not read) and the cable from extcon.
+ *
+ * TODO: no OTG VBUS regulator is mapped (stock has none in the DT), so
+ * host mode has no vbus-supply.
+ */
+&hsphy {
+	vdd-supply = <&vddusb33>;
+	extcon = <&extcon_gpio>;
+};
+
+&usb {
+	extcon = <&extcon_gpio>, <&pmic_typec>;
+};
+
+&cpu0 {
+	cpu-supply = <&vddcpu>;
+};
+
+&cpu1 {
+	cpu-supply = <&vddcpu>;
+};
+
+&cpu2 {
+	cpu-supply = <&vddcpu>;
+};
+
+&cpu3 {
+	cpu-supply = <&vddcpu>;
+};
+
+&thm_zone {
+	bd_thmzone: board-thmzone {
+		polling-delay-passive = <0>;
+		polling-delay = <0>;
+		thermal-sensors = <&tboard_thermistor>;
+	};
+};
+
+/*
+ * Regulators. Stock marks these "sprd,default-on" (the 4.4 driver switches
+ * them on at probe and never again). In 4.14 a regulator that nothing in the
+ * DT consumes is switched off in regulator_late_cleanup(), so the ones that
+ * stock keeps on and that have no DT consumer here are regulator-always-on.
+ * vddemmccore is the boot storage supply and is kept on as well.
+ * (vddcpu/vddcore/vddmem/vddgen/vdd28/vdddcxo are always-on in sc2721.dtsi.)
+ * vddsdcore, vddsdio and vddusb33 have consumers (sdio0, touch, hsphy).
+ *
+ * The sl8541e reference board disables vddrf18 and vddldomem; stock
+ * keeps both on.
+ */
+&vddemmccore {
+	regulator-always-on;
+};
+
+&vdd18 {
+	regulator-always-on;
+};
+
+&vddrf18 {
+	regulator-always-on;
+};
+
+&vddldomem {
+	regulator-always-on;
+};
+
+&vddcamio {
+	regulator-always-on;
+};
+
+/*
+ * PMIC.
+ *
+ * efuse nvmem cells for the charger. The 4.14 sc27xx efuse driver exposes
+ * 32 blocks of 16 bits as a byte addressed nvmem (stride 1, word size 1):
+ * a cell "reg = <offset size>" is a byte offset, block N starts at byte
+ * 2 * N, and the read returns the block shifted right by 8 * (offset % 2).
+ * The core "bits = <bit_offset nbits>" property selects bits inside the cell,
+ * and with it set the cell size is rounded up to whole bytes of
+ * (bit_offset + nbits).
+ *
+ *   4.4 stock: valid flag = block 0 bit 0           -> byte offset 0 * 2 = 0x00, bits <0 1>
+ *   4.4 stock: BITSINDEX(13, 0), 6 bits (16 bit block, sprd,block-width = 16)
+ *                                                   -> byte offset 13 * 2 = 0x1a, bits <0 6>
+ *
+ * The same byte offsets are used by the existing cells efuse_blk0 (0x0) and
+ * cc_cal (0x1a, whole block 13, used by the typec node); the new cells only
+ * select the bits the charger needs. sc2720_charger.c reads
+ * "cccv_calib_valid" first (BIT(0) must be set, else the 4.4 default 0x20
+ * is used) and then "cccv_calib" (6 bits, masked with 0x3f).
+ */
+&sc2721_pmic {
+	efuse@300 {
+		cccv_calib_valid: cccv-valid@0 {
+			reg = <0x0 0x1>;
+			bits = <0 1>;
+		};
+
+		cccv_calib_data: cccv-calib@1a {
+			reg = <0x1a 0x1>;
+			bits = <0 6>;
+		};
+	};
+
+	/*
+	 * Stock charger@ec0 "sprd,sc2721-charger", reg 0xec0. The mfd cell
+	 * matches "sprd,sc27xx-charger", the driver "sprd,sc2721-charger".
+	 * "phys" is the USB phy the charger driver registers a notifier on.
+	 *
+	 * sprd,ovp-microvolt: stock battery ovp-stop 0x1964 = 6500 mV, written
+	 * to the input OVP field (code 9).
+	 *
+	 * TODO (not implemented in the 4.14 driver, stock values): chg-cv-gpios
+	 * = PMIC EIC 4, chg-ovi-gpios = PMIC EIC 6, ovp-restart 5800 mV,
+	 * chg-timer@0 (irq 7), fast-charger@900 (disabled in stock), chg-wdt@80
+	 * (disabled in stock), ITERM and recharge bits.
+	 */
+	pmic_charger: charger@ec0 {
+		compatible = "sprd,sc27xx-charger", "sprd,sc2721-charger";
+		reg = <0xec0>;
+		phys = <&hsphy>;
+		monitored-battery = <&bat>;
+		sprd,ovp-microvolt = <6500000>;
+		nvmem-cells = <&cccv_calib_data>, <&cccv_calib_valid>;
+		nvmem-cell-names = "cccv_calib", "cccv_calib_valid";
+	};
+};
+
+/*
+ * Fuel gauge. Stock fgu@a00 (reg 0xa00, irq 3, ocv-type 1) is the base
+ * node; compatible order in sc2721.dtsi lists sprd,sc2721-fgu before
+ * sprd,sc2720-fgu so the SC2721 match data is used. io-channels of the base
+ * node: bat-temp = 0 (stock adc_temp, logical channel 1 = hardware 0) and
+ * charge-vol = 14 (stock adc_vchg, logical 36 = hardware 14).
+ *
+ * rsense-real/spec: stock 200/200, only the ratio is used (1).
+ * comp-resistance: stock temp-comp-res 30 mOhm.
+ *
+ * Stock has no battery detect gpio and treats the battery as present: the
+ * inherited bat-detect-gpio (PMIC EIC 9) is deleted, the gauge then reports
+ * the battery as always present and requests no detection interrupt.
+ */
+&pmic_fgu {
+	/delete-property/ bat-detect-gpio;
+	monitored-battery = <&bat>;
+	sprd,calib-resistance-real = <200>;
+	sprd,calib-resistance-spec = <200>;
+	sprd,comp-resistance-mohm = <30>;
+};
+
+/*
+ * I2C. Frequencies are the stock ones (i2c0 400k, i2c1 400k, i2c2 and i2c3
+ * 100k; the DM63 has 100k on i2c1).
+ *
+ * i2c0 (stock: camera sensor-main@20, reset ap_gpio 45, power-down ap_gpio
+ * 47) and i2c4 (stock: disabled, flash ocp8137 0x63, fan54015 0x6a) stay
+ * disabled. TODO camera: no 4.14 camera driver.
+ */
+&i2c1 {
+	status = "okay";
+	clock-frequency = <400000>;
+
+	/*
+	 * stock qmax981_acc@12: layout 0 (layout-qma6100p 5 is not read by the
+	 * 4.14 qma6981 port). Stock enables both accelerometers, only the
+	 * sc7a22 is bound on the silver unit (SPEC.md); the qma6981 probe fails
+	 * on the missing ACK, as in stock.
+	 */
+	qmax981_acc@12 {
+		compatible = "QST,qmax981";
+		reg = <0x12>;
+		layout = <0>;
+	};
+
+	/*
+	 * stock sc7a22_acc@18: layout 0. The stock irq-gpio (ap_gpio 93) is
+	 * not read by the 4.14 sc7a22 port (polled).
+	 */
+	sc7a22_acc@18 {
+		compatible = "sprd,sc7a22";
+		reg = <0x18>;
+		layout = <0>;
+	};
+};
+
+&i2c2 {
+	status = "okay";
+	clock-frequency = <100000>;
+
+	/*
+	 * stock och1970@0d (address 0x0d) (hall sensor, unbound on the silver unit, SPEC.md).
+	 * The 4.14 och1970 driver reads only rst-gpio (stock ap_gpio 124); the
+	 * stock irq-gpio (ap_gpio 125), open-threshold <4500 2800>,
+	 * rotate-threshold <60 -200>, open-axis "x1", rotate-axis "x2",
+	 * control-axis "z" and control-data 0 are not read (polled driver).
+	 */
+	och1970@d {
+		compatible = "magnetic,och1970";
+		reg = <0x0d>;
+		rst-gpio = <&ap_gpio 124 GPIO_ACTIVE_HIGH>;
+	};
+
+	/* heart rate, stock hrs3xxx@44; stock has no power-gpio on the DW100U */
+	hrs3xxx@44 {
+		compatible = "tyhx,hrs3xxx";
+		reg = <0x44>;
+	};
+};
+
+&i2c3 {
+	status = "okay";
+	clock-frequency = <100000>;
+
+	/*
+	 * Touch: Hynitron CST9217, stock hynitron@5a (hynitron,hyn_ts), the
+	 * driver bound on the silver unit (SPEC.md). Stock reset ap_gpio 145,
+	 * irq ap_gpio 144, 5 points, display-coords 0x170 x 0x1c0 = 368 x 448.
+	 * The driver gets the supply with devm_regulator_get(dev, vdd_name),
+	 * i.e. the DT property "<vdd_name>-supply", which stock did not need
+	 * (4.4 regulator lookup by name), so vddsdcore-supply is added.
+	 * The touch controller of the v13m unit is not confirmed (its SPEC.md),
+	 * Hynitron is assumed as there.
+	 */
+	hynitron@5a {
+		compatible = "hynitron,hyn_ts";
+		reg = <0x5a>;
+		hynitron,reset-gpio = <&ap_gpio 145 GPIO_ACTIVE_HIGH>;
+		hynitron,irq-gpio = <&ap_gpio 144 GPIO_ACTIVE_HIGH>;
+		hynitron,max-touch-number = <5>;
+		hynitron,display-coords = <368 448>;
+		vdd_name = "vddsdcore";
+		vddsdcore-supply = <&vddsdcore>;
+	};
+
+	/*
+	 * stock cst0xx_ts@38 (cst0xx,cst0xx_ts): gpios = <ap_gpio 145 (reset)>,
+	 * <ap_gpio 144 (irq)>, vdd_name "vddsdcore", TP_MAX_X 0x170 (368),
+	 * TP_MAX_Y 0x1c0 (448); unbound on the silver unit and sharing reset
+	 * and irq with the Hynitron node. Disabled so the two drivers do not
+	 * both toggle the shared reset line. Enable (and disable hynitron@5a)
+	 * for a unit with a CST0xx panel, e.g. possibly the v13m.
+	 */
+	cst0xx_ts@38 {
+		compatible = "cst0xx,cst0xx_ts";
+		reg = <0x38>;
+		gpios = <&ap_gpio 145 GPIO_ACTIVE_HIGH>,
+			<&ap_gpio 144 GPIO_ACTIVE_HIGH>;
+		vdd_name = "vddsdcore";
+		vddsdcore-supply = <&vddsdcore>;
+		TP_MAX_X = <368>;
+		TP_MAX_Y = <448>;
+		status = "disabled";
+	};
+
+	/* TODO not mapped: stock bl_ts@2d (btl,btl_ts), no driver, unbound. */
+};
+
+/*
+ * TODO not mapped: stock spi@70a00000 with goodix_fp_ree@0 (goodix,
+ * fingerprintree, spi-max-frequency 10 MHz, irq ap_gpio 154, reset ap_gpio
+ * 155). The Goodix fingerprint driver is not ported on 4.14; the spi
+ * controller stays disabled.
+ */
+
+/*
+ * Display: CO5300 AMOLED. The silver unit reports lcd_id ID5300204 (2.04 inch,
+ * 368x448, SPEC.md; node lcd5300204@5300204, one DSI lane, command mode);
+ * the v13m unit is expected to report the same (not read). dpu, iommu_dispc,
+ * dsi and dphy are enabled; the panel timings, init commands and OLED
+ * brightness are in lcd/lcd_co5300_oled*_mipi.dtsi: the five CO5300 nodes of
+ * the stock DW100U DT (178, 1952, 204, 206, 213). See devices/dm63/PANEL_414.md
+ * (conversion) and devices/dw100u/DTS_414.md.
+ *
+ * Panel selection, as stock: the bootloader's lcd_id=ID<hex> picks the /lcds
+ * node whose sprd,lcd-id matches (ID5300178, ID53001952, ID5300204,
+ * ID5300206, ID5300213). lcd_name= still wins; without either,
+ * sprd,default-panel applies (lcd_co5300_oled204_mipi, the ID the stock
+ * DW100U reports). A wrong variant gives a blank or shifted picture (column
+ * window and timing differ), the init commands do not stress the panel
+ * supplies. The other stock panels (GC9B71, ST77916, ST7797, ST7801, CH13613,
+ * SH8601, 3311, dummy) are not converted.
+ *
+ * Stock power-on-sequence (gpio level delay-ms) 33 1 20, 50 1 20, 50 0 20,
+ * 50 1 50: gpio 33 is avdd-gpio, gpio 50 is reset-gpio, the levels and
+ * delays are in sprd,reset-on-sequence of the lcd dtsi.
+ *
+ * Stock names no panel regulator, but the 4.14 panel driver needs a "power"
+ * supply or its probe fails with -ENODEV (no full constraints on this
+ * board), so the panel points at a fixed regulator without enable gpio.
+ * Needs CONFIG_REGULATOR_FIXED_VOLTAGE (watch_414.fragment).
+ *
+ * TODO not mapped: stock sprd_backlight (pwm-backlight on pwm@40260020,
+ * pwms index 0, period 20000 ns) is not used by the OLED, the brightness is
+ * the oled-backlight of the lcd node. pwms stays disabled. AOD
+ * (sprd_aod_idle, DCS 0x38/0x39) has no 4.14 port yet.
+ */
+/ {
+	lcd_nosupply: regulator-lcd-nosupply {
+		compatible = "regulator-fixed";
+		regulator-name = "lcd-nosupply";
+		regulator-always-on;
+	};
+};
+
+&iommu_dispc {
+	status = "okay";
+};
+
+&dsi {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	panel: panel {
+		compatible = "sprd,generic-mipi-panel";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		reg = <0>;
+
+		sprd,default-panel = "lcd_co5300_oled204_mipi";
+		power-supply = <&lcd_nosupply>;
+		avdd-gpio = <&ap_gpio 33 GPIO_ACTIVE_HIGH>;
+		/*
+		 * Stock power-on-sequence 33 1 20 (avdd, 20 ms) before the reset
+		 * pulses; power-off-sequence 50 0 20, 33 0 20 (reset low, then
+		 * avdd low).
+		 */
+		sprd,avdd-on-delay-ms = <20>;
+		sprd,avdd-off-delay-ms = <20>;
+		sprd,avdd-off-after-reset;
+		reset-gpio = <&ap_gpio 50 GPIO_ACTIVE_HIGH>;
+
+		port {
+			reg = <1>;
+			panel_in: endpoint {
+				remote-endpoint = <&dphy_out>;
+			};
+		};
+	};
+};
+
+&dphy {
+	status = "okay";
+};

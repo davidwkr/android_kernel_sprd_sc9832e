@@ -1,0 +1,103 @@
+/*
+ * DW100U silver (firmware V11H) board DTS for the 4.14 tree
+ *
+ * Common part: sp9832e-1h10-dw100u.dtsi. This file carries what differs in
+ * the stock DT of the V11H unit (devices/dw100u-silver/stock.dts of the 4.4
+ * tree): battery profile, charge currents, jeita table and the keys.
+ * devices/dw100u/DTS_414.md has the table. Do not use it on the V13M unit
+ * (other battery, other charge voltage).
+ *
+ * Compile only, nothing here has run on a watch.
+ *
+ * This file is licensed under a dual GPLv2 or X11 license.
+ */
+/dts-v1/;
+
+#include "sp9832e-1h10-dw100u.dtsi"
+
+/ {
+	model = "Spreadtrum SL8541e Board";
+};
+
+/*
+ * Battery profile (stock battery node of the silver unit).
+ *
+ *   cnom 0x3ac = 940 mAh              charge-full-design-microamp-hours
+ *   rint 0x24e = 590 mOhm             factory-internal-resistance-micro-ohms
+ *   chg-end-vol 0x112b = 4395 mV      constant_charge_voltage_max_microvolt
+ *   ocv-tab-vol (mV) / ocv-tab-cap    ocv-capacity-table-0 (uV, percent), 20 degC
+ *   adp-sdp/cdp/dcp/unknown-cur       650 / 650 / 650 / 630 mA, first cell
+ *
+ * temp-support is 0 on this unit (no battery NTC; the 4.4 driver reports a
+ * fixed 20 degC): no voltage-temp-table, so the 4.14 fuel gauge reports the
+ * same fixed 200 (20 degC) and the jeita temperature zones never leave the
+ * 10..45 degC zone. The stock temp-tab-val table (1740 .. 620 mV) belongs to
+ * a battery with an NTC and is not used here.
+ *
+ * 4395 mV is representable by the SC2721 charger model: END_V 1 (4300 mV)
+ * plus round(95 / 7.5) = 13 code steps over the efuse calibration (default
+ * 0x20), as the 4.4 sprdchg_tune_endvol_cccv() does.
+ */
+&bat {
+	charge-full-design-microamp-hours = <940000>;
+	factory-internal-resistance-micro-ohms = <590000>;
+	constant_charge_voltage_max_microvolt = <4395000>;
+	ocv-capacity-table-0 = <4360000 100>, <4276000 95>, <4222000 90>,
+			       <4172000 85>, <4125000 80>, <4079000 75>,
+			       <4037000 70>, <3984000 65>, <3935000 60>,
+			       <3898000 55>, <3870000 50>, <3845000 45>,
+			       <3819000 40>, <3784000 35>, <3746000 30>,
+			       <3706000 25>, <3685000 20>, <3627000 15>,
+			       <3560000 10>, <3487000 5>, <3400000 0>;
+	charge-sdp-current-microamp = <650000 500000>;
+	charge-dcp-current-microamp = <650000 3000000>;
+	charge-cdp-current-microamp = <650000 1500000>;
+	charge-unknown-current-microamp = <630000 500000>;
+};
+
+/*
+ * Stock chg-end-vol-check 0x1126 = 4390 mV is the full battery voltage.
+ *
+ * Stock jeita table (devices/dm63/DTS_414.md describes the conversion):
+ *   jeita-temp-tab          900 1000 1100 1450 1500
+ *   jeita-temp-recovery-tab 930 1030 1130 1420 1470
+ *   jeita-cur-tab (mA)      0 300 600 0x7fff 700 0
+ *   jeita-cccv-tab (mV)     4400 in every zone
+ * Zone 0 and zone 5 stop charging. The zone current is capped to the
+ * adapter current (650 mA, unknown adapter 630 mA) by the charger.
+ * Note the zone CV (4400 mV) is 5 mV above chg-end-vol (4395 mV), as in stock.
+ */
+&cm {
+	cm-fullbatt-voltage = <4390000>;	/* [stock] chg-end-vol-check */
+	cm-jeita-temp-table = <900 930 0 4400000>,
+			      <1000 1030 300000 4400000>,
+			      <1100 1130 600000 4400000>,
+			      <1450 1420 32767000 4400000>,
+			      <1500 1470 700000 4400000>;
+};
+
+/*
+ * Stock gpio-keys of the silver unit: Volume Down (ap_gpio 46, 150 ms
+ * debounce, wakeup), Power (common part), Function (ap_gpio 44, 50 ms
+ * debounce, wakeup, code 0x57). All active low. Stock volume code 0x43 (67)
+ * is not KEY_VOLUMEDOWN, copied as is.
+ */
+&keys {
+	key-volumndown {
+		label = "Volume Down Key";
+		linux,code = <0x43>;
+		gpios = <&ap_gpio 46 GPIO_ACTIVE_LOW>;
+		debounce-interval = <150>;
+		gpio-key,wakeup;
+		gpio-key,edge-trigger;
+	};
+
+	key-function {
+		label = "Function Key";
+		linux,code = <0x57>;
+		gpios = <&ap_gpio 44 GPIO_ACTIVE_LOW>;
+		debounce-interval = <50>;
+		gpio-key,wakeup;
+		gpio-key,level-trigger;
+	};
+};
