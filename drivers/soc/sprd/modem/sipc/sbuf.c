@@ -270,7 +270,8 @@ static int sbuf_thread(void *data)
 			break;
 		case SMSG_TYPE_EVENT:
 			bufid = mrecv.value;
-			WARN_ON(bufid >= sbuf->ringnr);
+			if (WARN_ON(bufid >= sbuf->ringnr))
+				break;
 			ring = &sbuf->rings[bufid];
 			switch (mrecv.flag) {
 			case SMSG_EVENT_SBUF_RDPTR:
@@ -426,6 +427,8 @@ int sbuf_create_ex(u8 dst, u8 channel, u32 smem_idx,
 		ring->txbuf_virt = sbuf->smem_virt + hsize +
 				(txbufsize + rxbufsize) * i;
 		ring->rxbuf_virt = ring->txbuf_virt + txbufsize;
+		ring->tx_size = txbufsize;
+		ring->rx_size = rxbufsize;
 		init_waitqueue_head(&ring->txwait);
 		init_waitqueue_head(&ring->rxwait);
 #if defined(SIPC_DEBUG_SBUF_RDWT_OWNER)
@@ -606,7 +609,7 @@ int sbuf_write(u8 dst, u8 channel, u32 bufid,
 	if (timeout == 0) {
 		/* no wait */
 		if ((int)(ringhd->txbuf_wrptr - ringhd->txbuf_rdptr) >=
-				ringhd->txbuf_size) {
+				ring->tx_size) {
 			pr_info("sbuf %d-%d ring %d txbuf is full!\n",
 				dst, channel, bufid);
 			rval = -EBUSY;
@@ -616,7 +619,7 @@ int sbuf_write(u8 dst, u8 channel, u32 bufid,
 		rval = wait_event_interruptible(
 			ring->txwait,
 			(int)(ringhd->txbuf_wrptr - ringhd->txbuf_rdptr) <
-			ringhd->txbuf_size ||
+			ring->tx_size ||
 			sbuf->state == SBUF_STATE_IDLE);
 		if (rval < 0)
 			pr_debug("sbuf_write wait interrupted!\n");
@@ -630,7 +633,7 @@ int sbuf_write(u8 dst, u8 channel, u32 bufid,
 		rval = wait_event_interruptible_timeout(
 			ring->txwait,
 			(int)(ringhd->txbuf_wrptr - ringhd->txbuf_rdptr) <
-			ringhd->txbuf_size ||
+			ring->tx_size ||
 			sbuf->state == SBUF_STATE_IDLE,
 			timeout);
 		if (rval < 0) {
@@ -646,21 +649,30 @@ int sbuf_write(u8 dst, u8 channel, u32 bufid,
 		}
 	}
 
+	if ((int)(ringhd->txbuf_wrptr - ringhd->txbuf_rdptr) < 0 ||
+	    (int)(ringhd->txbuf_wrptr - ringhd->txbuf_rdptr) > ring->tx_size) {
+		pr_err("sbuf_write: bufid = %d, channel = %d bad ptrs, rdptr=%d, wrptr=%d\n",
+		       bufid, channel, ringhd->txbuf_rdptr,
+		       ringhd->txbuf_wrptr);
+		if (rval >= 0)
+			rval = -EIO;
+	}
+
 	/*
 	 * rdptr is written by the peer: a value ahead of wrptr would make
 	 * the free-space computation below exceed the ring size.
 	 */
 	while (left && (int)(ringhd->txbuf_wrptr - ringhd->txbuf_rdptr) >= 0 &&
 	       (int)(ringhd->txbuf_wrptr - ringhd->txbuf_rdptr) <
-	       ringhd->txbuf_size && sbuf->state == SBUF_STATE_READY) {
+	       ring->tx_size && sbuf->state == SBUF_STATE_READY) {
 		/* calc txpos & txsize */
 		txpos = ring->txbuf_virt +
-			ringhd->txbuf_wrptr % ringhd->txbuf_size;
-		txsize = ringhd->txbuf_size -
+			ringhd->txbuf_wrptr % ring->tx_size;
+		txsize = ring->tx_size -
 			(int)(ringhd->txbuf_wrptr - ringhd->txbuf_rdptr);
 		txsize = min(txsize, left);
 
-		tail = txpos + txsize - (ring->txbuf_virt + ringhd->txbuf_size);
+		tail = txpos + txsize - (ring->txbuf_virt + ring->tx_size);
 		if (tail > 0) {
 			/* ring buffer is rounded */
 			if ((uintptr_t)u_buf.buf > TASK_SIZE) {
@@ -834,10 +846,10 @@ int sbuf_read(u8 dst, u8 channel, u32 bufid,
 	       sbuf->state == SBUF_STATE_READY) {
 		/* calc rxpos & rxsize */
 		rxpos = ring->rxbuf_virt +
-			ringhd->rxbuf_rdptr % ringhd->rxbuf_size;
+			ringhd->rxbuf_rdptr % ring->rx_size;
 		rxsize = (int)(ringhd->rxbuf_wrptr - ringhd->rxbuf_rdptr);
 		/* check overrun: wrptr is written by the peer */
-		if (rxsize < 0 || rxsize > ringhd->rxbuf_size) {
+		if (rxsize < 0 || rxsize > ring->rx_size) {
 			pr_err("sbuf_read: bufid = %d, channel= %d rxsize=0x%x, rdptr=%d, wrptr=%d",
 			       bufid,
 			       channel,
@@ -849,7 +861,7 @@ int sbuf_read(u8 dst, u8 channel, u32 bufid,
 				break;
 			}
 			/* never copy more than the ring holds */
-			rxsize = ringhd->rxbuf_size;
+			rxsize = ring->rx_size;
 		}
 
 		rxsize = min(rxsize, left);
@@ -857,7 +869,7 @@ int sbuf_read(u8 dst, u8 channel, u32 bufid,
 		pr_debug("sbuf_read: channel=%d, buf=%p, rxpos=%p, rxsize=%d\n",
 			 channel, u_buf.buf, rxpos, rxsize);
 
-		tail = rxpos + rxsize - (ring->rxbuf_virt + ringhd->rxbuf_size);
+		tail = rxpos + rxsize - (ring->rxbuf_virt + ring->rx_size);
 
 		if (tail > 0) {
 			/* ring buffer is rounded */
@@ -897,7 +909,7 @@ int sbuf_read(u8 dst, u8 channel, u32 bufid,
 		ringhd->rxbuf_rdptr = ringhd->rxbuf_rdptr + rxsize;
 		/* rx ringbuf is full ,so need to notify peer side */
 		if (ringhd->rxbuf_wrptr - ringhd->rxbuf_rdptr ==
-		    ringhd->rxbuf_size - rxsize) {
+		    ring->rx_size - rxsize) {
 			smsg_set(&mevt, channel,
 				 SMSG_TYPE_EVENT,
 				 SMSG_EVENT_SBUF_RDPTR,
@@ -958,7 +970,7 @@ int sbuf_poll_wait(u8 dst, u8 channel, u32 bufid,
 	if (ringhd->rxbuf_wrptr != ringhd->rxbuf_rdptr)
 		mask |= POLLIN | POLLRDNORM;
 
-	if (ringhd->txbuf_wrptr - ringhd->txbuf_rdptr < ringhd->txbuf_size)
+	if (ringhd->txbuf_wrptr - ringhd->txbuf_rdptr < ring->tx_size)
 		mask |= POLLOUT | POLLWRNORM;
 
 	return mask;
