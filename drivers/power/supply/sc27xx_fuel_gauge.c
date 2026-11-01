@@ -188,7 +188,7 @@ static int sc27xx_fgu_cap_to_clbcnt(struct sc27xx_fgu_data *data, int capacity);
 static void sc27xx_fgu_low_capacity_calibration(struct sc27xx_fgu_data *data,
 						int cap, int int_mode);
 static int sc27xx_fgu_get_temp(struct sc27xx_fgu_data *data, int *temp);
-static void sc27xx_fgu_adjust_cap(struct sc27xx_fgu_data *data, int cap);
+static int sc27xx_fgu_adjust_cap(struct sc27xx_fgu_data *data, int cap);
 
 static const char * const sc27xx_charger_supply_name[] = {
 	"sc2731_charger",
@@ -1120,7 +1120,7 @@ static const struct power_supply_desc sc27xx_fgu_desc = {
 	.property_is_writeable	= sc27xx_fgu_property_is_writeable,
 };
 
-static void sc27xx_fgu_adjust_cap(struct sc27xx_fgu_data *data, int cap)
+static int sc27xx_fgu_adjust_cap(struct sc27xx_fgu_data *data, int cap)
 {
 	int ret;
 
@@ -1128,6 +1128,8 @@ static void sc27xx_fgu_adjust_cap(struct sc27xx_fgu_data *data, int cap)
 	ret = sc27xx_fgu_get_clbcnt(data, &data->init_clbcnt);
 	if (ret)
 		dev_err(data->dev, "failed to get init clbcnt\n");
+
+	return ret;
 }
 
 /*
@@ -1189,6 +1191,10 @@ static unsigned int sc2721_resync_get_hold(bool *charging, int *gen)
 
 	*charging = false;
 	*gen = -1;
+	/* without the CV generation an A->B->A change is invisible: no resync */
+	if (!IS_REACHABLE(CONFIG_CHARGER_SC2720))
+		return 0;
+
 	psy = power_supply_get_by_name("sc2721_charger");
 	if (!psy)
 		return 0;
@@ -1287,10 +1293,10 @@ static void sc2721_resync_step(struct sc27xx_fgu_data *data)
 	 */
 	old_cap = data->init_cap;
 	old_clbcnt = data->init_clbcnt;
-	sc27xx_fgu_adjust_cap(data, soc);
+	ret = sc27xx_fgu_adjust_cap(data, soc);
 
 	hold2 = sc2721_resync_get_hold(&charging2, &gen2);
-	if (!READ_ONCE(gauge_resync) || !charging2 || hold2 != hold ||
+	if (ret || !READ_ONCE(gauge_resync) || !charging2 || hold2 != hold ||
 	    gen2 != gen) {
 		data->init_cap = old_cap;
 		data->init_clbcnt = old_clbcnt;
