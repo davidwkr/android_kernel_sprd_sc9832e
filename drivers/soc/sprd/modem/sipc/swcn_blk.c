@@ -126,7 +126,9 @@ void swcnblk_put(u8 dst, u8 channel, struct swcnblk_blk *blk)
 				     swcnblk->smem_blk_virt +
 				     swcnblk->mapped_smem_addr;
 	ring->r_txblks[txpos].length = swcnblk->txblksz;
+	wmb();
 	poolhd->txblk_rdptr = poolhd->txblk_rdptr - 1;
+	mb();
 	if ((int)(poolhd->txblk_wrptr - poolhd->txblk_rdptr) == 1)
 		wake_up_interruptible_all(&ring->getwait);
 	ring->txrecord[index] = SWCNBLK_BLK_STATE_DONE;
@@ -312,6 +314,7 @@ int swcnblk_create(struct swcnblk_create_info *info,
 	u8 ch_index;
 	int i, ret;
 	u32 hsize, smem_base, smem_map;
+	u32 off_rtx, off_rrx, off_ptx, off_prx;
 	u32 txblocksize, rxblocksize;
 	u32 hesize = 0;
 	struct swcnblk_mgr *swcnblk = NULL;
@@ -473,28 +476,28 @@ int swcnblk_create(struct swcnblk_create_info *info,
 			      info->txblocknum * txblocksize;
 
 	swcnblk->ring->header = swcnblk->smem_virt;
-	swcnblk->ring->txblk_virt = swcnblk->smem_blk_virt +
-		(ringhd->txblk_addr - swcnblk->mapped_smem_addr);
-	swcnblk->ring->r_txblks = swcnblk->smem_virt +
-		(ringhd->txblk_blks - swcnblk->mapped_smem_addr);
-	swcnblk->ring->rxblk_virt = swcnblk->smem_blk_virt +
-		(ringhd->rxblk_addr - swcnblk->mapped_smem_addr);
-	swcnblk->ring->r_rxblks = swcnblk->smem_virt +
-		(ringhd->rxblk_blks - swcnblk->mapped_smem_addr);
-	swcnblk->ring->p_txblks = swcnblk->smem_virt +
-		(poolhd->txblk_blks - swcnblk->mapped_smem_addr);
-	swcnblk->ring->p_rxblks = swcnblk->smem_virt +
-		(poolhd->rxblk_blks - swcnblk->mapped_smem_addr);
+	/* every base is derived from the AP's own layout, not the header */
+	off_rtx = hsize + hesize;
+	off_rrx = off_rtx + info->txblocknum * sizeof(struct swcnblk_blks);
+	off_ptx = off_rrx + info->rxblocknum * sizeof(struct swcnblk_blks);
+	off_prx = off_ptx + info->txblocknum * sizeof(struct swcnblk_blks);
+	swcnblk->ring->txblk_virt = swcnblk->smem_blk_virt + hsize;
+	swcnblk->ring->r_txblks = swcnblk->smem_virt + off_rtx;
+	swcnblk->ring->rxblk_virt = swcnblk->ring->txblk_virt +
+		info->txblocknum * txblocksize;
+	swcnblk->ring->r_rxblks = swcnblk->smem_virt + off_rrx;
+	swcnblk->ring->p_txblks = swcnblk->smem_virt + off_ptx;
+	swcnblk->ring->p_rxblks = swcnblk->smem_virt + off_prx;
 
 	for (i = 0; i < info->txblocknum; i++) {
-		swcnblk->ring->p_txblks[i].addr = poolhd->txblk_addr +
+		swcnblk->ring->p_txblks[i].addr = swcnblk->txblk_base +
 						 i * txblocksize;
 		swcnblk->ring->p_txblks[i].length = txblocksize;
 		swcnblk->ring->txrecord[i] = SWCNBLK_BLK_STATE_DONE;
 		poolhd->txblk_wrptr++;
 	}
 	for (i = 0; i < info->rxblocknum; i++) {
-		swcnblk->ring->p_rxblks[i].addr = poolhd->rxblk_addr +
+		swcnblk->ring->p_rxblks[i].addr = swcnblk->rxblk_base +
 						 i * rxblocksize;
 		swcnblk->ring->p_rxblks[i].length = rxblocksize;
 		swcnblk->ring->rxrecord[i] = SWCNBLK_BLK_STATE_DONE;
@@ -686,6 +689,8 @@ int swcnblk_get(u8 dst, u8 channel, struct swcnblk_blk *blk, int timeout)
 	/* one snapshot of the peer-written pointer and descriptor */
 	wr = poolhd->txblk_wrptr;
 	rd = poolhd->txblk_rdptr;
+	/* read the descriptor only after the pointer */
+	rmb();
 	if (wr != rd && swcnblk->state == SWCNBLK_STATE_READY) {
 		u32 baddr;
 
@@ -699,6 +704,8 @@ int swcnblk_get(u8 dst, u8 channel, struct swcnblk_blk *blk, int timeout)
 		}
 		txpos = swcnblk_get_ringpos(rd, swcnblk->txblknum);
 		baddr = ring->p_txblks[txpos].addr;
+		/* finish reading the descriptor before giving the slot back */
+		mb();
 		poolhd->txblk_rdptr = rd + 1;
 		/* the pool length is unused: blk->length is the AP txblksz */
 		if (swcnblk_peer_blk(baddr, 0, swcnblk->txblk_base,
@@ -769,7 +776,10 @@ static int swcnblk_send_ex(u8 dst, u8 channel,
 	pr_debug("swcnblk_send: channel=%d, wrptr=%d, txpos=%d, addr=%x\n",
 		 channel, ringhd->txblk_wrptr,
 		 txpos, ring->r_txblks[txpos].addr);
+	/* descriptor visible before the pointer, pointer before the peek */
+	wmb();
 	ringhd->txblk_wrptr = ringhd->txblk_wrptr + 1;
+	mb();
 
 	if (swcnblk->state == SWCNBLK_STATE_READY) {
 		if (yell || ((int)(ringhd->txblk_wrptr -
@@ -875,6 +885,8 @@ int swcnblk_receive(u8 dst, u8 channel,
 	/* one snapshot of the peer-written wrptr and block descriptor */
 	wr = ringhd->rxblk_wrptr;
 	rd = ringhd->rxblk_rdptr;
+	/* read the descriptor only after the pointer */
+	rmb();
 	if (wr != rd && swcnblk->state == SWCNBLK_STATE_READY) {
 		u32 baddr, blen, tries;
 
@@ -896,6 +908,8 @@ int swcnblk_receive(u8 dst, u8 channel,
 			rxpos = swcnblk_get_ringpos(rd, swcnblk->rxblknum);
 			baddr = ring->r_rxblks[rxpos].addr;
 			blen = ring->r_rxblks[rxpos].length;
+			/* finish reading the descriptor before giving the slot back */
+			mb();
 			ringhd->rxblk_rdptr = rd + 1;
 			/* clamp, so the block still returns to the pool */
 			if (blen > swcnblk->rxblksz)
@@ -1020,7 +1034,9 @@ int swcnblk_release(u8 dst, u8 channel, struct swcnblk_blk *blk)
 				     swcnblk->smem_blk_virt +
 				     swcnblk->mapped_smem_addr;
 	ring->p_rxblks[rxpos].length = swcnblk->rxblksz;
+	wmb();
 	poolhd->rxblk_wrptr = poolhd->rxblk_wrptr + 1;
+	mb();
 	pr_debug("swcnblk release: addr=%x\n", ring->p_rxblks[rxpos].addr);
 
 	if ((int)(poolhd->rxblk_wrptr - poolhd->rxblk_rdptr) == 1 &&
