@@ -243,6 +243,9 @@ struct wcn_device {
 	struct	work_struct load_wq;
 	struct	delayed_work cali_wq;
 	struct	completion download_done;
+	/* references taken by wcn_power_wq(), for the failed start unwind */
+	bool	vddcon_taken;
+	bool	sys_domain_taken;
 };
 
 struct wcn_device_manage {

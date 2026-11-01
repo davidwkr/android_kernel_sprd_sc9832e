@@ -20,7 +20,9 @@
 #include <linux/init.h>
 #include <linux/jiffies.h>
 #include <linux/kernel.h>
+#include <linux/ktime.h>
 #include <linux/limits.h>
+#include <linux/math64.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -30,6 +32,7 @@
 #include <linux/regmap.h>
 #include <linux/slab.h>
 #include <linux/sysfs.h>
+#include <linux/timekeeping.h>
 #include <misc/marlin_platform.h>
 #include <misc/wcn_bus.h>
 
@@ -390,24 +393,32 @@ static unsigned int gnss_retry_max_s = 600;
 module_param(gnss_retry_max_s, uint, 0644);
 MODULE_PARM_DESC(gnss_retry_max_s, "Maximum GNSS start retry wait in seconds");
 
+/* the module parameters are writable: bound what they can ask for */
+#define GNSS_RETRY_CAP_S	(24UL * 60 * 60)
+
 static unsigned int gnss_fail_count;
-static unsigned long gnss_retry_after;	/* jiffies, valid if fail_count */
+static s64 gnss_retry_after_ns;	/* boottime, valid if fail_count */
 static bool gnss_last_start_failed;
 
 static unsigned long gnss_retry_delay_s(void)
 {
-	unsigned long delay = gnss_retry_min_s;
+	unsigned long delay = min_t(unsigned long, gnss_retry_min_s,
+				    GNSS_RETRY_CAP_S);
+	unsigned long max_s = min_t(unsigned long, gnss_retry_max_s,
+				    GNSS_RETRY_CAP_S);
 	unsigned int n;
 
+	if (!delay)
+		return 0;
 	for (n = gnss_retry_burst; n < gnss_fail_count; n++) {
-		if (delay >= gnss_retry_max_s)
+		if (delay >= max_s)
 			break;
-		delay <<= 1;
+		delay <<= 1;	/* delay < max_s <= cap: no overflow */
 	}
-	if (gnss_fail_count >= gnss_retry_burst && delay > gnss_retry_max_s)
-		delay = gnss_retry_max_s;
+	if (gnss_fail_count >= gnss_retry_burst && delay > max_s)
+		delay = max_s;
 
-	return delay;
+	return min_t(unsigned long, delay, GNSS_RETRY_CAP_S);
 }
 
 static void gnss_power_on(bool enable)
@@ -418,11 +429,14 @@ static void gnss_power_on(bool enable)
 	GNSSCOMM_INFO("%s:enable=%d,current gnss_status=%d\n", __func__,
 			enable, gnss_common_ctl_dev.gnss_status);
 	if (enable && gnss_common_ctl_dev.gnss_status == GNSS_STATUS_POWEROFF) {
-		if (gnss_fail_count && gnss_retry_min_s &&
-		    time_before(jiffies, gnss_retry_after)) {
-			GNSSCOMM_ERR("%s: start refused, %u failed, retry in %lus\n",
+		s64 left_ns = gnss_retry_after_ns -
+			(s64)ktime_get_boot_ns();
+
+		if (gnss_fail_count && gnss_retry_min_s && left_ns > 0) {
+			GNSSCOMM_ERR("%s: start refused, %u failed, retry in %llus\n",
 				__func__, gnss_fail_count,
-				(gnss_retry_after - jiffies) / HZ + 1);
+				(unsigned long long)div_u64(left_ns,
+							    NSEC_PER_SEC) + 1);
 			return;
 		}
 		gnss_common_ctl_dev.gnss_status = GNSS_STATUS_POWERON_GOING;
@@ -446,8 +460,8 @@ static void gnss_power_on(bool enable)
 			if (gnss_fail_count < UINT_MAX)
 				gnss_fail_count++;
 			gnss_last_start_failed = true;
-			gnss_retry_after = jiffies +
-				gnss_retry_delay_s() * HZ;
+			gnss_retry_after_ns = (s64)ktime_get_boot_ns() +
+				(s64)gnss_retry_delay_s() * NSEC_PER_SEC;
 			/* nothing is left powered by the GNSS start: allow
 			 * a retry without a reboot, but do not overwrite an
 			 * ASSERT set by the dump path meanwhile
