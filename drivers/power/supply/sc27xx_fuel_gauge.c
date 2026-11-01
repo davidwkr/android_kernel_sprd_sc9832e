@@ -12,8 +12,10 @@
 #include <linux/platform_device.h>
 #include <linux/power_supply.h>
 #include <linux/power/charger-manager.h>
+#include <linux/power/sc2721-charger-cv.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
+#include <linux/workqueue.h>
 
 /* PMIC global control registers definition */
 #define SC27XX_MODULE_EN0		0xc08
@@ -22,6 +24,11 @@
 #define SC2730_CLK_EN0			0x1810
 #define SC2720_MODULE_EN0		0xc08
 #define SC2720_CLK_EN0			0xc10
+/* SC2721: ANA_REG_GLB_MODULE_EN0 / RTC_CLK_EN0 (4.4 sc2721_glb.h) and CHIP_ID_LOW */
+#define SC2721_MODULE_EN0		0xc08
+#define SC2721_CLK_EN0			0xc10
+#define SC2721_CHIP_ID_LOW		0xc00
+#define SC2721_CHIP_ID_AA		0xa000
 #define SC27XX_FGU_EN			BIT(7)
 #define SC27XX_FGU_RTC_EN		BIT(6)
 
@@ -69,6 +76,9 @@
 #define SC27XX_FGU_NORMAIL_POWERTON	0x5
 
 #define SC27XX_FGU_CUR_BASIC_ADC	8192
+/* 4.4 sprdfgu_clbcnt_get() / sprdfgu_clbcnt_set() */
+#define SC2721_FGU_CLBCNT_READ_TRIES	100
+#define SC2721_FGU_CLBCNT_SET_DELAY_US	130
 #define SC27XX_FGU_SAMPLE_HZ		2
 #define SC27XX_FGU_TEMP_BUFF_CNT	10
 #define SC27XX_FGU_BOOT_CAPACITY_THRESHOLD	10
@@ -101,6 +111,7 @@
  * @calib_resist_real: the real resistance of coulomb counter chip in microohms
  * @calib_resist_spec: the specification resistance of coulomb counter chip in microohms
  * @cap_table: capacity table with corresponding ocv
+ * @variant: the PMIC variant data
  */
 struct sc27xx_fgu_data {
 	struct regmap *regmap;
@@ -134,11 +145,22 @@ struct sc27xx_fgu_data {
 	struct power_supply_vol_temp_table *temp_table;
 	struct power_supply_capacity_temp_table *cap_temp_table;
 	struct power_supply_resistance_temp_table *resistance_table;
+	const struct sc27xx_fgu_variant_data *variant;
+	/* SC2721 gauge resync state, see sc2721_resync_step() */
+	struct delayed_work resync_work;
+	s64 resync_rest_start_ms;
+	s64 resync_last_poll_ms;
+	unsigned int resync_last_hold_uv;
+	int resync_last_gen;
+	unsigned long resync_last_j;
+	bool resync_done_once;
 };
 
 struct sc27xx_fgu_variant_data {
 	u32 module_en;
 	u32 clk_en;
+	/* SC2721 behaviours of the 4.4 sprd_27xx_fgu.c, see devices/SC2721_FGU_MAP.md */
+	bool is_sc2721;
 };
 
 static const struct sc27xx_fgu_variant_data sc2731_info = {
@@ -156,11 +178,17 @@ static const struct sc27xx_fgu_variant_data sc2720_info = {
 	.clk_en = SC2720_CLK_EN0,
 };
 
+static const struct sc27xx_fgu_variant_data sc2721_info = {
+	.module_en = SC2721_MODULE_EN0,
+	.clk_en = SC2721_CLK_EN0,
+	.is_sc2721 = true,
+};
+
 static int sc27xx_fgu_cap_to_clbcnt(struct sc27xx_fgu_data *data, int capacity);
 static void sc27xx_fgu_low_capacity_calibration(struct sc27xx_fgu_data *data,
 						int cap, int int_mode);
 static int sc27xx_fgu_get_temp(struct sc27xx_fgu_data *data, int *temp);
-static void sc27xx_fgu_adjust_cap(struct sc27xx_fgu_data *data, int cap);
+static int sc27xx_fgu_adjust_cap(struct sc27xx_fgu_data *data, int cap);
 
 static const char * const sc27xx_charger_supply_name[] = {
 	"sc2731_charger",
@@ -370,6 +398,19 @@ static int sc27xx_fgu_read_last_cap(struct sc27xx_fgu_data *data, int *cap)
 	return 0;
 }
 
+static int sc27xx_fgu_get_vbat_vol(struct sc27xx_fgu_data *data, int *val);
+static int sc27xx_fgu_get_current(struct sc27xx_fgu_data *data, int *val);
+
+static bool sc27xx_fgu_is_aa_chip(struct sc27xx_fgu_data *data)
+{
+	unsigned int id;
+
+	if (regmap_read(data->regmap, SC2721_CHIP_ID_LOW, &id))
+		return false;
+
+	return id == SC2721_CHIP_ID_AA;
+}
+
 /*
  * When system boots on, we can not read battery capacity from coulomb
  * registers, since now the coulomb registers are invalid. So we should
@@ -404,6 +445,25 @@ static int sc27xx_fgu_get_boot_capacity(struct sc27xx_fgu_data *data, int *cap)
 
 	volt = sc27xx_fgu_adc_to_voltage(data, volt);
 	ocv = volt * 1000 - oci * data->internal_resist;
+
+	/*
+	 * SC2721 AA chip: POCV is not usable, 4.4 uses the instantaneous
+	 * voltage and current instead (sprdfgu_find_firstpoweron_cap()).
+	 * volt is in mV, current in mA, resistance in mOhm: ocv in uV.
+	 */
+	if (data->variant->is_sc2721 && sc27xx_fgu_is_aa_chip(data)) {
+		int vnow, inow;
+
+		ret = sc27xx_fgu_get_vbat_vol(data, &vnow);
+		if (ret)
+			return ret;
+
+		ret = sc27xx_fgu_get_current(data, &inow);
+		if (ret)
+			return ret;
+
+		ocv = vnow * 1000 - inow * data->internal_resist;
+	}
 
 	/*
 	 * Parse the capacity table to look up the correct capacity percent
@@ -460,12 +520,20 @@ static int sc27xx_fgu_set_clbcnt(struct sc27xx_fgu_data *data, int clbcnt)
 	if (ret)
 		return ret;
 
-	return regmap_update_bits(data->regmap, data->base + SC27XX_FGU_START,
+	ret = regmap_update_bits(data->regmap, data->base + SC27XX_FGU_START,
 				 SC27XX_WRITE_SELCLB_EN,
 				 SC27XX_WRITE_SELCLB_EN);
+	if (ret)
+		return ret;
+
+	/* 4.4 waits 130 us after starting the write (SC2721 only) */
+	if (data->variant->is_sc2721)
+		udelay(SC2721_FGU_CLBCNT_SET_DELAY_US);
+
+	return 0;
 }
 
-static int sc27xx_fgu_get_clbcnt(struct sc27xx_fgu_data *data, int *clb_cnt)
+static int sc27xx_fgu_read_clbcnt(struct sc27xx_fgu_data *data, int *clb_cnt)
 {
 	int ccl, cch, ret;
 
@@ -482,6 +550,35 @@ static int sc27xx_fgu_get_clbcnt(struct sc27xx_fgu_data *data, int *clb_cnt)
 	*clb_cnt = ccl & SC27XX_FGU_CLBCNT_MASK;
 	*clb_cnt |= (cch & SC27XX_FGU_CLBCNT_MASK) << SC27XX_FGU_CLBCNT_SHIFT;
 
+	return 0;
+}
+
+static int sc27xx_fgu_get_clbcnt(struct sc27xx_fgu_data *data, int *clb_cnt)
+{
+	int cc1, cc2, ret, tries = SC2721_FGU_CLBCNT_READ_TRIES;
+
+	ret = sc27xx_fgu_read_clbcnt(data, &cc1);
+	if (ret || !data->variant->is_sc2721) {
+		if (!ret)
+			*clb_cnt = cc1;
+		return ret;
+	}
+
+	/*
+	 * SC2721: the two halves are read separately, so repeat until two
+	 * consecutive reads agree (4.4 sprdfgu_clbcnt_get()).
+	 */
+	do {
+		udelay(10);
+		ret = sc27xx_fgu_read_clbcnt(data, &cc2);
+		if (ret)
+			return ret;
+		if (cc1 == cc2)
+			break;
+		cc1 = cc2;
+	} while (--tries);
+
+	*clb_cnt = cc1;
 	return 0;
 }
 
@@ -525,9 +622,10 @@ static int sc27xx_fgu_get_cur_now(struct sc27xx_fgu_data *data, int *val)
 	return 0;
 }
 
-static int sc27xx_fgu_get_capacity(struct sc27xx_fgu_data *data, int *cap)
+/* capacity in percent from the coulomb counter only: no temperature table, no calibration */
+static int sc27xx_fgu_get_raw_capacity(struct sc27xx_fgu_data *data, int *cap)
 {
-	int ret, cur_clbcnt, delta_clbcnt, delta_cap, temp, temp_cap;
+	int ret, cur_clbcnt, delta_clbcnt, delta_cap, temp;
 
 	/* Get current coulomb counters firstly */
 	ret = sc27xx_fgu_get_clbcnt(data, &cur_clbcnt);
@@ -549,6 +647,17 @@ static int sc27xx_fgu_get_capacity(struct sc27xx_fgu_data *data, int *cap)
 	 */
 	delta_cap = DIV_ROUND_CLOSEST(temp * 100, data->total_cap);
 	*cap = delta_cap + data->init_cap;
+
+	return 0;
+}
+
+static int sc27xx_fgu_get_capacity(struct sc27xx_fgu_data *data, int *cap)
+{
+	int ret, delta_cap, temp, temp_cap;
+
+	ret = sc27xx_fgu_get_raw_capacity(data, cap);
+	if (ret)
+		return ret;
 
 	if (data->cap_table_len > 0) {
 		ret = sc27xx_fgu_get_temp(data, &temp);
@@ -1011,7 +1120,7 @@ static const struct power_supply_desc sc27xx_fgu_desc = {
 	.property_is_writeable	= sc27xx_fgu_property_is_writeable,
 };
 
-static void sc27xx_fgu_adjust_cap(struct sc27xx_fgu_data *data, int cap)
+static int sc27xx_fgu_adjust_cap(struct sc27xx_fgu_data *data, int cap)
 {
 	int ret;
 
@@ -1019,6 +1128,328 @@ static void sc27xx_fgu_adjust_cap(struct sc27xx_fgu_data *data, int cap)
 	ret = sc27xx_fgu_get_clbcnt(data, &data->init_clbcnt);
 	if (ret)
 		dev_err(data->dev, "failed to get init clbcnt\n");
+
+	return ret;
+}
+
+/*
+ * Resync while the SC2721 charger CV override holds the battery (port of the
+ * 4.4 sprd_2721_charge.c gauge_resync, lines 505-735, which acts through
+ * sprdfgu_force_set_soc()). Off by default. Acts only when ALL hold, checked
+ * every SC2721_RESYNC_POLL_S seconds:
+ *  - the charger reports a CV hold (sc2721_charger, CONSTANT_CHARGE_VOLTAGE
+ *    in uV, non-zero) and is CHARGING and online;
+ *  - |battery current| <= relax_ma and |OCV - hold| <= hold_mv, continuously
+ *    for rest_s (a gap between polls above 2 x the poll period, e.g. suspend,
+ *    or a change of the hold voltage restarts it);
+ *  - the OCV table capacity differs from the coulomb counter capacity by at
+ *    least pct points;
+ *  - the OCV table capacity is not 0 %, and not 100 % unless the OCV is at or
+ *    above the first (full) table entry;
+ *  - at least gap_s since the last resync.
+ * Units: OCV and hold in uV, current in mA, thresholds in mV / mA / s / %.
+ */
+#define SC2721_RESYNC_POLL_S		60
+#define SC2721_RESYNC_GAP_FLOOR_S	1800
+
+static bool gauge_resync;
+static unsigned int resync_rest_s = 600;
+static unsigned int resync_relax_ma = 30;
+static unsigned int resync_hold_mv = 60;
+static unsigned int resync_pct = 5;
+static unsigned int resync_gap_s = SC2721_RESYNC_GAP_FLOOR_S;
+
+/* the one gauge that owns the resync, under resync_lock */
+static DEFINE_MUTEX(resync_lock);
+static struct sc27xx_fgu_data *resync_data;
+/* serializes enable/disable and removal, held across cancel_delayed_work_sync() */
+static DEFINE_MUTEX(resync_ctl);
+
+static void sc2721_resync_idle(struct sc27xx_fgu_data *data)
+{
+	data->resync_rest_start_ms = 0;
+}
+
+/* forget everything accumulated; the work must not be running */
+static void sc2721_resync_reset(struct sc27xx_fgu_data *data)
+{
+	mutex_lock(&data->lock);
+	data->resync_rest_start_ms = 0;
+	data->resync_last_poll_ms = 0;
+	data->resync_last_hold_uv = 0;
+	data->resync_last_gen = -1;
+	mutex_unlock(&data->lock);
+}
+
+/* CV hold voltage in uV from the charger, 0 when not holding or unknown */
+static unsigned int sc2721_resync_get_hold(bool *charging, int *gen)
+{
+	union power_supply_propval val;
+	struct power_supply *psy;
+	unsigned int hold = 0;
+	int status = -1, online = 0, gen1, gen2;
+
+	*charging = false;
+	*gen = -1;
+	/* without the CV generation an A->B->A change is invisible: no resync */
+	if (!IS_REACHABLE(CONFIG_CHARGER_SC2720))
+		return 0;
+
+	psy = power_supply_get_by_name("sc2721_charger");
+	if (!psy)
+		return 0;
+
+	/*
+	 * The generation is read before and after the other values: if it
+	 * moved, the snapshot is inconsistent and is treated as not holding.
+	 */
+	gen1 = sc2721_charger_cv_generation() & INT_MAX;
+	if (!power_supply_get_property(psy, POWER_SUPPLY_PROP_STATUS, &val))
+		status = val.intval;
+	if (!power_supply_get_property(psy, POWER_SUPPLY_PROP_ONLINE, &val))
+		online = val.intval;
+	if (!power_supply_get_property(psy,
+				       POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE,
+				       &val) && val.intval > 0)
+		hold = val.intval;
+	gen2 = sc2721_charger_cv_generation() & INT_MAX;
+	power_supply_put(psy);
+
+	if (gen1 != gen2)
+		return 0;
+
+	*gen = gen1;
+	*charging = status == POWER_SUPPLY_STATUS_CHARGING && online;
+	return hold;
+}
+
+static void sc2721_resync_step(struct sc27xx_fgu_data *data)
+{
+	unsigned int hold, hold2;
+	int ocv, cur, raw, soc, ret, gen, gen2, old_cap, old_clbcnt;
+	bool charging, charging2;
+	s64 now = ktime_to_ms(ktime_get_boottime());
+
+	/* rest must be continuous: a gap restarts it */
+	if (data->resync_last_poll_ms &&
+	    now - data->resync_last_poll_ms > 2 * SC2721_RESYNC_POLL_S * 1000LL)
+		sc2721_resync_idle(data);
+	data->resync_last_poll_ms = now ? now : 1;
+
+	if (!READ_ONCE(gauge_resync) || data->table_len < 2) {
+		sc2721_resync_idle(data);
+		return;
+	}
+
+	hold = sc2721_resync_get_hold(&charging, &gen);
+	if (!hold || !charging) {
+		sc2721_resync_idle(data);
+		return;
+	}
+	/* any CV request / override change since the last poll, even A->B->A */
+	if (hold != data->resync_last_hold_uv || gen != data->resync_last_gen) {
+		data->resync_last_hold_uv = hold;
+		data->resync_last_gen = gen;
+		sc2721_resync_idle(data);
+	}
+
+	mutex_lock(&data->lock);
+
+	ret = sc27xx_fgu_get_current(data, &cur);
+	if (!ret)
+		ret = sc27xx_fgu_get_vbat_ocv(data, &ocv);
+	if (ret)
+		goto idle;
+
+	if (abs(cur) > (int)resync_relax_ma ||
+	    abs(ocv - (int)hold) > (int)resync_hold_mv * 1000)
+		goto idle;
+
+	if (!data->resync_rest_start_ms)
+		data->resync_rest_start_ms = now ? now : 1;
+	if ((now - data->resync_rest_start_ms) / 1000 < resync_rest_s)
+		goto out;
+
+	soc = power_supply_ocv2cap_simple(data->cap_table, data->table_len,
+					  ocv);
+	if (sc27xx_fgu_get_raw_capacity(data, &raw))
+		goto idle;
+
+	if (abs(soc - raw) < (int)resync_pct)
+		goto out;
+	if (soc <= 0 ||
+	    (soc >= 100 && ocv < data->cap_table[0].ocv))
+		goto out;
+	if (data->resync_done_once &&
+	    time_before(jiffies, data->resync_last_j + resync_gap_s * HZ))
+		goto out;
+
+	/*
+	 * The charger cannot be locked from here, so the write is applied and
+	 * then verified under the gauge lock (no reader sees the value before
+	 * the verification): if the override, the CV request, the charging
+	 * state or the enable flag changed meanwhile, the previous state is
+	 * restored and nothing has been resynced.
+	 */
+	old_cap = data->init_cap;
+	old_clbcnt = data->init_clbcnt;
+	ret = sc27xx_fgu_adjust_cap(data, soc);
+
+	hold2 = sc2721_resync_get_hold(&charging2, &gen2);
+	if (ret || !READ_ONCE(gauge_resync) || !charging2 || hold2 != hold ||
+	    gen2 != gen) {
+		data->init_cap = old_cap;
+		data->init_clbcnt = old_clbcnt;
+		goto idle;
+	}
+
+	data->resync_last_j = jiffies;
+	data->resync_done_once = true;
+	sc2721_resync_idle(data);
+	dev_info(data->dev,
+		 "gauge resync %d%% -> %d%% (ocv %d uV, %d mA, hold %u uV)\n",
+		 raw, soc, ocv, cur, hold);
+	goto out;
+
+idle:
+	sc2721_resync_idle(data);
+out:
+	mutex_unlock(&data->lock);
+}
+
+static void sc2721_resync_work(struct work_struct *work)
+{
+	struct sc27xx_fgu_data *data =
+		container_of(work, struct sc27xx_fgu_data, resync_work.work);
+
+	sc2721_resync_step(data);
+
+	/* requeue only while this gauge is still the owner and enabled */
+	mutex_lock(&resync_lock);
+	if (resync_data == data && READ_ONCE(gauge_resync))
+		queue_delayed_work(system_freezable_wq, &data->resync_work,
+				   SC2721_RESYNC_POLL_S * HZ);
+	mutex_unlock(&resync_lock);
+}
+
+static int gauge_resync_set(const char *val, const struct kernel_param *kp)
+{
+	struct sc27xx_fgu_data *data;
+	bool on;
+	int ret = kstrtobool(val, &on);
+
+	if (ret)
+		return ret;
+
+	mutex_lock(&resync_ctl);
+	WRITE_ONCE(gauge_resync, on);
+	mutex_lock(&resync_lock);
+	data = resync_data;
+	if (data && on)
+		queue_delayed_work(system_freezable_wq, &data->resync_work,
+				   SC2721_RESYNC_POLL_S * HZ);
+	mutex_unlock(&resync_lock);
+	if (data && !on) {
+		/* flag is clear: wait for a running step, then drop the rest */
+		cancel_delayed_work_sync(&data->resync_work);
+		sc2721_resync_reset(data);
+	}
+	mutex_unlock(&resync_ctl);
+	return 0;
+}
+
+static int gauge_resync_get(char *buf, const struct kernel_param *kp)
+{
+	return scnprintf(buf, PAGE_SIZE, "%c\n",
+			 READ_ONCE(gauge_resync) ? 'Y' : 'N');
+}
+
+static const struct kernel_param_ops gauge_resync_ops = {
+	.set = gauge_resync_set,
+	.get = gauge_resync_get,
+};
+module_param_cb(gauge_resync, &gauge_resync_ops, NULL, 0644);
+MODULE_PARM_DESC(gauge_resync,
+		 "Resync the gauge from the OCV table while the SC2721 CV override holds (default off)");
+
+/* thresholds: read-only at runtime, range checked when set on the cmdline */
+struct resync_range {
+	unsigned int *val, min, max;
+};
+
+static int resync_range_set(const char *s, const struct kernel_param *kp)
+{
+	const struct resync_range *r = kp->arg;
+	unsigned int v;
+	int ret = kstrtouint(s, 0, &v);
+
+	if (ret)
+		return ret;
+	if (v < r->min || v > r->max)
+		return -EINVAL;
+	*r->val = v;
+	return 0;
+}
+
+static int resync_range_get(char *buf, const struct kernel_param *kp)
+{
+	const struct resync_range *r = kp->arg;
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", *r->val);
+}
+
+static const struct kernel_param_ops resync_range_ops = {
+	.set = resync_range_set,
+	.get = resync_range_get,
+};
+
+#define RESYNC_PARAM(name, var, lo, hi, desc)				\
+	static const struct resync_range resync_##name##_r = { &(var), lo, hi }; \
+	module_param_cb(gauge_resync_##name, &resync_range_ops,	\
+			(void *)&resync_##name##_r, 0444);		\
+	MODULE_PARM_DESC(gauge_resync_##name, desc " (" #lo ".." #hi ", read-only)")
+
+RESYNC_PARAM(rest_s, resync_rest_s, 600, 86400,
+	     "seconds relaxed at the hold before a resync, default 600");
+RESYNC_PARAM(relax_ma, resync_relax_ma, 1, 100,
+	     "max |battery current| in mA counted as relaxed, default 30");
+RESYNC_PARAM(hold_mv, resync_hold_mv, 10, 200,
+	     "OCV must be within this many mV of the hold voltage, default 60");
+RESYNC_PARAM(pct, resync_pct, 1, 50,
+	     "min difference in capacity percent to resync, default 5");
+RESYNC_PARAM(gap_s, resync_gap_s, SC2721_RESYNC_GAP_FLOOR_S, 86400,
+	     "min seconds between resyncs, default 1800");
+
+static void sc2721_resync_release(void *_data)
+{
+	struct sc27xx_fgu_data *data = _data;
+
+	mutex_lock(&resync_ctl);
+	mutex_lock(&resync_lock);
+	if (resync_data == data)
+		resync_data = NULL;
+	mutex_unlock(&resync_lock);
+	cancel_delayed_work_sync(&data->resync_work);
+	mutex_unlock(&resync_ctl);
+}
+
+static int sc2721_resync_register(struct sc27xx_fgu_data *data)
+{
+	INIT_DELAYED_WORK(&data->resync_work, sc2721_resync_work);
+	data->resync_last_gen = -1;
+
+	mutex_lock(&resync_lock);
+	if (!resync_data) {
+		resync_data = data;
+		if (READ_ONCE(gauge_resync))
+			queue_delayed_work(system_freezable_wq,
+					   &data->resync_work,
+					   SC2721_RESYNC_POLL_S * HZ);
+	}
+	mutex_unlock(&resync_lock);
+
+	return devm_add_action_or_reset(data->dev, sc2721_resync_release,
+					data);
 }
 
 static void sc27xx_fgu_low_capacity_calibration(struct sc27xx_fgu_data *data,
@@ -1164,8 +1595,14 @@ static void sc27xx_fgu_disable(void *_data)
 {
 	struct sc27xx_fgu_data *data = _data;
 
-	regmap_update_bits(data->regmap, SC27XX_CLK_EN0, SC27XX_FGU_RTC_EN, 0);
-	regmap_update_bits(data->regmap, SC27XX_MODULE_EN0, SC27XX_FGU_EN, 0);
+	/* the common code clears 0xc18, which is SOFT_RST1 on SC2721 */
+	u32 clk_en = data->variant->is_sc2721 ? data->variant->clk_en :
+						 SC27XX_CLK_EN0;
+	u32 module_en = data->variant->is_sc2721 ? data->variant->module_en :
+						    SC27XX_MODULE_EN0;
+
+	regmap_update_bits(data->regmap, clk_en, SC27XX_FGU_RTC_EN, 0);
+	regmap_update_bits(data->regmap, module_en, SC27XX_FGU_EN, 0);
 }
 
 static int sc27xx_fgu_cap_to_clbcnt(struct sc27xx_fgu_data *data, int capacity)
@@ -1486,6 +1923,7 @@ static int sc27xx_fgu_probe(struct platform_device *pdev)
 	data->bat_present = !!ret;
 	mutex_init(&data->lock);
 	data->dev = &pdev->dev;
+	data->variant = pdata;
 	platform_set_drvdata(pdev, data);
 
 	fgu_cfg.drv_data = data;
@@ -1508,6 +1946,12 @@ static int sc27xx_fgu_probe(struct platform_device *pdev)
 		sc27xx_fgu_disable(data);
 		dev_err(&pdev->dev, "failed to add fgu disable action\n");
 		return ret;
+	}
+
+	if (pdata->is_sc2721) {
+		ret = sc2721_resync_register(data);
+		if (ret)
+			return ret;
 	}
 
 	irq = platform_get_irq(pdev, 0);
@@ -1624,6 +2068,7 @@ static const struct of_device_id sc27xx_fgu_of_match[] = {
 	{ .compatible = "sprd,sc2731-fgu", .data = &sc2731_info},
 	{ .compatible = "sprd,sc2730-fgu", .data = &sc2730_info},
 	{ .compatible = "sprd,sc2720-fgu", .data = &sc2720_info},
+	{ .compatible = "sprd,sc2721-fgu", .data = &sc2721_info},
 	{ }
 };
 

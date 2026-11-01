@@ -189,7 +189,7 @@ Notes:
 - Untested: probe on real hardware, DT bindings against the 4.14 DTS (no watch DTS exists yet),
   interrupt trigger behaviour, suspend/resume with the 4.14 PM core, the sensor HAL ABI.
 
-### 7.2 SC2721 charger: steps 1 and 2 done (branch `kernel-4.14-charger`), gauge resync open
+### 7.2 SC2721 charger: steps 1 to 4 done (compile only), see SC2721_FGU_MAP.md
 
 Status: `sprd,sc2721-charger` match data and the CV override are in `sc2720_charger.c`, compile only; the register comparison and the parts left disabled (OVP value, ITERM, recharge, timers, fast charge) are in `SC2721_CHARGER_MAP.md`. Step 3 (gauge resync) and the DTS nodes are still open. The original plan follows.
 
