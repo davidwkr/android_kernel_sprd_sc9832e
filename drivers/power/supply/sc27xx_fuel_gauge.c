@@ -12,6 +12,7 @@
 #include <linux/platform_device.h>
 #include <linux/power_supply.h>
 #include <linux/power/charger-manager.h>
+#include <linux/power/sc2721-charger-cv.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
 #include <linux/workqueue.h>
@@ -1184,7 +1185,7 @@ static unsigned int sc2721_resync_get_hold(bool *charging, int *gen)
 	union power_supply_propval val;
 	struct power_supply *psy;
 	unsigned int hold = 0;
-	int status = -1, online = 0, gen1 = -1, gen2 = -2;
+	int status = -1, online = 0, gen1, gen2;
 
 	*charging = false;
 	*gen = -1;
@@ -1196,9 +1197,7 @@ static unsigned int sc2721_resync_get_hold(bool *charging, int *gen)
 	 * The generation is read before and after the other values: if it
 	 * moved, the snapshot is inconsistent and is treated as not holding.
 	 */
-	if (!power_supply_get_property(psy, POWER_SUPPLY_PROP_CHARGE_COUNTER,
-				       &val))
-		gen1 = val.intval;
+	gen1 = sc2721_charger_cv_generation() & INT_MAX;
 	if (!power_supply_get_property(psy, POWER_SUPPLY_PROP_STATUS, &val))
 		status = val.intval;
 	if (!power_supply_get_property(psy, POWER_SUPPLY_PROP_ONLINE, &val))
@@ -1207,9 +1206,7 @@ static unsigned int sc2721_resync_get_hold(bool *charging, int *gen)
 				       POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE,
 				       &val) && val.intval > 0)
 		hold = val.intval;
-	if (!power_supply_get_property(psy, POWER_SUPPLY_PROP_CHARGE_COUNTER,
-				       &val))
-		gen2 = val.intval;
+	gen2 = sc2721_charger_cv_generation() & INT_MAX;
 	power_supply_put(psy);
 
 	if (gen1 != gen2)

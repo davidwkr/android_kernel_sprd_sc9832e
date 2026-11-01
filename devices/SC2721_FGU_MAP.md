@@ -114,9 +114,10 @@ link dependency on the charger module, and the existing gauge already reads the 
 implied by the relaxed current and the OCV being at the hold voltage.
 
 CV generation: the charger keeps `sc2721_cv_gen` (the 4.4 `cv_gen`), bumped under `sc2721_cv_lock` on every change of the CV
-request or of the override, so A->B->A between two polls is seen. It is exposed as `POWER_SUPPLY_PROP_CHARGE_COUNTER` of
-`sc2721_charger` (SC2721 only, value masked to a non-negative int). This is not a charge counter: a standard integer property
-was reused to avoid a new property id or an exported symbol, and the doc/comments say so. The gauge reads the generation
+request or of the override, so A->B->A between two polls is seen. It is read through
+`sc2721_charger_cv_generation()` (exported by `sc2720_charger.c`, declared in
+`include/linux/power/sc2721-charger-cv.h`, a stub returning 0 when the charger is not reachable). A standard
+power_supply property is not reused, so no meaningless value appears in sysfs. The gauge reads the generation
 before and after STATUS / ONLINE / hold voltage; if it moved the snapshot is discarded. A change of the generation or of the
 hold voltage resets the accumulated rest.
 

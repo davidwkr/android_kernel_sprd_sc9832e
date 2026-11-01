@@ -6,6 +6,7 @@
 #include <linux/platform_device.h>
 #include <linux/power_supply.h>
 #include <linux/power/charger-manager.h>
+#include <linux/power/sc2721-charger-cv.h>
 #include <linux/usb/phy.h>
 #include <linux/regmap.h>
 #include <linux/notifier.h>
@@ -243,7 +244,7 @@ static unsigned int sc2721_cv_hold_uv(struct sc2720_charger_info *info)
 }
 
 /* CV change generation, see sc2721_cv_gen (wraps, only compared for equality) */
-static unsigned int sc2721_cv_generation(void)
+unsigned int sc2721_charger_cv_generation(void)
 {
 	unsigned int gen;
 
@@ -253,6 +254,7 @@ static unsigned int sc2721_cv_generation(void)
 
 	return gen;
 }
+EXPORT_SYMBOL_GPL(sc2721_charger_cv_generation);
 
 /*
  * Write END_V and the CV code. The code goes through 0 first so that the
@@ -902,20 +904,6 @@ static int sc2720_charger_usb_get_property(struct power_supply *psy,
 		val->intval = sc2721_cv_hold_uv(info);
 		break;
 
-	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
-		/*
-		 * SC2721 only: not a charge counter. CV change generation, a
-		 * counter bumped on every change of the CV request or the
-		 * override (4.4 cv_gen), for the gauge resync.
-		 */
-		if (!info->data->is_sc2721) {
-			ret = -EINVAL;
-			goto out;
-		}
-
-		val->intval = sc2721_cv_generation() & INT_MAX;
-		break;
-
 	case POWER_SUPPLY_PROP_ONLINE:
 		ret = sc2720_charger_get_online(info, &online);
 		if (ret)
@@ -1052,7 +1040,6 @@ static enum power_supply_property sc2720_usb_props[] = {
 static enum power_supply_property sc2721_usb_props[] = {
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE_MAX,
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE,
-	POWER_SUPPLY_PROP_CHARGE_COUNTER,
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT,
 	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
 	POWER_SUPPLY_PROP_USB_TYPE,
