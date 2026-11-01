@@ -160,3 +160,4 @@ interface (mmc_access_rpmb), because the Android 8.1 vendor userspace uses
 | 4.14.276 | conflict | include/net/xfrm.h, net/key/af_key.c, net/xfrm/xfrm_policy.c, net/xfrm/xfrm_user.c: vendor xfrm_interface if_id backport vs stable's struct xfrm_mark-based xfrm_policy_bysel_ctx()/byid(); resolved as Android (const struct xfrm_mark *mark, u32 if_id; if_id still matched, if_id read from XFRMA_IF_ID); matches Google's merge; 0 skipped |
 | 4.14.277 | clean | - |
 | 4.14.278 | clean | - |
+| 4.14.279 | clean | - |
