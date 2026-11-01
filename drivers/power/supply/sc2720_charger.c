@@ -348,6 +348,12 @@ static int sc2721_set_termination_voltage(struct sc2720_charger_info *info,
 		return -EINVAL;
 
 	mutex_lock(&sc2721_cv_lock);
+	/*
+	 * Never above the battery's constant_charge_voltage_max: the 4.4
+	 * sprd_battery.c caps the jeita CV to chg_end_vol_pure the same way.
+	 */
+	if (info->cv_vmax_mv && mv > info->cv_vmax_mv)
+		mv = info->cv_vmax_mv;
 	if (info->cv_last_req_mv != mv)
 		sc2721_cv_gen++;
 	info->cv_last_req_mv = mv;
