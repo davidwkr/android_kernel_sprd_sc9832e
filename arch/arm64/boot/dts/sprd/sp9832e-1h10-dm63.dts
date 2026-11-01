@@ -17,6 +17,9 @@
 #include "sp9832e-mach.dtsi"
 #include "sc9832e-wcn.dtsi"
 #include "sc2721.dtsi"
+#include "lcd/lcd_co5300_oled1952_mipi.dtsi"
+#include "lcd/lcd_co5300_oled206_mipi.dtsi"
+#include "lcd/lcd_co5300_oled213_mipi.dtsi"
 
 / {
 	model = "Spreadtrum SL8541e Board";
@@ -394,6 +397,7 @@
 
 &dpu {
 	/delete-property/ sprd,logo-memory;
+	status = "okay";
 };
 
 &uart1 {
@@ -674,17 +678,48 @@
 };
 
 /*
- * Display: left disabled on purpose (dpu, dsi, dphy, iommu_dispc stay
- * "disabled" from sharkle.dtsi). TODO: the CO5300 panel (stock
- * lcd5300213@5300213, lcd_id ID5300213, 410x502) needs the 4.14 DRM
- * sprd,generic-mipi-panel conversion, a separate step. Stock backlight is
- * pwm-backlight on pwm@40260020 (pwms index 0, period 20000 ns), 4.14 pwms
- * node stays disabled until then.
+ * Display: CO5300 AMOLED (stock lcd_id ID5300213, node lcd5300213@5300213,
+ * 412x502, one DSI lane, command mode). dpu, iommu_dispc, dsi and dphy are
+ * enabled; the panel timings, init commands and OLED brightness table are in
+ * lcd/lcd_co5300_oled*_mipi.dtsi (all three stock CO5300 variants). See
+ * devices/dm63/PANEL_414.md.
  *
- * sharkle.dtsi dphy_out points at &panel_in, so a disabled placeholder panel
- * keeps that label defined. It has no reset gpio and no init data.
+ * Panel selection: the 4.14 driver has no lcd_id= bootarg. sprd,force-attached
+ * names the /lcds node; it overrides lcd_name=. DM63 units report ID5300213,
+ * so lcd_co5300_oled213_mipi is the default. For a 1.952 inch (ID53001952) or
+ * 2.06 inch (ID5300206) unit use lcd_co5300_oled1952_mipi or
+ * lcd_co5300_oled206_mipi. A wrong variant gives a blank or shifted picture
+ * (column window and timing differ), the init commands do not stress the
+ * panel supplies.
+ *
+ * Stock power-on-sequence (gpio level delay-ms) 33 1 20, 50 1 20, 50 0 20,
+ * 50 1 50: gpio 33 is avdd-gpio, gpio 50 is reset-gpio, the levels and
+ * delays are in sprd,reset-on-sequence of the lcd dtsi.
+ *
+ * Stock names no panel regulator, but the 4.14 panel driver needs a "power"
+ * supply or its probe fails with -ENODEV (no full constraints on this
+ * board), so the panel points at a fixed regulator without enable gpio.
+ * Needs CONFIG_REGULATOR_FIXED_VOLTAGE (watch_414.fragment).
+ *
+ * TODO not mapped: stock sprd_backlight (pwm-backlight on pwm@40260020,
+ * pwms index 0, period 20000 ns) is not used by the OLED, the brightness is
+ * the oled-backlight of the lcd node. pwms stays disabled. AOD
+ * (sprd_aod_idle, DCS 0x38/0x39) has no 4.14 port yet.
  */
+/ {
+	lcd_nosupply: regulator-lcd-nosupply {
+		compatible = "regulator-fixed";
+		regulator-name = "lcd-nosupply";
+		regulator-always-on;
+	};
+};
+
+&iommu_dispc {
+	status = "okay";
+};
+
 &dsi {
+	status = "okay";
 	#address-cells = <1>;
 	#size-cells = <0>;
 
@@ -693,7 +728,11 @@
 		#address-cells = <1>;
 		#size-cells = <0>;
 		reg = <0>;
-		status = "disabled";
+
+		sprd,force-attached = "lcd_co5300_oled213_mipi";
+		power-supply = <&lcd_nosupply>;
+		avdd-gpio = <&ap_gpio 33 GPIO_ACTIVE_HIGH>;
+		reset-gpio = <&ap_gpio 50 GPIO_ACTIVE_HIGH>;
 
 		port {
 			reg = <1>;
@@ -702,4 +741,8 @@
 			};
 		};
 	};
+};
+
+&dphy {
+	status = "okay";
 };
