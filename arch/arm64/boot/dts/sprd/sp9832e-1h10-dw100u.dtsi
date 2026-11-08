@@ -561,16 +561,16 @@
 	};
 
 	/*
-	 * stock sc7a22_acc@18: layout 0, hand-up-ctrl 0x21. The stock irq-gpio
-	 * (ap_gpio 93) is not mapped: the 4.14 sprd display stack has no
-	 * screen state notifier, so the raise-to-wake key could not be sent
-	 * and the irq would only wake the system.
+	 * stock sc7a22_acc@18: layout 0, hand-up-ctrl 0x21, irq-gpio ap_gpio 93 (level high,
+	 * hand-up interrupt). Raise-to-wake needs the screen state from the
+	 * sprd panel notifier (include/linux/sprd_panel_notifier.h).
 	 */
 	sc7a22_acc@18 {
 		compatible = "sprd,sc7a22";
 		reg = <0x18>;
 		layout = <0>;
 		hand-up-ctrl = <0x21>;
+		irq-gpio = <&ap_gpio 93 GPIO_ACTIVE_HIGH>;
 	};
 };
 

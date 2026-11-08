@@ -617,13 +617,15 @@
 	};
 
 	/*
-	 * stock sc7a22_acc@18: layout 6. The stock irq-gpio (ap_gpio 90) is
-	 * not read by the 4.14 sc7a22 port (polled), kept here as a comment.
+	 * stock sc7a22_acc@18: layout 6, irq-gpio ap_gpio 90 (level high,
+	 * hand-up interrupt). Raise-to-wake needs the screen state from the
+	 * sprd panel notifier (include/linux/sprd_panel_notifier.h).
 	 */
 	sc7a22_acc@18 {
 		compatible = "sprd,sc7a22";
 		reg = <0x18>;
 		layout = <6>;
+		irq-gpio = <&ap_gpio 90 GPIO_ACTIVE_HIGH>;
 	};
 
 	/*
