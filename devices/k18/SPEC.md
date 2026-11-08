@@ -165,7 +165,7 @@ Same as the MT107 table except:
 
 | Compatible | Driver in tree | Status |
 |---|---|---|
-| `heartrate,bd1xxx` | `bd1xxx.c` (`INPUT_SENSORS_BD1XXX`, `HEARTRATE_BD1820`), interface only | **fitted chip; partial**: probe, power, ID check and the stock HAL interface (`heartrate` input device, `enable` / `chipinfo`, `/dev/bd1662rate`) exist, but no measurement back end, so heart rate and SpO2 still give no data. Interface and open items: `devices/BD1XXX_INTERFACE.md`. Also in the 4.14 tree |
+| `heartrate,bd1xxx` | `bd1xxx.c` (`INPUT_SENSORS_BD1XXX`, `HEARTRATE_BD1820`) | **fitted chip; yes, untested**: stock HAL interface plus the measurement back end recovered from the stock kernel (Init/Close sequences, 50 ms polling, 3 x 35 sample frames on `/dev/bd1662rate`); the HAL computes HR and SpO2. Missing: mode 15 finger detection (`BD_finger_math`) and the wear judgement. `devices/BD1XXX_INTERFACE.md`. Also in the 4.14 tree |
 | `btl,btl_ts` | none | missing, only needed if fitted |
 | `magnetic,och1970` | `drivers/input/misc/och1970.c` (`SENSORS_OCH1970`) | yes (polled; the stock HAL's thresholds and open / rotate logic are not implemented) |
 | `pressure,msp891`, `compass,af6837` | none | no node in this DT: not needed |
@@ -187,11 +187,11 @@ Against the MT107 `stock.config` the enabled options differ only by `CONFIG_INPU
 ## Gap list
 
 1. **Touch:** `cst0xx_ts` and `hyn_ts` are in the tree; `btl_ts` is not. Find which one answers (i2c-3 bind) before porting anything.
-2. **Heart rate:** the fitted chip is the BD1820 (stock vendor HAL). `bd1xxx.c` provides the stock interface but no measurement yet (chip init register order, sample read and polling still to recover, `devices/BD1XXX_INTERFACE.md`), so heart rate and SpO2 give no data; `hrs3xxx` covers only the unused node.
+2. **Heart rate:** the fitted chip is the BD1820 (stock vendor HAL). `bd1xxx.c` now programs and polls the chip from the recovered stock sequences (untested on a unit; finger mode 15 and wear judgement missing, `devices/BD1XXX_INTERFACE.md`); `hrs3xxx` covers only the unused node.
 3. **Panel:** controller confirmed as ICNA3311 from the U-Boot log (148 or 214 node; the exact `lcd_id` is not logged). `SPRD_AOD_IDLE` is **not** enabled in `k18.fragment` until it is known (DT candidates include non-CO5300 controllers); enable it for the ICNA3311 / CO5300 / SH8601 nodes with `aod-in` once confirmed.
 4. **Modules:** rebuild the four ramdisk modules for the new kernel.
 5. **Unverified:** everything above is from the dumps (no running unit): touch, accelerometer and the NV-derived modem profile. Heart-rate chip (BD1820) from the vendor HAL and panel controller (ICNA3311) from the U-Boot log.
 
 ## Config fragment
 
-`arch/arm64/configs/k18.fragment` (and the generated `k18_defconfig`): `TOUCHSCREEN_CST0XX`, `TOUCHSCREEN_CST9217`, `hrs3xxx` (HRS3918), `sc7a22`, `QMA6981_I2C` (for `qmax981`), `SENSORS_OCH1970`; `SPRD_AOD_IDLE` off; no rotary option of its own (parity keeps the inert driver); `INPUT_SENSORS_BD1XXX` + `HEARTRATE_BD1820` (interface-only driver). Build-checked only, not run on a unit.
+`arch/arm64/configs/k18.fragment` (and the generated `k18_defconfig`): `TOUCHSCREEN_CST0XX`, `TOUCHSCREEN_CST9217`, `hrs3xxx` (HRS3918), `sc7a22`, `QMA6981_I2C` (for `qmax981`), `SENSORS_OCH1970`; `SPRD_AOD_IDLE` off; no rotary option of its own (parity keeps the inert driver); `INPUT_SENSORS_BD1XXX` + `HEARTRATE_BD1820`. Build-checked only, not run on a unit.
