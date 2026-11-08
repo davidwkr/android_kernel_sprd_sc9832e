@@ -13,10 +13,19 @@
  * The controller raises a falling edge on its interrupt line when a report
  * is available. A report is 8 bytes read from register 0x01. The stock
  * driver reports a single contact (protocol A); here it is reported through
- * slot 0 of protocol B. The controller is not put to sleep, like the
- * cst0xx and hyn_ts drivers: touch keeps working with the screen in AOD and
- * wakes the system from suspend. A report that arrives while the I2C bus is
- * down is read on resume.
+ * slot 0 of protocol B.
+ *
+ * Screen state comes from the ADF blank notifier, like in the stock driver.
+ * Screen on: normal touch. Screen off: the controller is put in its sleep
+ * mode (register 0xa5 = 3), the interrupt is disabled and it is not a wake
+ * source. Screen on again: dummy read, reset pulse, interrupt enabled. The
+ * stock driver has no gesture mode that could wake the device (no enable
+ * register or command, no switch), so the "wake_gesture" attribute of the
+ * input device only accepts 0.
+ *
+ * While the screen is on a report that arrives while the I2C bus is down is
+ * read on resume, and touch wakes the system from suspend. A screen state
+ * change that arrives while the bus is down is applied on resume.
  *
  * Firmware checking and flashing of the controller is deliberately not
  * implemented.
@@ -50,6 +59,8 @@
 #include <linux/pm_wakeup.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
+#include <linux/sysfs.h>
+#include <video/adf_notifier.h>
 
 #define BTL_NAME		"Betterlife_ts"
 #define BTL_I2C_NAME		"btl_ts"
@@ -65,6 +76,10 @@
 #define BTL_R_YL		5
 
 #define BTL_GESTURE_KEY		0x17	/* reported as KEY_F4 */
+
+/* Mode register: written with a single value, 3 = sleep (stock blank path) */
+#define BTL_REG_MODE		0xa5
+#define BTL_MODE_SLEEP		0x03
 
 #define BTL_EVENT_DOWN		0
 #define BTL_EVENT_UP		1
@@ -90,9 +105,14 @@ struct btl_ts {
 	u32 max_x;
 	u32 max_y;
 	int irq;
-	struct mutex lock;	/* protects suspended, pending and the report */
-	bool suspended;
+	struct notifier_block adf_nb;
+	/* protects the flags below, the I2C traffic and the report */
+	struct mutex lock;
+	bool suspended;		/* the I2C bus is down */
 	bool pending;		/* a report arrived while suspended */
+	bool screen_off;	/* last state from the ADF notifier */
+	bool asleep;		/* controller in sleep mode, irq disabled */
+	bool wake_armed;	/* enable_irq_wake() is in effect */
 	u8 report[BTL_REPORT_LEN] ____cacheline_aligned;
 };
 
@@ -113,6 +133,13 @@ static int btl_raw_xfer(struct btl_ts *ts, u16 addr, u16 flags, u8 *buf,
 		return ret;
 
 	return ret == 1 ? 0 : -EIO;
+}
+
+static int btl_write_reg(struct btl_ts *ts, u8 reg, u8 val)
+{
+	u8 buf[2] = { reg, val };
+
+	return btl_raw_xfer(ts, ts->client->addr, 0, buf, sizeof(buf));
 }
 
 static int btl_read_report(struct btl_ts *ts)
@@ -239,7 +266,9 @@ static irqreturn_t btl_irq_thread(int irq, void *dev_id)
 	struct btl_ts *ts = dev_id;
 
 	mutex_lock(&ts->lock);
-	if (ts->suspended) {
+	if (ts->asleep) {
+		/* a report that was queued before the sleep command */
+	} else if (ts->suspended) {
 		/* the I2C bus is down: read the report on resume */
 		ts->pending = true;
 		pm_wakeup_event(&ts->client->dev, BTL_WAKEUP_MS);
@@ -251,6 +280,130 @@ static irqreturn_t btl_irq_thread(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
+/* Release every finger, like the stock unblank path does. */
+static void btl_release_fingers(struct btl_ts *ts)
+{
+	input_mt_slot(ts->input, 0);
+	input_mt_report_slot_state(ts->input, MT_TOOL_FINGER, false);
+	input_mt_sync_frame(ts->input);
+	input_sync(ts->input);
+}
+
+/* Called with ts->lock held and the I2C bus up. */
+static void btl_enter_sleep(struct btl_ts *ts)
+{
+	int ret;
+
+	/*
+	 * Not disable_irq(): the handler takes ts->lock. A handler that is
+	 * already running sees ts->asleep and returns.
+	 */
+	disable_irq_nosync(ts->irq);
+	if (ts->wake_armed) {
+		disable_irq_wake(ts->irq);
+		ts->wake_armed = false;
+	}
+	ts->pending = false;
+	ts->asleep = true;
+
+	ret = btl_write_reg(ts, BTL_REG_MODE, BTL_MODE_SLEEP);
+	if (ret)
+		dev_warn(&ts->client->dev, "failed to sleep: %d\n", ret);
+}
+
+/* Called with ts->lock held and the I2C bus up. */
+static void btl_leave_sleep(struct btl_ts *ts)
+{
+	u8 reg = BTL_REG_MODE;
+	u8 val;
+	struct i2c_msg msgs[2] = {
+		{ .addr = ts->client->addr, .len = 1, .buf = &reg },
+		{ .addr = ts->client->addr, .flags = I2C_M_RD, .len = 1,
+		  .buf = &val },
+	};
+
+	/* dummy read of the mode register, the result is not used */
+	i2c_transfer(ts->client->adapter, msgs, ARRAY_SIZE(msgs));
+	btl_reset_pulse(ts);
+
+	ts->asleep = false;
+	enable_irq(ts->irq);
+	btl_release_fingers(ts);
+}
+
+/* Called with ts->lock held and the I2C bus up. */
+static void btl_apply_screen(struct btl_ts *ts)
+{
+	if (ts->screen_off && !ts->asleep)
+		btl_enter_sleep(ts);
+	else if (!ts->screen_off && ts->asleep)
+		btl_leave_sleep(ts);
+}
+
+static int btl_adf_notify(struct notifier_block *nb, unsigned long event,
+			  void *event_data)
+{
+	struct btl_ts *ts = container_of(nb, struct btl_ts, adf_nb);
+	struct adf_notifier_event *ev = event_data;
+	int state;
+
+	if (!ev || !ev->data || event != ADF_EVENT_BLANK)
+		return 0;
+
+	state = *(int *)ev->data;
+	if (state != DRM_MODE_DPMS_ON && state != DRM_MODE_DPMS_OFF)
+		return 0;
+
+	mutex_lock(&ts->lock);
+	ts->screen_off = state == DRM_MODE_DPMS_OFF;
+	/* with the bus down the state is applied on resume */
+	if (!ts->suspended)
+		btl_apply_screen(ts);
+	mutex_unlock(&ts->lock);
+
+	return 0;
+}
+
+static ssize_t wake_gesture_show(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "0\n");
+}
+
+/* The stock driver has no double-tap gesture mode: only 0 is accepted. */
+static ssize_t wake_gesture_store(struct device *dev,
+				  struct device_attribute *attr,
+				  const char *buf, size_t count)
+{
+	unsigned int val;
+	int ret;
+
+	ret = kstrtouint(buf, 0, &val);
+	if (ret)
+		return ret;
+	if (val > 1)
+		return -EINVAL;
+	if (val)
+		return -EOPNOTSUPP;
+
+	return count;
+}
+static DEVICE_ATTR_RW(wake_gesture);
+
+static struct attribute *btl_attrs[] = {
+	&dev_attr_wake_gesture.attr,
+	NULL
+};
+
+static const struct attribute_group btl_attr_group = {
+	.attrs = btl_attrs,
+};
+
+static const struct attribute_group *btl_attr_groups[] = {
+	&btl_attr_group,
+	NULL
+};
+
 static int btl_suspend(struct device *dev)
 {
 	struct btl_ts *ts = dev_get_drvdata(dev);
@@ -258,10 +411,11 @@ static int btl_suspend(struct device *dev)
 	/* waits for a handler that is reading from the controller */
 	mutex_lock(&ts->lock);
 	ts->suspended = true;
+	/* with the controller asleep touch is not a wake source */
+	if (!ts->asleep && device_may_wakeup(dev) &&
+	    !enable_irq_wake(ts->irq))
+		ts->wake_armed = true;
 	mutex_unlock(&ts->lock);
-
-	if (device_may_wakeup(dev))
-		enable_irq_wake(ts->irq);
 
 	return 0;
 }
@@ -270,14 +424,18 @@ static int btl_resume(struct device *dev)
 {
 	struct btl_ts *ts = dev_get_drvdata(dev);
 
-	if (device_may_wakeup(dev))
-		disable_irq_wake(ts->irq);
-
 	mutex_lock(&ts->lock);
+	if (ts->wake_armed) {
+		disable_irq_wake(ts->irq);
+		ts->wake_armed = false;
+	}
 	ts->suspended = false;
+	/* a screen state change that arrived with the bus down */
+	btl_apply_screen(ts);
 	if (ts->pending) {
 		ts->pending = false;
-		btl_process_report(ts);
+		if (!ts->asleep)
+			btl_process_report(ts);
 	}
 	mutex_unlock(&ts->lock);
 
@@ -293,6 +451,13 @@ static void btl_disable_regulator(void *data)
 	struct btl_ts *ts = data;
 
 	regulator_disable(ts->vdd);
+}
+
+static void btl_unregister_adf(void *data)
+{
+	struct btl_ts *ts = data;
+
+	adf_unregister_client(&ts->adf_nb);
 }
 
 static void btl_disable_wakeup(void *data)
@@ -399,6 +564,8 @@ static int btl_register_input(struct btl_ts *ts)
 	input->name = BTL_NAME;
 	input->id.bustype = BUS_I2C;
 	input->id.version = 1;
+	input->dev.groups = btl_attr_groups;
+	input_set_drvdata(input, ts);
 
 	input_set_capability(input, EV_KEY, KEY_F4);
 	input_set_abs_params(input, ABS_MT_POSITION_X, 0, ts->max_x, 0, 0);
@@ -491,6 +658,20 @@ static int btl_probe(struct i2c_client *client, const struct i2c_device_id *id)
 					IRQF_NO_SUSPEND, BTL_NAME, ts);
 	if (ret) {
 		dev_err(dev, "failed to request irq %d: %d\n", ts->irq, ret);
+		return ret;
+	}
+
+	/* the screen is on at probe, like the stock driver assumes */
+	ts->adf_nb.notifier_call = btl_adf_notify;
+	ts->adf_nb.priority = 1000;
+	if (adf_register_client(&ts->adf_nb)) {
+		dev_warn(dev, "failed to register the display notifier\n");
+		return 0;
+	}
+	/* runs before the irq is freed: no callback with a dead handler */
+	ret = devm_add_action(dev, btl_unregister_adf, ts);
+	if (ret) {
+		btl_unregister_adf(ts);
 		return ret;
 	}
 
