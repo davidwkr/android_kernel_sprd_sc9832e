@@ -627,14 +627,16 @@
 	};
 
 	/*
-	 * stock sc7a22_acc@18: layout 1 (the 4.14 port reads it as an index
-	 * into its axis maps). The stock angle 0x75 is not read and the stock
-	 * irq-gpio (ap_gpio 93) is not read either (polled).
+	 * stock sc7a22_acc@18: layout 1, angle 0x75, irq-gpio ap_gpio 93 (level high,
+	 * hand-up interrupt). Raise-to-wake needs the screen state from the
+	 * sprd panel notifier (include/linux/sprd_panel_notifier.h).
 	 */
 	sc7a22_acc@18 {
 		compatible = "sprd,sc7a22";
 		reg = <0x18>;
 		layout = <1>;
+		angle = <0x75>;
+		irq-gpio = <&ap_gpio 93 GPIO_ACTIVE_HIGH>;
 	};
 };
 

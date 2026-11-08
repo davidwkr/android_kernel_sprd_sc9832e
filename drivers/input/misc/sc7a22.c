@@ -4,7 +4,6 @@
  */
 
 #include <linux/delay.h>
-#include <linux/fb.h>
 #include <linux/fs.h>
 #include <linux/gpio.h>
 #include <linux/i2c.h>
@@ -20,6 +19,7 @@
 #include <linux/of_gpio.h>
 #include <linux/pm.h>
 #include <linux/slab.h>
+#include <linux/sprd_panel_notifier.h>
 #include <linux/uaccess.h>
 #include <linux/workqueue.h>
 
@@ -105,7 +105,7 @@ struct sc7a22_data {
 	struct mutex op_lock; /* Bank switching and step counter accesses. */
 	struct mutex irq_lock; /* Serializes irq_work. */
 	struct work_struct irq_work;
-	struct notifier_block fb_nb;
+	struct notifier_block panel_nb;
 	int irq_gpio;
 	int irq;
 	u32 angle;
@@ -114,7 +114,7 @@ struct sc7a22_data {
 	u32 step_offset;
 	bool hand_start;
 	bool screen_on;
-	bool fb_registered;
+	bool panel_registered;
 	bool sysfs_group;
 	bool irq_requested;
 	bool gpio_owned;
@@ -546,7 +546,7 @@ static void sc7a22_irq_work(struct work_struct *work)
 	dev_dbg(&data->client->dev, "wrist flags 0x%x\n", flags);
 
 	if ((flags & SC7A22_FLAG_HAND_UP) && data->hand_start &&
-	    !data->screen_on) {
+	    !READ_ONCE(data->screen_on)) {
 		input_event(data->key_input, EV_KEY, KEY_F10, 1);
 		input_event(data->key_input, EV_KEY, KEY_F10, 0);
 		input_event(data->key_input, EV_SYN, SYN_REPORT, 0);
@@ -557,32 +557,24 @@ static void sc7a22_irq_work(struct work_struct *work)
 	mutex_unlock(&data->irq_lock);
 }
 
-#if IS_ENABLED(CONFIG_FB_NOTIFY)
+#if IS_ENABLED(CONFIG_DRM_SPRD)
 /*
- * Screen state. The stock kernel used the ADF blank notifier; the 4.14 sprd
- * display stack is DRM/KMS and has no notifier of its own (no ADF, no panel
- * or backlight notifier, and sprd_drm does not set up fbdev emulation). The
- * fb blank event is the closest equivalent and is used here, but nothing in
- * the 4.14 sprd stack raises it today, so screen_on stays at its initial
- * value (true) and the raise-to-wake key is not sent. See
+ * Screen state. The stock kernel used the ADF blank notifier (DPMS on / off);
+ * the 4.14 equivalent is the sprd DRM panel notifier, sent when the DSI
+ * encoder is enabled / disabled. Without the sprd DRM driver the screen is
+ * assumed on and the raise-to-wake key is never sent. See
  * devices/SC7A22_INTERFACE.md.
  */
-static int sc7a22_fb_notify(struct notifier_block *nb,
-			    unsigned long event, void *event_data)
+static int sc7a22_panel_notify(struct notifier_block *nb,
+			       unsigned long event, void *event_data)
 {
 	struct sc7a22_data *data = container_of(nb, struct sc7a22_data,
-						 fb_nb);
-	struct fb_event *ev = event_data;
-	int blank;
+						 panel_nb);
 
-	if (event != FB_EVENT_BLANK || !ev || !ev->data)
-		return NOTIFY_DONE;
-
-	blank = *(int *)ev->data;
-	if (blank == FB_BLANK_UNBLANK)
-		data->screen_on = true;
-	else if (blank == FB_BLANK_POWERDOWN)
-		data->screen_on = false;
+	if (event == SPRD_PANEL_EVENT_ON)
+		WRITE_ONCE(data->screen_on, true);
+	else if (event == SPRD_PANEL_EVENT_OFF)
+		WRITE_ONCE(data->screen_on, false);
 
 	return NOTIFY_DONE;
 }
@@ -1057,9 +1049,9 @@ static void sc7a22_cleanup(struct sc7a22_data *data)
 				   &sc7a22_attribute_group);
 	if (data->misc_registered)
 		misc_deregister(&data->miscdev);
-#if IS_ENABLED(CONFIG_FB_NOTIFY)
-	if (data->fb_registered)
-		fb_unregister_client(&data->fb_nb);
+#if IS_ENABLED(CONFIG_DRM_SPRD)
+	if (data->panel_registered)
+		sprd_panel_notifier_unregister(&data->panel_nb);
 #endif
 
 	/*
@@ -1165,9 +1157,9 @@ static int sc7a22_probe(struct i2c_client *client,
 	atomic_set(&data->enabled, 0);
 	INIT_DELAYED_WORK(&data->work, sc7a22_work);
 	INIT_WORK(&data->irq_work, sc7a22_irq_work);
-#if IS_ENABLED(CONFIG_FB_NOTIFY)
-	data->fb_nb.notifier_call = sc7a22_fb_notify;
-	data->fb_nb.priority = 1000;
+#if IS_ENABLED(CONFIG_DRM_SPRD)
+	data->panel_nb.notifier_call = sc7a22_panel_notify;
+	data->panel_nb.priority = 1000;
 #endif
 	/* Same initial state as the stock driver: "screen on", no hand_start. */
 	data->screen_on = true;
@@ -1213,9 +1205,10 @@ static int sc7a22_probe(struct i2c_client *client,
 		goto err_cleanup;
 	data->misc_registered = true;
 
-#if IS_ENABLED(CONFIG_FB_NOTIFY)
-	if (!fb_register_client(&data->fb_nb))
-		data->fb_registered = true;
+#if IS_ENABLED(CONFIG_DRM_SPRD)
+	/* the callback gets the current screen state during registration */
+	if (!sprd_panel_notifier_register(&data->panel_nb))
+		data->panel_registered = true;
 #endif
 
 	ret = sysfs_create_group(&data->input->dev.kobj,
