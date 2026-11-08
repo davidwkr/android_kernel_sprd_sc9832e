@@ -514,6 +514,29 @@ static void hyn_unregister_adf(void *data)
 	adf_unregister_client(&ts->adf_nb);
 }
 
+/*
+ * Runs after the notifier and the attributes are gone (devm order) and
+ * before the irq is freed: drop any wake reference still held on the line.
+ */
+static void hyn_release_irq_wake(void *data)
+{
+	struct hyn_ts *ts = data;
+
+	/* lock order: state_lock, then lock (suspend_wake is under lock) */
+	mutex_lock(&ts->state_lock);
+	if (ts->irq_wake) {
+		disable_irq_wake(ts->irq);
+		ts->irq_wake = false;
+	}
+	mutex_lock(&ts->lock);
+	if (ts->suspend_wake) {
+		disable_irq_wake(ts->irq);
+		ts->suspend_wake = false;
+	}
+	mutex_unlock(&ts->lock);
+	mutex_unlock(&ts->state_lock);
+}
+
 static void hyn_disable_wakeup(void *data)
 {
 	struct hyn_ts *ts = data;
@@ -719,6 +742,9 @@ static int hyn_probe(struct i2c_client *client, const struct i2c_device_id *id)
 		dev_err(dev, "failed to request irq %d: %d\n", ts->irq, ret);
 		return ret;
 	}
+	ret = devm_add_action(dev, hyn_release_irq_wake, ts);
+	if (ret)
+		return ret;
 
 	/* the attribute and the notifier use the interrupt: after the request */
 	ret = sysfs_create_group(&ts->input->dev.kobj, &hyn_attr_group);
