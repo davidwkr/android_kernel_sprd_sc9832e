@@ -2,7 +2,9 @@
 # the device config. DT touch: cst0xx_ts only plus btl_ts (no hyn_ts node;
 # bd1xxx_hr has no driver). sprd_aod_idle is NOT enabled (CO5300 only).
 # hrs3xxx accepts HRS3918 (id 0x27) and HRS3300 (id 0x21, the stock
-# config's chip); probe and power only, no measurement for either chip.
+# config's chip); probe and power only unless the stock measurement code is
+# linked (HRS3XXX_TYHX_BLOB_HRS3300, scripts/watch_build.sh with
+# HRS_STOCK_BOOT_IMG), which then serves only the HRS3300 (id 0x21).
 CONFIG_TOUCHSCREEN_CST0XX=y
 CONFIG_TOUCHSCREEN_BTL=y
 # no hyn_ts node, and the ST77916 LCD must never get CO5300 idle commands

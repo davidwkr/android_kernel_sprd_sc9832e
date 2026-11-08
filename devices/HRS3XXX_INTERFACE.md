@@ -1,7 +1,9 @@
 # HRS3XXX heart-rate sensor: stock kernel/HAL interface
 
-Applies to the DW100U (i2c-2) and DM63 (i2c-1) watches. Both use DT node
-`hrs3xxx@44`, compatible `tyhx,hrs3xxx`, I2C address 0x44. Sources of evidence:
+Applies to the DW100U (i2c-2) and DM63 (i2c-1) watches; the MT108 (i2c-2) uses the
+same glue with the HRS3300 chip (section "HRS3300 variant (MT108)" below). All use
+DT node `hrs3xxx@44`, compatible `tyhx,hrs3xxx`, I2C address 0x44. Sources of
+evidence:
 
 - **[W]** read-only inspection of the running watches (`/proc/bus/input/devices`,
   `getevent -p`, `ls -l`/`cat` on sysfs).
@@ -128,11 +130,23 @@ Generate (DM63; offline):
     python3 -I tools/blobcarve/blobcarve.py --boot-img /path/to/stock/boot.img \
         --out /path/outside/tree/hrsblob-dm63 --cross aarch64-linux-gnu-
 
-Then enable `CONFIG_HRS3XXX_TYHX_BLOB=y` and either set
+Then enable `CONFIG_HRS3XXX_TYHX_BLOB=y` and the variant that matches the carved
+object (`CONFIG_HRS3XXX_TYHX_BLOB_HX3918=y`, the default, for `--profile hx3918`;
+`CONFIG_HRS3XXX_TYHX_BLOB_HRS3300=y` for `--profile hrs3300`), and either set
 `CONFIG_HRS3XXX_TYHX_BLOB_S="/path/outside/tree/hrsblob-dm63/hrsblob.S"` or pass
 `HRS3XXX_TYHX_BLOB_S=/path/.../hrsblob.S` to make. If the option is set and the
 file is missing the build stops with an error. `scripts/watch_build.sh dm63`
-does all of this when `HRS_STOCK_BOOT_IMG=/path/to/boot.img` is set.
+does all of this when `HRS_STOCK_BOOT_IMG=/path/to/boot.img` is set (it picks
+profile and variant per device: `hrs3300` for `mt108`, `hx3918` for the others).
+
+The blob is board specific and its object exports `hrsblob_hrs3xxx_t` and
+`hr_sqrt` under the same names in both variants, so one kernel links one blob.
+The shim has a per-chip ops table selected by the chip ID read at probe (0x27
+HX3918, 0x21 HRS3300) with only the linked variant compiled in. Probe refuses to
+start the blob path when the chip ID does not match the linked variant: it logs
+`stock measurement code is for the <variant>, chip id 0x.. does not match: not
+using it` and the driver keeps working ID only (probe, power, sysfs, the 1 s
+"no valid sample" report).
 
 Shim (`hrs3xxx_blob.c`): provides the three register accessors, the two timer
 switches (own hrtimers and works; the vendor code never sees their layout),
@@ -173,12 +187,73 @@ made live at the end of probe.
   It now writes 1 for the HX3918 (chip ID 0x27) and keeps 0 for the HRS3300. This applies
   with and without the blob; on boards with a power GPIO the supply is cut right after.
 
+### HRS3300 variant (MT108) [D]
+
+[D] = disassembly of the MT108 stock kernel (`boot.bin`, offsets from `_text`);
+the blob contents are in `HRS3300_BLOB.md`. Nothing was run on a unit.
+
+Glue, same as DM63 except for the calls and the timers:
+
+- `hrs3xxx_init_heartrate(obj, val)` (0x4d5f24): clears +0x130, +0x134, +0x138,
+  +0x13c, +0x148, +0x14c, enabled (+0x100) = 0, `hrtimer_cancel` on both timers
+  (+0x10 and +0x68), `mutex_lock` +0x108. `val == 0`: enabled = 0, `msleep(320)`
+  (0x81d50), `Hrs3300_chip_disable` (0x4d6b1c), power GPIO low, `msleep(10)`,
+  both timers cancelled again, unlock. `val > 0` (any value, no mode):
+  power GPIO high, `msleep(100)`, `Hrs3300_chip_init(obj)` (0x4d6a18),
+  `Hrs3300_chip_enable` (0x4d6ac0), `Hrs3300_alg_open` (0x4d7b20),
+  `hrtimer_start_range_ns(obj+0x10, 40 ms, 0, REL)`, then enabled = 1.
+  Only the timer at +0x10 is ever started on this path.
+- Timer at +0x10: `hrs3xxx_hearterate_timer_func` (0x4d62b4) queues the work at
+  +0xc0 and re-starts the timer for 40 ms while enabled is set.
+- Work at +0xc0, `hrs3xxx_heartrate_work_func` (0x4d6210): `mutex_lock` +0x108;
+  if enabled, `hrs3300_Int_handle(obj)` (0x4d6c7c); only if the low byte of the
+  return value is non-zero, `input_event(EV_REL, REL_X, +0x130)`, `REL_Y`
+  (+0x148), `REL_Z` (+0x14c), then `EV_SYN`; unlock. The work at +0xe0
+  (0x4d6118, all eight codes, the HX3918-style report) is linked but nothing
+  queues it on this path: its timer (+0x68) is never started.
+- Probe (0x4d6448) calls only `printk`, gpio, `input_*`, `sysfs_create_group`,
+  `hrtimer_init` (twice), `i2c_master_send`, `hrs3xxx_read_reg`; there is no
+  PM-notifier, fb-notifier or early-suspend registration.
+- `dev_pm_ops`: `i2c_driver` at 0x10d0e08 (probe +0x10, remove +0x18, `.driver.pm`
+  at +0xa0 = 0x10d0ea8) points at `hrs3xxx_pm_ops` (0x872040). Its prepare,
+  complete, suspend_late/resume_early... slots are NULL; the six slots at
+  0x872050..0x872078 (suspend, resume, freeze, thaw, poweroff, restore) hold
+  `hrs3xxx_i2c_suspend` (0x4d5dc8) and `hrs3xxx_i2c_resume` (0x4d5da0), each of
+  which only calls `printk` and returns 0. Same result as DM63: stock keeps the
+  chip powered and the algorithm state across suspend and the monotonic hrtimer
+  continues after wake.
+
+Shim (`hrsb_hrs3300_*` in `hrs3xxx_blob.c`):
+
+| Step | Shim |
+|---|---|
+| start (`enable` 1..3, mode ignored) | after the core's GPIO high + 100 ms: restart cleanly (quiesce; if running, `Hrs3300_chip_disable`), clear the result slots, `Hrs3300_chip_init`, `Hrs3300_chip_enable`, `Hrs3300_alg_open`, arm the single 40 ms hrtimer, set enabled; all under the shim lock |
+| tick | hrtimer -> `schedule_work` -> lock, check live/enabled/not suspended, `hrs3300_Int_handle`; report `REL_X/Y/Z` + SYN only on non-zero |
+| no AGC | no second timer or work item is initialised, and quiesce, suspend and resume skip it (the AGC runs inside `Hrs3300_alg_send_data`) |
+| suspend / resume | as for HX3918 (verified above): suspend clears the run flag, cancels the timer and the work (a queued work sees "suspended"), remembering the timer was on; resume re-arms it with 40 ms. No `chip_disable`/`chip_init`, no GPIO or standby change; both idempotent |
+| stop (`enable` 0, remove) | clear enabled, cancel timer then work (`cancel_work_sync`), lock, `Hrs3300_chip_disable()`; the core then writes its standby register (ENABLE = 0, the HRS3300 disabled value, which `chip_disable` also writes) and drops the power GPIO. On remove the vendor pointer is set to NULL last |
+
+The stock 320 ms `msleep` before `Hrs3300_chip_disable` is not reproduced. In
+stock it only orders against a tick: enabled is already 0, the timers are
+cancelled, and the sleep runs with the mutex held, so a work that is queued or
+running can neither start a measurement nor touch the chip during it (it blocks
+on the mutex and then sees enabled = 0); nothing else accesses the chip between
+the clear and `chip_disable`. The shim gets the same guarantee, and a stronger
+one, from `hrtimer_cancel` + `cancel_work_sync` before taking the lock: no tick
+is queued, running or can start afterwards. Whether the delay also has a
+hardware purpose (a settling time after the last sample) is not visible in the
+disassembly (no register access in it); this is the same decision as for the
+HX3918 `hx3918_exit` and an open item for a bench test. The 10 ms after the GPIO
+goes low are likewise not reproduced (as for DM63).
+
 ### One stock image per device
 
 The hx3918 hardware layers and some logic differ between devices (blobcarve verifies
 DM63, DW100U and MT107 and derives the function set per image), although the shim
 interface is identical. Each device must be built from the object carved from its own stock
 image: DM63 from the DM63 `boot.img`, DW100U silver and v13m from the DW100U one,
-MT107 from the MT107 image. `scripts/watch_build.sh` accepts `HRS_STOCK_BOOT_IMG` for
-`dm63`, `dw100u-silver`, `dw100u-v13m` and `mt107` and refuses other devices. The DW100U
-and MT107 offsets above were not re-derived; only DM63 is documented here.
+MT107 from the MT107 image, MT108 (HRS3300, profile `hrs3300`) from the MT108 image.
+`scripts/watch_build.sh` accepts `HRS_STOCK_BOOT_IMG` for `dm63`, `dw100u-silver`,
+`dw100u-v13m`, `mt107` and `mt108` and refuses other devices. The DW100U and MT107
+offsets above were not re-derived; only DM63 (HX3918) and MT108 (HRS3300) are
+documented here.

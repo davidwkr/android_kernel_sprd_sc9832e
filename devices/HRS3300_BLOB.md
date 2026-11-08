@@ -138,15 +138,22 @@ clears +0x130, +0x134, +0x138, +0x13c, +0x148 and +0x14c before starting.
 | Exported blob symbols | `hrsblob_hrs3xxx_t`, `hrsblob_alg_ram`, `hrsblob_spo2_alg_data` | `hrsblob_hrs3xxx_t` |
 | Blob size | 110 functions | 25 functions, one 18 KB algorithm function |
 
-To extend the HX3918 shim: put the five calls behind an ops table selected by
-the chip ID (0x27 or 0x21), keep `hrsb_vendor`, the lock, the live flag and
-the register accessors unchanged, drop the second timer/work for the HRS3300
-ops, change `hrsb_report` to the three-code form for it, and add the
-`HEARTRATE_HRS3300` Kconfig path pointing at the HRS3300 `hrsblob.S`. A kernel
-with both chips would also need the duplicated `hr_sqrt` (and `rand` if
-exported) localised in one of the two objects, and it would have two global
-vendor pointers (one per blob), so the "one instance only" rule of the shim
-stays.
+## Implemented
+
+`drivers/input/misc/hrs3xxx_blob.c` now has a per-chip ops table (start, stop,
+ppg tick, optional agc tick) selected by the chip ID: 0x27 is the unchanged
+HX3918 path, 0x21 is the path described above. `hrsb_vendor`, the lock, the
+live and suspended handling and the register accessors are common. Because
+both blobs export `hr_sqrt` and `hrsblob_hrs3xxx_t`, a kernel links exactly
+one, chosen with the Kconfig choice `HRS3XXX_TYHX_BLOB_HX3918` /
+`HRS3XXX_TYHX_BLOB_HRS3300` (the HRS3300 one needs the object carved with
+`--profile hrs3300`). Only the ops of the linked variant are compiled, so the
+other variant's vendor symbols are never referenced. Probe uses the blob only
+if the chip ID matches the linked variant; otherwise it logs a warning and the
+driver stays ID only. The HRS3300 ops have a single timer and work item (no
+AGC), report `REL_X/Y/Z` plus SYN only when `hrs3300_Int_handle` returns
+non-zero, and `Hrs3300_chip_disable()` is the whole stop. Details and the MT108
+stock glue evidence: `HRS3XXX_INTERFACE.md`.
 
 ## Open points (no unit)
 
