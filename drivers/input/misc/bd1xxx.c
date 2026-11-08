@@ -31,6 +31,7 @@
 #include <linux/init.h>
 #include <linux/input.h>
 #include <linux/kernel.h>
+#include <linux/kref.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -63,12 +64,14 @@ struct bd1xxx_data {
 	struct input_dev *input;
 	struct miscdevice misc;
 	struct regulator *vdd;	/* NULL when the DT has no vdd_name */
-	struct mutex lock;	/* protects mode, enabled, powered */
+	struct kref ref;	/* probe + one per open misc descriptor */
+	struct mutex lock;	/* protects mode, enabled, powered, removed */
 	int power_gpio;		/* < 0 when the board has no power switch */
 	unsigned int mode;	/* test mode written by the HAL */
 	bool enabled;
 	bool powered;
 	bool suspended;
+	bool removed;		/* client gone: vdd and power_gpio released */
 	u8 raw[BD1XXX_RAW_SIZE];	/* always zero: no measurement yet */
 };
 
@@ -126,12 +129,19 @@ static void bd1xxx_power_off(struct bd1xxx_data *data)
 	data->powered = false;
 }
 
+static void bd1xxx_free(struct kref *ref)
+{
+	kfree(container_of(ref, struct bd1xxx_data, ref));
+}
+
 static int bd1xxx_set_enable(struct bd1xxx_data *data, bool enable)
 {
 	int ret = 0;
 
 	mutex_lock(&data->lock);
-	if (enable) {
+	if (data->removed) {
+		ret = -ENODEV;
+	} else if (enable) {
 		if (!data->suspended)
 			ret = bd1xxx_power_on(data);
 		if (!ret)
@@ -197,16 +207,41 @@ static const struct attribute_group *bd1xxx_groups[] = {
 	NULL,
 };
 
-static ssize_t bd1xxx_misc_read(struct file *file, char __user *buf,
-				size_t count, loff_t *ppos)
+/*
+ * Descriptors can outlive the client (adapter unbind): each one holds a
+ * reference to data, and I/O after remove returns -ENODEV.
+ */
+static int bd1xxx_misc_open(struct inode *inode, struct file *file)
 {
 	struct miscdevice *misc = file->private_data;
 	struct bd1xxx_data *data = container_of(misc, struct bd1xxx_data, misc);
-	size_t len = min_t(size_t, count, sizeof(data->raw));
+
+	/* misc_open() holds misc_mtx: remove has not deregistered us yet. */
+	kref_get(&data->ref);
+	file->private_data = data;
+
+	return nonseekable_open(inode, file);
+}
+
+static int bd1xxx_misc_release(struct inode *inode, struct file *file)
+{
+	struct bd1xxx_data *data = file->private_data;
+
+	kref_put(&data->ref, bd1xxx_free);
+	return 0;
+}
+
+static ssize_t bd1xxx_misc_read(struct file *file, char __user *buf,
+				size_t count, loff_t *ppos)
+{
+	struct bd1xxx_data *data = file->private_data;
+	ssize_t len = min_t(size_t, count, sizeof(data->raw));
 
 	/* Stock returns the saved sample buffer; ours is always zero. */
 	mutex_lock(&data->lock);
-	if (copy_to_user(buf, data->raw, len))
+	if (data->removed)
+		len = -ENODEV;
+	else if (copy_to_user(buf, data->raw, len))
 		len = -EFAULT;
 	mutex_unlock(&data->lock);
 
@@ -216,8 +251,7 @@ static ssize_t bd1xxx_misc_read(struct file *file, char __user *buf,
 static ssize_t bd1xxx_misc_write(struct file *file, const char __user *buf,
 				 size_t count, loff_t *ppos)
 {
-	struct miscdevice *misc = file->private_data;
-	struct bd1xxx_data *data = container_of(misc, struct bd1xxx_data, misc);
+	struct bd1xxx_data *data = file->private_data;
 	u8 cmd[BD1XXX_WRITE_MAX] = { };
 	int ret;
 
@@ -244,7 +278,8 @@ static ssize_t bd1xxx_misc_write(struct file *file, const char __user *buf,
 static const struct file_operations bd1xxx_misc_fops = {
 	.owner = THIS_MODULE,
 	.llseek = no_llseek,
-	.open = nonseekable_open,
+	.open = bd1xxx_misc_open,
+	.release = bd1xxx_misc_release,
 	.read = bd1xxx_misc_read,
 	.write = bd1xxx_misc_write,
 };
@@ -300,16 +335,17 @@ static int bd1xxx_probe(struct i2c_client *client,
 		return -ENODEV;
 	}
 
-	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
+	data = kzalloc(sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
 	data->client = client;
+	kref_init(&data->ref);
 	mutex_init(&data->lock);
 
 	ret = bd1xxx_parse_dt(data);
 	if (ret)
-		return ret;
+		goto err_free;
 
 	if (gpio_is_valid(data->power_gpio)) {
 		ret = devm_gpio_request_one(dev, data->power_gpio,
@@ -318,13 +354,13 @@ static int bd1xxx_probe(struct i2c_client *client,
 		if (ret) {
 			dev_err(dev, "cannot request power gpio %d: %d\n",
 				data->power_gpio, ret);
-			return ret;
+			goto err_free;
 		}
 	}
 
 	ret = bd1xxx_power_on(data);
 	if (ret)
-		return ret;
+		goto err_free;
 
 	/*
 	 * Read-only ID check. Stock also writes reg 0x03 = 0x0a and reads it
@@ -387,6 +423,8 @@ static int bd1xxx_probe(struct i2c_client *client,
 
 err_off:
 	bd1xxx_power_off(data);
+err_free:
+	kref_put(&data->ref, bd1xxx_free);
 	return ret;
 }
 
@@ -398,10 +436,12 @@ static int bd1xxx_remove(struct i2c_client *client)
 	input_unregister_device(data->input);
 
 	mutex_lock(&data->lock);
+	data->removed = true;
 	data->enabled = false;
 	bd1xxx_power_off(data);
 	mutex_unlock(&data->lock);
 
+	kref_put(&data->ref, bd1xxx_free);
 	return 0;
 }
 
@@ -454,12 +494,6 @@ static struct i2c_driver bd1xxx_driver = {
 		.owner = THIS_MODULE,
 		.of_match_table = bd1xxx_of_match,
 		.pm = &bd1xxx_pm_ops,
-		/*
-		 * Open /dev/bd1662rate descriptors outlive misc_deregister() but
-		 * not the devm data: no sysfs unbind. rmmod is blocked by the
-		 * fops owner while a descriptor is open.
-		 */
-		.suppress_bind_attrs = true,
 	},
 	.probe = bd1xxx_probe,
 	.remove = bd1xxx_remove,
