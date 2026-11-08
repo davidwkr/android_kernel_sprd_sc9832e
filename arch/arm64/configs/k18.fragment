@@ -2,8 +2,8 @@
 # Merge on top of the device config. The DT lists three touch candidates, two
 # with drivers here (cst0xx_ts 0x38, hyn_ts 0x5a, sharing the reset/irq GPIOs);
 # the one that answers probes, the other fails probe and releases its GPIOs.
-# Not needed: btl_ts (no driver in tree). Missing: bd1xxx_hr (stock
-# INPUT_SENSORS_BD1XXX / HEARTRATE_BD1820, no driver in tree). No rotary
+# Not needed: btl_ts (no driver in tree). bd1xxx_hr (BD1820) has an
+# interface-only driver (no measurement yet). No rotary
 # encoder node (decorative crown): the parity-enabled rotary driver stays inert.
 # The panel is not known (no lcd_id) and the DT has non-CO5300 candidates, so
 # SPRD_AOD_IDLE stays off until the panel is identified.
@@ -13,6 +13,8 @@ CONFIG_TOUCHSCREEN_CST9217=y
 # CONFIG_SPRD_AOD_IDLE is not set
 CONFIG_INPUT_SENSORS_HRS3XXX=y
 CONFIG_HEARTRATE_HRS3918=y
+CONFIG_INPUT_SENSORS_BD1XXX=y
+CONFIG_HEARTRATE_BD1820=y
 CONFIG_SENSORS_SC7A22=y
 # "QST,qmax981" matches qma6981.c
 CONFIG_INPUT_QMA6981_I2C=y
