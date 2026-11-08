@@ -1062,7 +1062,9 @@ static int bd1xxx_resume(struct device *dev)
 	data->suspended = false;
 	if (data->enabled && !data->removed) {
 		mutex_lock(&data->lock);
-		resume_poll = data->programmed && data->powered;
+		/* a write while suspended may have asked for another mode */
+		resume_poll = data->programmed && data->powered &&
+			      data->run_mode == data->mode;
 		data->running = resume_poll;
 		mutex_unlock(&data->lock);
 		if (resume_poll) {
