@@ -940,8 +940,9 @@ config INPUT_SENSORS_BD1XXX
 	  smartwatches.  The driver registers an input device named
 	  "heartrate", the "enable" and "chipinfo" attributes and the
 	  /dev/bd1662rate misc device used by the vendor Android sensors
-	  HAL.  The chip is only powered and identified: the measurement
-	  back end is not implemented yet, so no samples are produced.
+	  HAL.  The chip is programmed and polled for raw PPG samples; the
+	  wear detection and the finger mode (test mode 15), which need the
+	  accelerometer, are not implemented.
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called bd1xxx.
