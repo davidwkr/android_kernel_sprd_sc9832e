@@ -19,6 +19,18 @@ Files: `stock.config` (IKCONFIG from the Image, 4263 lines, 1237 options enabled
 
 Single DTB, same 1H10 board compatible as the other devices. The panel is selected at run time by `lcd_id` (U-Boot). The unit's U-Boot log (`uboot_log` partition, 6 boots) shows `icna3311_mipi_init` and `icna3311_readid` = `0x33 0x11` every time: the panel controller is the **ICNA3311**. The log does not print the `lcd_id` itself; U-Boot has a single ICNA3311 driver, so it is one of the two ICNA3311 nodes (`3311148` or `3311214`).
 
+## Repack round trip
+
+Check on a copy of the stock `boot.img` (sha256 `a2a5ef273dbce95b81d22ffc4301adad1545df243336f5b4ad593991ee931955`): `unpack` then `pack` with no substitutions gives a byte-identical file (same sha256, `cmp` clean), as for the six other stock dumps. Id check OK (recipe sha1+dt).
+
+```
+python3 -I tools/sprd_bootimg.py unpack copy/boot.img dir/
+python3 -I tools/sprd_bootimg.py pack dir/ rt.img
+sha256sum copy/boot.img rt.img
+```
+
+A candidate image built from this: [`BOOT_IMAGE.md`](BOOT_IMAGE.md) (untested on hardware).
+
 ## Ramdisk `/lib/modules` (names and sizes)
 
 | Module | Size (B) |
