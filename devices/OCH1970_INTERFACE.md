@@ -82,6 +82,8 @@ Misc device `/dev/och1970` (dynamic minor): write "open" (rotate axis on, mode 0
 - Axis strings that are not x/y/z (with the right level digit) fail the probe; stock silently used 0.
 - Chip ID is checked before touching rst-gpio and again after reset; rst-gpio is optional (stock requires it).
 - Old ABI removed: input name "och1970", ABS X/Y/Z, `enable`/`delay` on the I2C device.
+- X/Y/Z for the key decision are read in the evaluation work (after the gen 1 debounce), under the lock; stock reads them in the irq handler, where the poll work could replace them before the evaluation.
+- Suspend finishes a pending evaluation and stops the poll work first; resume restarts polling for `enable` 2/3. Descriptors of `/dev/och1970` keep the state alive after an unbind and get -ENODEV.
 
 ## 4.14 port notes (`kwt-414k`, branch `kernel-4.14`, not modified)
 

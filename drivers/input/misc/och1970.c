@@ -90,6 +90,7 @@ struct och1970_data {
 	struct wakeup_source *ws;
 	struct mutex lock;		/* flags, thresholds, register sequences */
 	struct kref ref;		/* probe + one per open misc descriptor */
+	struct mutex ctl;		/* whole enable transitions, incl. cancel */
 	bool removed;			/* under lock: client gone, no I/O */
 	struct delayed_work poll_work;
 	struct delayed_work irq_work;
@@ -357,6 +358,11 @@ static void och1970_irq_work(struct work_struct *work)
 	mutex_lock(&data->lock);
 	if (device_may_wakeup(&data->client->dev))
 		pm_relax(&data->client->dev);
+	/*
+	 * Stock samples in the handler; read here instead, under the lock,
+	 * so the poll work cannot replace the sample before it is judged.
+	 */
+	och1970_get_xyz(data);
 	switch (data->gen) {
 	case OCH1970_GEN3:
 		och1970_eval_gen3(data);
@@ -383,10 +389,6 @@ static irqreturn_t och1970_irq_thread(int irq, void *dev_id)
 	__pm_wakeup_event(data->ws, jiffies_to_msecs(OCH1970_WAKE_JIFFIES));
 	if (device_may_wakeup(&data->client->dev))
 		pm_stay_awake(&data->client->dev);
-	/* the poll work reads the same registers and fields */
-	mutex_lock(&data->lock);
-	och1970_get_xyz(data);
-	mutex_unlock(&data->lock);
 	schedule_delayed_work(&data->irq_work, msecs_to_jiffies(delay));
 
 	return IRQ_HANDLED;
@@ -443,6 +445,7 @@ static ssize_t enable_store(struct device *dev, struct device_attribute *attr,
 	if (ret)
 		return ret;
 
+	mutex_lock(&data->ctl);
 	mutex_lock(&data->lock);
 	data->enable_val = val;
 	switch (val) {
@@ -483,6 +486,7 @@ static ssize_t enable_store(struct device *dev, struct device_attribute *attr,
 
 	if (stop_poll)
 		cancel_delayed_work_sync(&data->poll_work);
+	mutex_unlock(&data->ctl);
 
 	return count;
 }
@@ -933,6 +937,7 @@ static int och1970_setup(struct i2c_client *client, struct och1970_data *data)
 	data->state = true;
 	data->extra_back = true;
 	mutex_init(&data->lock);
+	mutex_init(&data->ctl);
 	INIT_DELAYED_WORK(&data->poll_work, och1970_poll_work);
 	INIT_DELAYED_WORK(&data->irq_work, och1970_irq_work);
 	i2c_set_clientdata(client, data);
@@ -1026,6 +1031,10 @@ static int och1970_setup(struct i2c_client *client, struct och1970_data *data)
 	return 0;
 
 err_misc:
+	/* a descriptor may already be open: no I/O through it from now on */
+	mutex_lock(&data->lock);
+	data->removed = true;
+	mutex_unlock(&data->lock);
 	misc_deregister(&data->misc);
 err_irq:
 	och1970_release_irq(data);
@@ -1096,8 +1105,14 @@ static int och1970_suspend(struct device *dev)
 	cancel_delayed_work_sync(&data->poll_work);
 
 	if (!device_may_wakeup(dev)) {
+		int ret;
+
 		disable_irq(data->irq);
-		return och1970_powerdown_mode(data);
+		ret = och1970_powerdown_mode(data);
+		/* a failed suspend gets no resume: undo the disable */
+		if (ret)
+			enable_irq(data->irq);
+		return ret;
 	}
 	och1970_measurement_mode(data, OCH1970_MODE_KEEP);
 	if (data->gen == OCH1970_GEN1_DM82)
