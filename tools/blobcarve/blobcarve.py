@@ -17,11 +17,52 @@ TEXT_VA_DEFAULT = 0xffffff8008080000
 
 # ---- driver description.  Nothing here is image specific: the function set
 # is chosen by symbol name and the range is derived from the symbol addresses.
-LAYER_PREFIX = "hx3918_"     # hardware layer (kallsyms text symbols)
-ALG_PREFIX = "tyhx_"         # algorithm
-STRUCT_SLOT = "hrs3xxx_t"     # global holding the pointer to the vendor struct
-GLUE_PREFIXES = ("hrs3xxx_",)  # must not appear inside the carved range
-EXCLUDE = ("hx3918_ppg_timer_cfg", "hx3918_agc_timer_cfg")
+# One profile per hardware layer / algorithm pair (--profile); the default is
+# hx3918.  apply_profile() rebinds the module globals below.
+PROFILES = {
+    "hx3918": dict(
+        layer_prefix="hx3918_",       # hardware layer (kallsyms text symbols)
+        alg_prefix="tyhx_",           # algorithm
+        struct_slot="hrs3xxx_t",      # global holding the vendor struct pointer
+        glue_prefixes=("hrs3xxx_",),  # must not appear inside the carved range
+        exclude=("hx3918_ppg_timer_cfg", "hx3918_agc_timer_cfg"),
+        require=(),
+        struct_arg=(),
+        export_data=("hrs3xxx_t", "alg_ram", "spo2_alg_data")),
+    # HRS3300: Hrs3300_* layer and Hrs3300_alg_*/Hrs3300_bp_* algorithm share
+    # one prefix; the range runs from the first to the last of them.
+    "hrs3300": dict(
+        layer_prefix="Hrs3300_",
+        alg_prefix="Hrs3300_alg_",
+        struct_slot="hrs3xxx_t",
+        glue_prefixes=("hrs3xxx_",),
+        exclude=(),
+        # entry points a shim calls; each must exist exactly once as text
+        require=("Hrs3300_chip_init", "Hrs3300_chip_enable",
+                 "Hrs3300_chip_disable", "Hrs3300_read_hrs", "Hrs3300_read_als",
+                 "Hrs3300_alg_open", "Hrs3300_alg_send_data",
+                 "Hrs3300_alg_get_results"),
+        # functions that receive the vendor struct pointer in x0 (the hx3918
+        # layer only reaches it through the hrs3xxx_t global)
+        struct_arg=("hrs3300_Int_handle", "Hrs3300_read_hrs",
+                    "Hrs3300_read_als", "Hrs3300_chip_init"),
+        export_data=("hrs3xxx_t",)),
+}
+LAYER_PREFIX = ALG_PREFIX = STRUCT_SLOT = GLUE_PREFIXES = EXCLUDE = None
+EXPORT_DATA = REQUIRE = STRUCT_ARG = None
+
+
+def apply_profile(name):
+    global LAYER_PREFIX, ALG_PREFIX, STRUCT_SLOT, GLUE_PREFIXES, EXCLUDE
+    global EXPORT_DATA, REQUIRE, STRUCT_ARG
+    p = PROFILES[name]
+    LAYER_PREFIX, ALG_PREFIX = p["layer_prefix"], p["alg_prefix"]
+    STRUCT_SLOT, GLUE_PREFIXES = p["struct_slot"], p["glue_prefixes"]
+    EXCLUDE, EXPORT_DATA = p["exclude"], p["export_data"]
+    REQUIRE, STRUCT_ARG = p["require"], p["struct_arg"]
+
+
+apply_profile("hx3918")
 # variables the stock code reads by value with ADRP+LDR; they live outside
 # the blob and are referenced symbolically (ADRP and LDR lo12 rewritten).
 EXTERNAL_VARS = ("__stack_chk_guard", "system_wq")
@@ -351,7 +392,7 @@ def analyse_function(f, switch_targets, im):
         tbl.clear()
     f.touch, f.dyn, f.escapes, f.indirect = [], [], [], []
     st = [None] * n
-    st[0] = {}
+    st[0] = {0: ("S", 0, frozenset())} if f.name in STRUCT_ARG else {}
     work = [0]
     unresolved = []
 
@@ -449,6 +490,19 @@ def analyse_function(f, switch_targets, im):
         if not killed and op0 in (4, 6, 12, 14):
             r = decode_ldst(x)
             if not r["lit"] and r["mode"] != "excl":
+                if not r["load"] and not r["v"] and not r["prfm"]:
+                    # an address stored to memory escapes: whoever loads it
+                    # back can reach the whole object, so it is treated like
+                    # an address passed to a call
+                    for g in (r["rt"], r["rt2"]):
+                        gv = val(g) if g is not None and g != 31 else None
+                        if gv is not None and gv[0] in ("C", "I"):
+                            if r["size"] not in (8, 16):
+                                die("%s: tracked address stored with width %d "
+                                    "at %#x" % (f.name, r["size"], pc))
+                            ev.append(("escape", pc, gv[1], gv[0]))
+                            if gv[0] == "C":
+                                touch(gv[1], 1, "escape", gv[2])
                 b = val(r["rn"]) if r["rn"] != 31 else None
                 if b is not None and b[0] == "S":
                     # access through the pointer loaded from the vendor
@@ -580,6 +634,9 @@ def select_range(im):
     alg = [(a, n) for a, t, n in im.ks if n.startswith(ALG_PREFIX) and t in "Tt"]
     if not layer or not alg:
         die("need both %s* and %s* text symbols" % (LAYER_PREFIX, ALG_PREFIX))
+    for n in REQUIRE:
+        if len([1 for a, t, m in im.ks if m == n and t in "Tt"]) != 1:
+            die("required function %s not found exactly once" % n)
     lo = min(a for a, n in layer)
     last = max(a for a, n in layer + alg)
     j = bisect.bisect_right(im.ks_addr, last)
@@ -808,6 +865,23 @@ def build_chunks(im, funcs, ext_addr):
             c.why.add("merged via shared ADRP")
         merged.append(c)
     merged.sort(key=lambda c: c.lo)
+    # every chunk section is page aligned with its in-page offset kept as
+    # padding, so two chunks must never share a page: merge those that do
+    # (distinct memory classes cannot be merged and are fatal)
+    out = []
+    for c in merged:
+        if out and out[-1].hi - 1 >= (c.lo & ~(PAGE - 1)):
+            a = out[-1]
+            if mem_class(im, a.lo) != mem_class(im, c.lo):
+                die("chunks of different classes share the page at %#x"
+                    % (c.lo & ~(PAGE - 1)))
+            a.hi = max(a.hi, c.hi)
+            a.static_hi = max(a.static_hi, c.static_hi)
+            a.rs = a.rs + c.rs
+            a.why.add("merged: same page")
+        else:
+            out.append(c)
+    merged = out
     for a, b in zip(merged, merged[1:]):
         if b.lo < a.hi:
             die("overlapping chunks after merge; rerun merge")  # pragma: no cover
@@ -1096,8 +1170,8 @@ def prepare(path, text_va):
 def func_set_summary(cv):
     kinds = collections.Counter()
     for f in cv.funcs:
-        kinds["layer" if f.name.startswith(LAYER_PREFIX) else
-              "alg" if f.name.startswith(ALG_PREFIX) else "helper"] += 1
+        kinds["alg" if f.name.startswith(ALG_PREFIX) else
+              "layer" if f.name.startswith(LAYER_PREFIX) else "helper"] += 1
     return "%d functions (%s*: %d, %s*: %d, unprefixed helpers: %d)" % (
         len(cv.funcs), LAYER_PREFIX, kinds["layer"], ALG_PREFIX, kinds["alg"],
         kinds["helper"])
@@ -1137,7 +1211,6 @@ def run(args):
         print("\n" + "\n".join(dr))
 
 
-EXPORT_DATA = ("hrs3xxx_t", "alg_ram", "spo2_alg_data")
 
 
 def make_report(im, funcs, chunks, em, gaps, slots):
@@ -1542,7 +1615,8 @@ def diff_report(A, B):
         [f.name for f in B.funcs if f.name in fa]
     R.append("common functions in the same order: %s" % order_same)
     R.append("")
-    last_layer = max(f.lo for f in A.funcs if f.name.startswith(LAYER_PREFIX))
+    last_layer = max(f.lo for f in A.funcs if f.name.startswith(LAYER_PREFIX)
+                     and not f.name.startswith(ALG_PREFIX))
     results = {}
     for n in fa:
         if n in fb:
@@ -1667,8 +1741,11 @@ def main():
     ap.add_argument("--diff-with", metavar="OTHER_BOOT_IMG",
                     help="also compare this image's blob with OTHER_BOOT_IMG "
                          "and write diff_report.txt (needs no toolchain)")
+    ap.add_argument("--profile", choices=sorted(PROFILES), default="hx3918",
+                    help="hardware layer and algorithm to carve (default hx3918)")
     ap.add_argument("--text-va", type=lambda v: int(v, 0), default=TEXT_VA_DEFAULT)
     args = ap.parse_args()
+    apply_profile(args.profile)
     try:
         run(args)
     except Fatal as e:

@@ -1,8 +1,10 @@
 # blobcarve
 
 Carves a relocatable AArch64 ELF object (as assembly plus `.o`) out of a
-stripped arm64 kernel Image: the hx3918 hardware layer and the tyhx_*
-algorithm of the stock HRS driver, without the glue.
+stripped arm64 kernel Image: the hardware layer and the algorithm of the stock
+HRS driver, without the glue. Two profiles (`--profile`): `hx3918` (default:
+hx3918 layer and tyhx_* algorithm) and `hrs3300` (Hrs3300_* layer and
+algorithm, MT108).
 
     python3 -I tools/blobcarve/blobcarve.py \
         --boot-img /path/to/stock/boot.img \
@@ -26,6 +28,12 @@ image):
     # MT107 stock boot image (a bare kernel Image works too)
     python3 -I tools/blobcarve/blobcarve.py --boot-img <MT107>/boot.bin \
         --out /tmp/blob-mt107 --cross /usr/bin/aarch64-linux-gnu-
+
+HRS3300 (MT108, see "HRS3300 profile" below):
+
+    python3 -I tools/blobcarve/blobcarve.py --profile hrs3300 \
+        --boot-img <MT108>/boot.bin \
+        --out /tmp/blob-mt108 --cross /usr/bin/aarch64-linux-gnu-
 
 Each run prints the function-set summary and ends with
 `RESULT: BYTE-IDENTICAL`; any fatal check exits with status 2 and writes no
@@ -54,8 +62,8 @@ links at the stock addresses and verifies.
 1. Kernel is taken from the boot image. Symbols come from kallsyms. The
    address table is ABS64-relocated against `_text`, so addresses are read from
    the RELA addends. Offsets are relative to `_text`.
-2. The function set is chosen by name, nothing is addressed by constant.
-   The range starts at the lowest `hx3918_*` text symbol and ends at the
+2. The function set is chosen by name, nothing is addressed by constant
+   (the names come from the profile). The range starts at the lowest `hx3918_*` text symbol and ends at the
    symbol that follows the highest `hx3918_*`/`tyhx_*` text symbol. Every text
    symbol inside is carved (hardware layer, algorithm and the unprefixed
    helpers between them, e.g. `read_data_packet`, `hr_sqrt`) except
@@ -143,3 +151,43 @@ data tables. The undefined symbol set and the vendor struct field offsets used
 by the layer (+0x00 and +0x130..+0x14c through the `hrs3xxx_t` pointer) are the
 same on all three, so one kernel-side shim fits all, with the blob taken from
 the matching image.
+
+## HRS3300 profile (`--profile hrs3300`)
+
+For the MT108 image (UNISOC SC9832E, stock config `HEARTRATE_HRS3300`). Same
+tool, same checks, same output files; only the names differ:
+
+- layer and algorithm prefix `Hrs3300_` (the `Hrs3300_alg_*` and
+  `Hrs3300_bp_*` functions follow the hardware layer in one run), lowercase
+  `hrs3300_Int_handle` and the unprefixed helpers `rand` and `hr_sqrt` inside
+  the range;
+- no excluded functions: there are no timer switches in this layer, so the
+  range must be gap free (a gap is fatal);
+- eight entry points must exist exactly once (`Hrs3300_chip_init`,
+  `_chip_enable`, `_chip_disable`, `_read_hrs`, `_read_als`, `_alg_open`,
+  `_alg_send_data`, `_alg_get_results`), otherwise the run is fatal;
+- the struct-field report also tracks the vendor struct pointer passed in x0
+  to `hrs3300_Int_handle`, `Hrs3300_read_hrs`, `Hrs3300_read_als` and
+  `Hrs3300_chip_init` (the layer receives it as an argument as well as through
+  the `hrs3xxx_t` global); report only, never changes the carve;
+- exports: `hrsblob_hrs3xxx_t` only.
+
+Result: 25 functions (22 `Hrs3300_*`, 3 helpers), 3 undefined symbols
+(`printk`, `hrs3xxx_read_reg`, `hrs3xxx_write_reg`), 10 folded pointer slots,
+1 jump table, 6 chunks. What a kernel shim must provide:
+[`devices/HRS3300_BLOB.md`](../../devices/HRS3300_BLOB.md).
+
+Two tool changes were needed for this image and apply to every profile (the
+hx3918 output of all four images checked is byte-for-byte unchanged): an
+address stored to memory now counts as an escape (the 4280 byte algorithm RAM
+is reached only through a pointer stored by `Hrs3300_alg_open`, so its object
+was not carved), and chunks that share a page are merged (two printk format
+strings sat in one page and the link overlapped).
+
+| image | profile | round trip | layout independence |
+|-------|---------|-----------|---------------------|
+| MT108 stock boot.bin | hrs3300 | byte-identical | pass |
+| DM63, DW100U (two images), MT107 | hx3918 | byte-identical (unchanged) | pass |
+
+Running a profile against an image that has the other layer is fatal
+(`need both ... text symbols`).
