@@ -186,10 +186,10 @@ The stock misc device is named `sc7a22` with an ioctl that returns 0 (`sc7a22_un
 
 ## Open items
 
-1. Accelerometer scale. Stock reports the 12-bit value without further division [D
-   `read_accel_xyz+0x274`], and the HAL multiplies by 9.80665 / 1024 [H]. The driver divides by 2
-   (0x13) or 4 (0x18) before reporting, which gives 512 or 256 counts per g. Only on-device
-   gravity readings can say which is right; not changed.
+1. Accelerometer scale: now reported undivided like stock [D `read_accel_xyz+0x274`]. With
+   `0x23 = 0x88` (+-2 g, high resolution) that is ~1024 counts per g, which is what the HAL's
+   9.80665 / 1024 [H] expects. The earlier driver divided by 2 (0x13) or 4 (0x18), i.e. half or a
+   quarter of gravity in the HAL. Confirm on a unit: a watch lying flat should read ~9.8 m/s2 on Z.
 2. Misc name collision. On K18, MT107, MT108 and DM82 both `qma6981.c` and this driver register
    a misc device named `qmax981`, and both create the `xr-gsensor` class. Stock names this one
    `sc7a22`. Not changed.

@@ -392,12 +392,12 @@ static int sc7a22_read_sample(struct sc7a22_data *data, int sample[3])
 		else
 			raw[i] = (s16)(((u16)buffer[i * 2 + 1] << 8) |
 					 buffer[i * 2]);
+		/*
+		 * 12-bit value, reported undivided as stock does
+		 * (read_accel_xyz+0x274): +-2 g high resolution is ~1024
+		 * counts per g, and the HAL scales by 9.80665 / 1024.
+		 */
 		raw[i] >>= 4;
-		/* The HAL's qmax981 path expects 256 counts per g. */
-		if (data->chip_id == SC7A22_H_ID)
-			raw[i] /= 4;
-		else
-			raw[i] /= 2;
 	}
 
 	map = &sc7a22_axis_maps[data->map_layout];
@@ -724,8 +724,10 @@ static ssize_t gsensor_store(struct device *dev,
 
 	/* The stock driver enables on "1" and disables on anything else. */
 	ret = sc7a22_set_enabled(data, simple_strtoul(buffer, NULL, 10) == 1);
+	if (ret < 0)
+		return ret;
 
-	return ret < 0 ? ret : count;
+	return count;
 }
 
 static ssize_t delay_acc_show(struct device *dev,
