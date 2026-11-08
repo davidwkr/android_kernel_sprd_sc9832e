@@ -313,6 +313,11 @@ static void hrsb_init_guard(void)
 {
 	unsigned long canary;
 
+	/*
+	 * Seeded once, at probe, possibly before the CRNG is ready (only in
+	 * builds without the kernel's own stack protector). It cannot be
+	 * re-seeded later: live vendor frames would then fail their check.
+	 */
 	get_random_bytes(&canary, sizeof(canary));
 	canary &= ~0xffUL;	/* NUL byte, as CANARY_MASK on little endian */
 	__stack_chk_guard = canary;

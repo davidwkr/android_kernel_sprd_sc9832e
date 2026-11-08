@@ -11,6 +11,11 @@ set -e
 [ -n "$1" ] || { echo "usage: $0 <build-dir>" >&2; exit 1; }
 top=$(cd "$(dirname "$0")/.." && pwd)
 out=$(mkdir -p "$1" && cd "$1" && pwd)
+# resolve the stock image before the cd below (relative paths are the caller's)
+if [ -n "${HRS_STOCK_BOOT_IMG:-}" ]; then
+	[ -r "$HRS_STOCK_BOOT_IMG" ] || { echo "cannot read HRS_STOCK_BOOT_IMG" >&2; exit 1; }
+	HRS_STOCK_BOOT_IMG=$(cd "$(dirname "$HRS_STOCK_BOOT_IMG")" && pwd)/$(basename "$HRS_STOCK_BOOT_IMG")
+fi
 export ARCH=arm64 CROSS_COMPILE=${CROSS_COMPILE:-aarch64-linux-gnu-} KCONFIG_CONFIG="$out/.config"
 make -C "$top" O="$out" sprd_sharkle_defconfig
 cd "$top"
