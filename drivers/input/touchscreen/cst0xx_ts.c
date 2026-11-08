@@ -6,14 +6,27 @@
  *
  * The controller raises a falling edge on its interrupt line when a new
  * report is available. A report is read with a single I2C transfer from
- * register 0 and holds up to five points. The controller is never put to
- * sleep, like in the stock driver: touch must keep working with the screen
- * in AOD and wake the system from suspend. While the system is suspended
- * the I2C bus is not usable, so a report that arrives then is only noted
- * and read on resume.
+ * register 0 and holds up to five points.
  *
- * The register layout and the reset timing were derived from the stock
- * kernel binary for interoperability.
+ * The screen state comes from the ADF blank notifier, as in the stock
+ * driver. When the screen blanks (DRM_MODE_DPMS_OFF) the controller gets
+ * the stock sleep command (register 0xe5 = 0x03) and its interrupt is
+ * disabled: the controller is not a wake source then. When the screen
+ * unblanks (DRM_MODE_DPMS_ON) the controller is reset, as in the stock
+ * driver, the interrupt is enabled again and every finger is released.
+ *
+ * The stock driver has no double-tap-to-wake support that can be
+ * reproduced: it never writes a gesture enable command and never arms the
+ * interrupt as a wake source. The "wake_gesture" attribute of the input
+ * device exists for ABI compatibility with the other touch drivers: it reads
+ * 0 and writing 1 fails with -EOPNOTSUPP. See devices/TOUCH_WAKE.md.
+ *
+ * While the system is suspended the I2C bus is not usable, so a report
+ * that arrives then is only noted and read on resume, and a blank state
+ * change is applied on resume.
+ *
+ * The register layout, the sleep command and the reset timing were derived
+ * from the stock kernel binary for interoperability.
  *
  * Device tree (compatible "cst0xx,cst0xx_ts"):
  *   gpios    : <reset-gpio>, <irq-gpio>, in this order
@@ -36,10 +49,12 @@
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/notifier.h>
 #include <linux/of.h>
-#include <linux/pm_wakeup.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
+#include <linux/sysfs.h>
+#include <video/adf_notifier.h>
 
 #define CST0XX_NAME		"cst0xx_ts"
 
@@ -75,7 +90,13 @@
 
 #define CST0XX_SUPPLY_MIN_UV	2800000
 #define CST0XX_SUPPLY_MAX_UV	3000000
-#define CST0XX_WAKEUP_MS	200
+
+/* Sleep command: two byte write, register 0xe5 = 0x03 (deep sleep) */
+#define CST0XX_REG_SLEEP	0xe5
+#define CST0XX_SLEEP_DEEP	0x03
+
+/* the stock driver registers its ADF client with this priority */
+#define CST0XX_ADF_PRIO		1000
 
 struct cst0xx_ts {
 	struct i2c_client *client;
@@ -86,9 +107,13 @@ struct cst0xx_ts {
 	u32 max_x;
 	u32 max_y;
 	int irq;
-	struct mutex lock;	/* protects suspended, pending and the report */
-	bool suspended;
+	struct notifier_block adf_nb;
+	struct mutex lock;	/* protects the state below and the report */
+	bool suspended;		/* system sleep: the I2C bus is down */
 	bool pending;		/* a report arrived while suspended */
+	bool blanked;		/* the screen is off, as last notified */
+	bool asleep;		/* the controller got the sleep command */
+	bool irq_disabled;	/* the line is masked: disable_irq() pending */
 	u8 report[CST0XX_REPORT_LEN] ____cacheline_aligned;
 };
 
@@ -115,6 +140,23 @@ static int cst0xx_read(struct cst0xx_ts *ts, u8 reg, u8 *buf, u16 len)
 	return ret == ARRAY_SIZE(msgs) ? 0 : -EIO;
 }
 
+static int cst0xx_write(struct cst0xx_ts *ts, u8 reg, u8 val)
+{
+	u8 buf[2] = { reg, val };
+	struct i2c_msg msg = {
+		.addr = ts->client->addr,
+		.len = sizeof(buf),
+		.buf = buf,
+	};
+	int ret;
+
+	ret = i2c_transfer(ts->client->adapter, &msg, 1);
+	if (ret < 0)
+		return ret;
+
+	return ret == 1 ? 0 : -EIO;
+}
+
 /* The reset line is held high (1) while the controller runs. */
 static void cst0xx_hw_reset(struct cst0xx_ts *ts)
 {
@@ -127,7 +169,7 @@ static void cst0xx_hw_reset(struct cst0xx_ts *ts)
 	msleep(200);
 }
 
-/* Called with ts->lock held and the controller awake. */
+/* Called with ts->lock held. */
 static void cst0xx_process_report(struct cst0xx_ts *ts)
 {
 	struct input_dev *input = ts->input;
@@ -137,6 +179,10 @@ static void cst0xx_process_report(struct cst0xx_ts *ts)
 	u32 x[CST0XX_MAX_POINTS], y[CST0XX_MAX_POINTS];
 	u8 id[CST0XX_MAX_POINTS];
 	int ret;
+
+	/* the irq was masked without waiting for this handler */
+	if (ts->asleep)
+		return;
 
 	ret = cst0xx_read(ts, CST0XX_REG_REPORT, ts->report,
 			  sizeof(ts->report));
@@ -207,7 +253,6 @@ static irqreturn_t cst0xx_irq_thread(int irq, void *dev_id)
 	if (ts->suspended) {
 		/* the I2C bus is down: read the report on resume */
 		ts->pending = true;
-		pm_wakeup_event(&ts->client->dev, CST0XX_WAKEUP_MS);
 	} else {
 		cst0xx_process_report(ts);
 	}
@@ -216,17 +261,75 @@ static irqreturn_t cst0xx_irq_thread(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
+/*
+ * Bring the controller in line with ts->blanked. Called with ts->lock held
+ * and the I2C bus usable. The irq is masked without waiting: its handler
+ * takes ts->lock and checks ts->asleep.
+ */
+static void cst0xx_sync_state(struct cst0xx_ts *ts)
+{
+	int ret;
+
+	if (ts->blanked && !ts->asleep) {
+		ret = cst0xx_write(ts, CST0XX_REG_SLEEP, CST0XX_SLEEP_DEEP);
+		if (ret)
+			dev_err(&ts->client->dev,
+				"failed to send the sleep command: %d\n", ret);
+
+		ts->asleep = true;
+		ts->pending = false;
+		if (!ts->irq_disabled) {
+			disable_irq_nosync(ts->irq);
+			ts->irq_disabled = true;
+		}
+	} else if (!ts->blanked && ts->asleep) {
+		cst0xx_hw_reset(ts);
+		ts->asleep = false;
+		ts->pending = false;
+		if (ts->irq_disabled) {
+			enable_irq(ts->irq);
+			ts->irq_disabled = false;
+		}
+
+		/* drop every finger: nothing is marked as used */
+		input_mt_sync_frame(ts->input);
+		input_sync(ts->input);
+	}
+}
+
+static int cst0xx_adf_notify(struct notifier_block *nb, unsigned long event,
+			     void *event_data)
+{
+	struct cst0xx_ts *ts = container_of(nb, struct cst0xx_ts, adf_nb);
+	struct adf_notifier_event *ev = event_data;
+	int state;
+
+	if (!ev || !ev->data || event != ADF_EVENT_BLANK)
+		return NOTIFY_DONE;
+
+	/* other states (standby, suspend) are ignored, like the stock driver */
+	state = *(int *)ev->data;
+	if (state != DRM_MODE_DPMS_ON && state != DRM_MODE_DPMS_OFF)
+		return NOTIFY_DONE;
+
+	mutex_lock(&ts->lock);
+	ts->blanked = state == DRM_MODE_DPMS_OFF;
+	/* with the bus down the state is applied on resume */
+	if (!ts->suspended)
+		cst0xx_sync_state(ts);
+	mutex_unlock(&ts->lock);
+
+	return NOTIFY_OK;
+}
+
 static int cst0xx_suspend(struct device *dev)
 {
 	struct cst0xx_ts *ts = dev_get_drvdata(dev);
 
-	/* waits for a handler that is reading from the controller */
+	/* waits for a handler or a notifier that is using the bus */
 	mutex_lock(&ts->lock);
 	ts->suspended = true;
 	mutex_unlock(&ts->lock);
-
-	if (device_may_wakeup(dev))
-		enable_irq_wake(ts->irq);
 
 	return 0;
 }
@@ -235,9 +338,6 @@ static int cst0xx_resume(struct device *dev)
 {
 	struct cst0xx_ts *ts = dev_get_drvdata(dev);
 
-	if (device_may_wakeup(dev))
-		disable_irq_wake(ts->irq);
-
 	/* all resume_noirq callbacks, including the adapter's, have run */
 	mutex_lock(&ts->lock);
 	ts->suspended = false;
@@ -245,6 +345,7 @@ static int cst0xx_resume(struct device *dev)
 		ts->pending = false;
 		cst0xx_process_report(ts);
 	}
+	cst0xx_sync_state(ts);
 	mutex_unlock(&ts->lock);
 
 	return 0;
@@ -261,11 +362,55 @@ static void cst0xx_disable_regulator(void *data)
 	regulator_disable(ts->vdd);
 }
 
-static void cst0xx_disable_wakeup(void *data)
+static void cst0xx_unregister_adf(void *data)
 {
 	struct cst0xx_ts *ts = data;
 
-	device_init_wakeup(&ts->client->dev, false);
+	adf_unregister_client(&ts->adf_nb);
+}
+
+/* No gesture mode is known for this controller: always 0. */
+static ssize_t wake_gesture_show(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "0\n");
+}
+
+static ssize_t wake_gesture_store(struct device *dev,
+				  struct device_attribute *attr,
+				  const char *buf, size_t count)
+{
+	u8 val;
+	int ret;
+
+	ret = kstrtou8(buf, 0, &val);
+	if (ret)
+		return ret;
+	if (val > 1)
+		return -EINVAL;
+
+	/* writing 0 keeps the only supported state */
+	if (val)
+		return -EOPNOTSUPP;
+
+	return count;
+}
+static DEVICE_ATTR_RW(wake_gesture);
+
+static struct attribute *cst0xx_attrs[] = {
+	&dev_attr_wake_gesture.attr,
+	NULL
+};
+
+static const struct attribute_group cst0xx_attr_group = {
+	.attrs = cst0xx_attrs,
+};
+
+static void cst0xx_remove_group(void *data)
+{
+	struct cst0xx_ts *ts = data;
+
+	sysfs_remove_group(&ts->input->dev.kobj, &cst0xx_attr_group);
 }
 
 static int cst0xx_power_on(struct cst0xx_ts *ts)
@@ -361,6 +506,10 @@ static int cst0xx_register_input(struct cst0xx_ts *ts)
 
 	input->name = CST0XX_NAME;
 	input->id.bustype = BUS_I2C;
+	input_set_drvdata(input, ts);
+
+	/* the wake key of the common ABI, see wake_gesture */
+	input_set_capability(input, EV_KEY, KEY_WAKEUP);
 
 	input_set_abs_params(input, ABS_MT_POSITION_X, 0, ts->max_x, 0, 0);
 	input_set_abs_params(input, ABS_MT_POSITION_Y, 0, ts->max_y, 0, 0);
@@ -429,22 +578,39 @@ static int cst0xx_probe(struct i2c_client *client,
 		return ret;
 	}
 
-	device_init_wakeup(dev, true);
-	ret = devm_add_action(dev, cst0xx_disable_wakeup, ts);
-	if (ret) {
-		cst0xx_disable_wakeup(ts);
-		return ret;
-	}
-
 	ret = devm_request_threaded_irq(dev, ts->irq, NULL, cst0xx_irq_thread,
-					IRQF_TRIGGER_FALLING | IRQF_ONESHOT |
-					IRQF_NO_SUSPEND, CST0XX_NAME, ts);
+					IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
+					CST0XX_NAME, ts);
 	if (ret) {
 		dev_err(dev, "failed to request irq %d: %d\n", ts->irq, ret);
 		return ret;
 	}
 
-	return 0;
+	ret = sysfs_create_group(&ts->input->dev.kobj, &cst0xx_attr_group);
+	if (ret) {
+		dev_err(dev, "failed to create sysfs group: %d\n", ret);
+		return ret;
+	}
+
+	ret = devm_add_action(dev, cst0xx_remove_group, ts);
+	if (ret) {
+		cst0xx_remove_group(ts);
+		return ret;
+	}
+
+	ts->adf_nb.notifier_call = cst0xx_adf_notify;
+	ts->adf_nb.priority = CST0XX_ADF_PRIO;
+	ret = adf_register_client(&ts->adf_nb);
+	if (ret) {
+		dev_err(dev, "failed to register ADF client: %d\n", ret);
+		return ret;
+	}
+
+	ret = devm_add_action(dev, cst0xx_unregister_adf, ts);
+	if (ret)
+		cst0xx_unregister_adf(ts);
+
+	return ret;
 }
 
 static const struct of_device_id cst0xx_of_match[] = {

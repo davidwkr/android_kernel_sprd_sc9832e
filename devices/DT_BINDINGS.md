@@ -99,6 +99,13 @@ Common rows above apply to all. Differences between the six DTs (the K18 DT was 
 5. **WCN/GNSS**: bindings match; the remaining GNSS risks are firmware/timing, not DT. Relevant nodes are
    `cpwcn_gnss`, `gnss_common_ctl` and the SIPC `sipc@...` for the GNSS channel, all verified above.
 
+## cst0xx_ts screen-off behaviour [D]
+
+Stock (identical in DM63, DW100U and K18 Images) sleeps the controller with `E5 03` and disables the irq on
+`DRM_MODE_DPMS_OFF`, and resets it and enables the irq on `DRM_MODE_DPMS_ON`. It has no DT2W switch and
+never arms the irq as a wake source. The driver does the same, plus a `wake_gesture` attribute that only
+accepts 0. Details and evidence: `devices/TOUCH_WAKE.md`. No DT property changed.
+
 ## Reproducing
 
 ```
