@@ -671,11 +671,18 @@
 	};
 
 	/*
-	 * TODO not mapped (fitted in stock, no 4.14 driver): bd1xxx_hr@38
-	 * (heartrate,bd1xxx, vdd_name vddcammot, power-gpio ap_gpio 55, the
-	 * same pin as the hrs3xxx power-gpio). The HRS3xxx covers heart rate.
-	 * The stock DT has no msp891_gas and no af6837_mag node.
+	 * BD1820 (fitted on k18), stock bd1xxx_hr@38: same power-gpio as the
+	 * hrs3xxx; whichever chip answers its ID check keeps it. bd1xxx.c is
+	 * interface-only (no measurement yet), see devices/BD1XXX_INTERFACE.md.
 	 */
+	bd1xxx_hr@38 {
+		compatible = "heartrate,bd1xxx";
+		reg = <0x38>;
+		vdd_name = "vddcammot";
+		power-gpio = <&ap_gpio 55 GPIO_ACTIVE_HIGH>;
+	};
+
+	/* The stock DT has no msp891_gas and no af6837_mag node. */
 };
 
 /*

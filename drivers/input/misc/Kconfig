@@ -931,4 +931,27 @@ config HEARTRATE_HRS3300
 	  probing, power and the sysfs/input interface are provided; no
 	  measurement is implemented for this chip.
 
+config INPUT_SENSORS_BD1XXX
+	tristate "Rohm BD1xxx heart-rate sensor"
+	depends on I2C
+	help
+	  Say Y here to support the Rohm BD1xxx PPG heart-rate sensor
+	  (DT compatible "heartrate,bd1xxx") found on some UNISOC
+	  smartwatches.  The driver registers an input device named
+	  "heartrate", the "enable" and "chipinfo" attributes and the
+	  /dev/bd1662rate misc device used by the vendor Android sensors
+	  HAL.  The chip is only powered and identified: the measurement
+	  back end is not implemented yet, so no samples are produced.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called bd1xxx.
+
+config HEARTRATE_BD1820
+	bool "BD1820 chip support"
+	depends on INPUT_SENSORS_BD1XXX
+	default y
+	help
+	  Accept the BD1820 (ID registers 0xbd = 0x70, 0xbc = 0x11) as a
+	  supported device.
+
 endif
