@@ -10,8 +10,10 @@
  * (AOD) that keeps the pipe running does not send any event.
  *
  * Callbacks run in process context, may sleep, and must not call back into
- * the display driver. They are not called for ESD recovery or for mode-only
- * modesets.
+ * the display driver or register/unregister notifiers. They are not called
+ * for ESD recovery or for mode-only modesets. Registering calls the new
+ * callback once with the current state (ON before the first event), in order
+ * with every later event.
  */
 #ifndef _LINUX_SPRD_PANEL_NOTIFIER_H
 #define _LINUX_SPRD_PANEL_NOTIFIER_H

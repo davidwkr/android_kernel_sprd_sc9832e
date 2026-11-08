@@ -1206,11 +1206,9 @@ static int sc7a22_probe(struct i2c_client *client,
 	data->misc_registered = true;
 
 #if IS_ENABLED(CONFIG_DRM_SPRD)
-	if (!sprd_panel_notifier_register(&data->panel_nb)) {
+	/* the callback gets the current screen state during registration */
+	if (!sprd_panel_notifier_register(&data->panel_nb))
 		data->panel_registered = true;
-		/* pick up a screen that went off before registration */
-		WRITE_ONCE(data->screen_on, sprd_panel_screen_is_on());
-	}
 #endif
 
 	ret = sysfs_create_group(&data->input->dev.kobj,
