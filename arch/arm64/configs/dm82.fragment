@@ -1,9 +1,10 @@
 # DM82 (CO5300 468x466): see devices/dm82/SPEC.md. Merge on top of the
 # device config. The DT lists three touch candidates, two with drivers here (cst0xx_ts 0x38, hyn_ts 0x5a,
 # sharing the reset/irq GPIOs); the one that answers probes, the other
-# fails probe and releases its GPIOs. Not needed: btl_ts, bd1xxx_hr (no
-# driver in tree). watch_otg.fragment is deliberately not enabled.
+# fails probe and releases its GPIOs. btl_ts (Betterlife, 0x2d) is
+# enabled too. Not needed: bd1xxx_hr (no driver in tree). watch_otg.fragment is deliberately not enabled.
 CONFIG_TOUCHSCREEN_CST0XX=y
+CONFIG_TOUCHSCREEN_BTL=y
 CONFIG_TOUCHSCREEN_CST9217=y
 CONFIG_INPUT_SENSORS_HRS3XXX=y
 CONFIG_HEARTRATE_HRS3918=y

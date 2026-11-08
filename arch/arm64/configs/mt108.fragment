@@ -1,9 +1,10 @@
 # MT108 (ST77916 360x360 LCD): see devices/mt108/SPEC.md. Merge on top of
-# the device config. DT touch: cst0xx_ts only (no hyn_ts node; btl_ts and
-# bd1xxx_hr have no driver). sprd_aod_idle is NOT enabled (CO5300 only).
+# the device config. DT touch: cst0xx_ts only plus btl_ts (no hyn_ts node;
+# bd1xxx_hr has no driver). sprd_aod_idle is NOT enabled (CO5300 only).
 # hrs3xxx accepts HRS3918 (id 0x27) and HRS3300 (id 0x21, the stock
 # config's chip); probe and power only, no measurement for either chip.
 CONFIG_TOUCHSCREEN_CST0XX=y
+CONFIG_TOUCHSCREEN_BTL=y
 # no hyn_ts node, and the ST77916 LCD must never get CO5300 idle commands
 # CONFIG_TOUCHSCREEN_CST9217 is not set
 # CONFIG_SPRD_AOD_IDLE is not set
