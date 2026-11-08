@@ -149,7 +149,7 @@ struct bd1xxx_data {
 	bool enabled;		/* ctl */
 	bool powered;
 	bool suspended;		/* ctl */
-	bool removed;		/* client gone: vdd and power_gpio released */
+	bool removed;		/* not live yet, or client gone */
 	bool programmed;	/* Init wrote registers: Close is due */
 	bool running;		/* poller active */
 
@@ -906,6 +906,12 @@ static int bd1xxx_probe(struct i2c_client *client,
 
 	data->client = client;
 	kref_init(&data->ref);
+	/*
+	 * Not live until probe has registered everything: the enable attribute
+	 * exists before input_register_device() can still fail, so enable
+	 * requests are refused (-ENODEV) until the end of probe.
+	 */
+	data->removed = true;
 	mutex_init(&data->ctl);
 	mutex_init(&data->lock);
 	hrtimer_init(&data->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
@@ -984,17 +990,16 @@ static int bd1xxx_probe(struct i2c_client *client,
 	ret = misc_register(&data->misc);
 	if (ret) {
 		dev_err(dev, "cannot register misc device: %d\n", ret);
-		/* sysfs enable may already have started the poller */
-		mutex_lock(&data->ctl);
-		mutex_lock(&data->lock);
-		data->removed = true;
-		data->enabled = false;
-		mutex_unlock(&data->lock);
-		bd1xxx_stop(data);
-		mutex_unlock(&data->ctl);
 		input_unregister_device(input);
 		goto err_off;
 	}
+
+	/* Live: enable requests are accepted from here on. */
+	mutex_lock(&data->ctl);
+	mutex_lock(&data->lock);
+	data->removed = false;
+	mutex_unlock(&data->lock);
+	mutex_unlock(&data->ctl);
 
 	return 0;
 
