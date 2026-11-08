@@ -15,14 +15,12 @@ import sys
 
 TEXT_VA_DEFAULT = 0xffffff8008080000
 
-# ---- driver description (validated against kallsyms names, fail on mismatch)
-EXPECT = {  # offset-from-_text -> symbol name that must live there
-    0x4d3ca8: "hrs3xxx_i2c_resume",
-    0x4d4794: "hx3918_delay",
-    0x4d79ec: "hr_sqrt",
-    0x4eae14: "bd1xxx_release",
-}
-CARVE_LO, CARVE_HI = 0x4d4794, 0x4eae14      # layer + algorithm (no glue)
+# ---- driver description.  Nothing here is image specific: the function set
+# is chosen by symbol name and the range is derived from the symbol addresses.
+LAYER_PREFIX = "hx3918_"     # hardware layer (kallsyms text symbols)
+ALG_PREFIX = "tyhx_"         # algorithm
+STRUCT_SLOT = "hrs3xxx_t"     # global holding the pointer to the vendor struct
+GLUE_PREFIXES = ("hrs3xxx_",)  # must not appear inside the carved range
 EXCLUDE = ("hx3918_ppg_timer_cfg", "hx3918_agc_timer_cfg")
 # variables the stock code reads by value with ADRP+LDR; they live outside
 # the blob and are referenced symbolically (ADRP and LDR lo12 rewritten).
@@ -55,14 +53,35 @@ class Image:
             die("not an arm64 Image")
         self.raw = raw
         self.text_va = text_va
+        self.span = None
         n = len(raw) // 8
         u = struct.unpack("<%dQ" % n, raw[:n * 8])
         self.abs64 = {}
+        # Elf64_Rela: offset, info, addend.  R_AARCH64_ABS64 (257) entries
+        # against the _text section symbol; the symbol index is derived (the
+        # dominant one) rather than assumed.
+        cand = collections.defaultdict(dict)
         for i in range(1, n - 1):
-            # Elf64_Rela: offset, info, addend ; ABS64 against symbol 6 (_text)
-            if u[i] == 0x600000101 and 0 <= u[i - 1] - text_va < len(raw):
-                self.abs64[u[i - 1] - text_va] = u[i + 1]
+            if (u[i] & 0xffffffff) == 0x101 and u[i] >> 32 and \
+                    0 <= u[i - 1] - text_va < len(raw):
+                cand[u[i]][u[i - 1] - text_va] = u[i + 1]
+        if not cand:
+            die("no ABS64 relocations found (wrong --text-va?)")
+        info = max(cand, key=lambda k: len(cand[k]))
+        tot = sum(len(v) for v in cand.values())
+        if len(cand[info]) < 1000 or len(cand[info]) * 10 < tot * 9:
+            die("ABS64 relocation symbol is ambiguous: %s" % {
+                hex(k): len(v) for k, v in cand.items()})
+        self.abs64 = cand[info]
         self._load_kallsyms()
+        if self.by_name.get("_text") != [0]:
+            die("_text is not at offset 0 (wrong --text-va?)")
+        # kernel VAs are below the highest kallsyms symbol plus slack (the
+        # kallsyms table has no _end entry in these images)
+        self.span = self.ks_addr[-1] + (1 << 20)
+        # global pointer to the vendor driver struct (tracked as kind "S")
+        slot = self.by_name.get(STRUCT_SLOT, [])
+        self.struct_slot = slot[0] if len(slot) == 1 else None
 
     def _load_kallsyms(self):
         import re
@@ -394,7 +413,9 @@ def analyse_function(f, switch_targets, im):
             imm = ((x >> 10) & 0xfff) << (12 if (x >> 22) & 1 else 0)
             src = val(rn(x)) if (x >> 31) & 1 and not (x & 0x20000000) else None
             d = x & 31
-            if src is not None:
+            if src is not None and src[0] == "S":
+                s[d] = ("S", src[1] + (-imm if sub else imm), src[2])
+            elif src is not None:
                 A = src[1] + (-imm if sub else imm)
                 k = "I" if src[0] == "I" else "C"
                 s[d] = (k, A, src[2])
@@ -417,7 +438,9 @@ def analyse_function(f, switch_targets, im):
             a_, b_ = val(rn(x)), val((x >> 16) & 31)
             d = x & 31
             base = a_ or b_
-            if base is not None:
+            if base is not None and base[0] == "S":
+                s.pop(d, None)
+            elif base is not None:
                 s[d] = ("I", base[1], base[2])
                 ev.append(("dynaddr", pc, base[1]))
             else:
@@ -427,7 +450,17 @@ def analyse_function(f, switch_targets, im):
             r = decode_ldst(x)
             if not r["lit"] and r["mode"] != "excl":
                 b = val(r["rn"]) if r["rn"] != 31 else None
-                if b is not None:
+                if b is not None and b[0] == "S":
+                    # access through the pointer loaded from the vendor
+                    # struct slot: record the field offset only
+                    if r["mode"] == "reg":
+                        ev.append(("sdyn", pc, b[1], r["size"]))
+                    else:
+                        off = b[1] + (r["imm"] if r["mode"] != "post" else 0)
+                        ev.append(("sfield", pc, off, r["size"], r["load"]))
+                        if r["wb"]:
+                            s[r["rn"]] = ("S", b[1] + r["imm"], b[2])
+                elif b is not None:
                     if r["mode"] == "reg":
                         ev.append(("dyn", pc, b[1], r["size"], r["rm"], r, b[2]))
                     elif b[0] == "I":
@@ -447,10 +480,14 @@ def analyse_function(f, switch_targets, im):
                                 r["size"] == 8 and eff < ro_limit and \
                                 eff % 8 == 0 and im.in_file(eff, 8):
                             pv = struct.unpack_from("<Q", im.raw, eff)[0]
-                            if 0 <= pv - im.text_va < (1 << 26):
+                            if 0 <= pv - im.text_va < im.span:
                                 ev.append(("slot", pc, eff, pv - im.text_va))
                                 s[r["rt"]] = ("C", pv - im.text_va, frozenset())
                                 folded = r["rt"]
+                        elif r["load"] and not r["v"] and not r["wb"] and \
+                                r["size"] == 8 and eff == im.struct_slot:
+                            s[r["rt"]] = ("S", 0, frozenset())
+                            folded = r["rt"]
         # clobbers
         if not killed:
             for w in writes(x):
@@ -534,28 +571,74 @@ def resolve_switch(f, br_pc):
                                  ((W(adr_pc) >> 29) & 3), 21))
 
 
+def select_range(im):
+    """Derive the carve range and the excluded functions from symbols only.
+    lo = lowest LAYER_PREFIX text symbol; hi = start of the symbol after the
+    highest ALG_PREFIX/LAYER_PREFIX text symbol.  Returns (lo, hi, excluded)
+    with excluded = {name: (lo, hi)}."""
+    layer = [(a, n) for a, t, n in im.ks if n.startswith(LAYER_PREFIX) and t in "Tt"]
+    alg = [(a, n) for a, t, n in im.ks if n.startswith(ALG_PREFIX) and t in "Tt"]
+    if not layer or not alg:
+        die("need both %s* and %s* text symbols" % (LAYER_PREFIX, ALG_PREFIX))
+    lo = min(a for a, n in layer)
+    last = max(a for a, n in layer + alg)
+    j = bisect.bisect_right(im.ks_addr, last)
+    if j >= len(im.ks_addr):
+        die("no symbol after the last carved function")
+    hi = im.ks_addr[j]
+    excluded = {}
+    for n in EXCLUDE:
+        a = im.by_name.get(n, [])
+        if len(a) != 1:
+            die("excluded function %s not found exactly once" % n)
+        if not lo <= a[0] < hi:
+            die("excluded function %s outside the derived range" % n)
+        e = im.ks_addr[bisect.bisect_right(im.ks_addr, a[0])]
+        excluded[n] = (a[0], e)
+    return lo, hi, excluded
+
+
 def build_funcs(im):
-    for a, nme in EXPECT.items():
-        if not any(n == nme for _, n in im.sym_at(a)):
-            die("image mismatch: expected %s at %#x" % (nme, a))
+    lo, hi, excluded = select_range(im)
     funcs = []
     ks = im.ks_addr
     for a, t, n in im.ks:
-        if CARVE_LO <= a < CARVE_HI and n not in EXCLUDE:
+        if lo <= a < hi and n not in excluded:
             if t not in "Tt":
                 die("non-text symbol %s in carve range" % n)
+            if n.startswith(GLUE_PREFIXES):
+                die("glue symbol %s inside the carve range" % n)
             j = bisect.bisect_right(ks, a)
             e = ks[j]
+            if (e - a) % 4 or e - a <= 0:
+                die("function %s has bad size %d" % (n, e - a))
             funcs.append(Func(n, a, e, list(struct.unpack_from(
                 "<%dI" % ((e - a) // 4), im.raw, a))))
     names = [f.name for f in funcs]
     if len(set(names)) != len(names):
         die("duplicate carved function names")
-    # contiguity: gaps allowed only for the excluded functions
+    if len({f.lo for f in funcs}) != len(funcs):
+        die("two carved functions share an address (alias)")
+    if funcs[0].lo != lo:
+        die("range start is not a carved function")
+    # contiguity: gaps allowed only exactly where an excluded function sits
     gaps = []
     for g, h in zip(funcs, funcs[1:]):
         if g.hi != h.lo:
             gaps.append((g.hi, h.lo))
+    if funcs[-1].hi != hi:
+        gaps.append((funcs[-1].hi, hi))
+    want = []
+    for x, y in sorted(excluded.values()):   # adjacent excluded ones coalesce
+        if want and want[-1][1] == x:
+            want[-1] = (want[-1][0], y)
+        else:
+            want.append((x, y))
+    if sorted(gaps) != want:
+        die("gaps %s do not match the excluded functions %s" % (
+            [(hex(x), hex(y)) for x, y in gaps],
+            {k: (hex(x), hex(y)) for k, (x, y) in excluded.items()}))
+    im.range = (lo, hi)
     for f in funcs:
         sw = {}
         for _ in range(3):
@@ -923,7 +1006,7 @@ class Emit:
             a = c.lo + i
             if a % 8 == 0 and i + 8 <= n:
                 pv = struct.unpack_from("<Q", raw, i)[0]
-                if 0 <= pv - im.text_va < (1 << 25):
+                if 0 <= pv - im.text_va < im.span:
                     t = pv - im.text_va
                     if self.chunk_at(t):
                         ex = self.data_ref(t, "pointer at %#x" % a)
@@ -947,7 +1030,7 @@ class Emit:
             a = c.lo + k
             if a % 8:
                 pv = struct.unpack_from("<Q", raw, k)[0]
-                if 0 <= pv - im.text_va < (1 << 25) and pv >> 32 == im.text_va >> 32:
+                if 0 <= pv - im.text_va < im.span and pv >> 32 == im.text_va >> 32:
                     die("possible unaligned pointer at %#x" % a)
 
 
@@ -968,40 +1051,64 @@ def read_elf_sections(path):
     return d, out
 
 
-def run(args):
-    raw = load_kernel(args.boot_img)
-    im = Image(raw, args.text_va)
-    funcs, gaps = build_funcs(im)
-    ext_addr = {}
+class Carve:
+    """Everything derived from one image (no files written)."""
+    pass
+
+
+def prepare(path, text_va):
+    cv = Carve()
+    cv.path = path
+    cv.im = im = Image(load_kernel(path), text_va)
+    cv.funcs, cv.gaps = build_funcs(im)
+    cv.ext_addr = {}
     for n in EXTERNAL_VARS:
-        a = [x for x in im.by_name[n] if True]
+        a = im.by_name.get(n, [])
         if len(a) != 1:
             die("external var %s not unique" % n)
-        ext_addr[a[0]] = n
-    chunks, by_adrp, ext_pcs, slots = build_chunks(im, funcs, ext_addr)
-    adrp_chunk = {}
-    for c in chunks:
+        cv.ext_addr[a[0]] = n
+    cv.chunks, cv.by_adrp, cv.ext_pcs, cv.slots = build_chunks(
+        im, cv.funcs, cv.ext_addr)
+    cv.adrp_chunk = {}
+    for c in cv.chunks:
         for r in c.rs:
             for p in r[4]:
-                if p in adrp_chunk and adrp_chunk[p] is not c:
+                if p in cv.adrp_chunk and cv.adrp_chunk[p] is not c:
                     die("ADRP %#x feeds two chunks" % p)
-                adrp_chunk[p] = c
-    em = Emit(im, funcs, chunks, ext_addr, slots)
+                cv.adrp_chunk[p] = c
+    cv.em = em = Emit(im, cv.funcs, cv.chunks, cv.ext_addr, cv.slots)
     out = ["// generated by blobcarve; stock offsets are relative to _text",
            "\t.arch armv8-a", ""]
-    for f in funcs:
-        em.emit_function(f, adrp_chunk, ext_pcs, out)
-    for c in chunks:
+    for f in cv.funcs:
+        em.emit_function(f, cv.adrp_chunk, cv.ext_pcs, out)
+    for c in cv.chunks:
         em.emit_chunk(c, out)
     for name in EXPORT_DATA:
-        a = im.by_name[name]
+        a = im.by_name.get(name, [])
         if len(a) != 1:
             die("export %s not unique" % name)
         out.append("\t.globl hrsblob_%s\n\t.set hrsblob_%s, %s" % (
             name, name, em.data_ref(a[0], name)))
+    cv.asm_lines = out
+    return cv
+
+
+def func_set_summary(cv):
+    kinds = collections.Counter()
+    for f in cv.funcs:
+        kinds["layer" if f.name.startswith(LAYER_PREFIX) else
+              "alg" if f.name.startswith(ALG_PREFIX) else "helper"] += 1
+    return "%d functions (%s*: %d, %s*: %d, unprefixed helpers: %d)" % (
+        len(cv.funcs), LAYER_PREFIX, kinds["layer"], ALG_PREFIX, kinds["alg"],
+        kinds["helper"])
+
+
+def run(args):
+    cv = prepare(args.boot_img, args.text_va)
+    im, funcs, chunks, em = cv.im, cv.funcs, cv.chunks, cv.em
     os.makedirs(args.out, exist_ok=True)
     asm = os.path.join(args.out, "hrsblob.S")
-    open(asm, "w").write("\n".join(out) + "\n")
+    open(asm, "w").write("\n".join(cv.asm_lines) + "\n")
     # linker script placing everything at stock VAs
     ld = ["SECTIONS {"]
     for f in funcs:
@@ -1016,11 +1123,18 @@ def run(args):
         ld.append("%s = %#x;" % (n, im.text_va + a))
     ldp = os.path.join(args.out, "roundtrip.ld")
     open(ldp, "w").write("\n".join(ld) + "\n")
-    report = make_report(im, funcs, chunks, em, gaps, slots)
+    report = make_report(im, funcs, chunks, em, cv.gaps, cv.slots)
+    report.insert(2, "== function set: " + func_set_summary(cv))
+    report.insert(3, "")
     if args.cross:
         verify(args, im, funcs, chunks, em, asm, ldp, report)
     open(os.path.join(args.out, "report.txt"), "w").write("\n".join(report) + "\n")
     print("\n".join(report))
+    if args.diff_with:
+        other = prepare(args.diff_with, args.text_va)
+        dr = diff_report(cv, other)
+        open(os.path.join(args.out, "diff_report.txt"), "w").write("\n".join(dr) + "\n")
+        print("\n" + "\n".join(dr))
 
 
 EXPORT_DATA = ("hrs3xxx_t", "alg_ram", "spo2_alg_data")
@@ -1031,7 +1145,7 @@ def make_report(im, funcs, chunks, em, gaps, slots):
     R.append("stock addresses are offsets from _text (VA = %#x + offset)" % im.text_va)
     R.append("")
     R.append("== carved code: %d functions, %d..%d, gaps (excluded): %s" % (
-        len(funcs), CARVE_LO, CARVE_HI,
+        len(funcs), im.range[0], im.range[1],
         ", ".join("%#x-%#x" % g for g in gaps)))
     R.append("")
     R.append("== chunks (lo..hi are stock offsets; static_end = from direct "
@@ -1200,7 +1314,7 @@ def shift_test(args, im, funcs, chunks, em, obj, ldp, R):
                 if (c.lo + k) % 8:
                     continue
                 oldq = struct.unpack_from("<Q", im.raw, c.lo + k)[0]
-                if 0 <= oldq - im.text_va < (1 << 25):
+                if 0 <= oldq - im.text_va < im.span:
                     newq = struct.unpack_from("<Q", d, off + pad + k)[0]
                     if newq != oldq + CS:
                         die("shift test: pointer slot at %#x not relocated" % (c.lo + k))
@@ -1217,11 +1331,342 @@ def em_ext_adrps(f, em):
     return em.ext_pcs_by_func.get(f.name, {})
 
 
+# ------------------------------------------------------------------- diff
+# (match mask, match value, imm mask, kind): instructions whose only
+# difference between two images may be an immediate field.
+IMM_FORMS = (
+    (0x1f800000, 0x12800000, 0xffff << 5, "const"),       # movn/movz/movk
+    (0x1f000000, 0x11000000, 0xfff << 10, "const"),       # add/sub imm
+    (0x1f800000, 0x12000000, 0x1fff << 10, "const"),      # logical imm
+    (0x1f800000, 0x13000000, 0xfff << 10, "const"),       # bitfield (shifts)
+    (0x1fe00800, 0x1a400800, 0x1f << 16, "const"),        # ccmp/ccmn imm
+    (0x3b000000, 0x39000000, 0xfff << 10, "offset"),      # ldst unsigned imm
+    (0x3b200000, 0x38000000, 0x1ff << 12, "offset"),      # ldst imm9
+    (0x3a000000, 0x28000000, 0x7f << 15, "offset"),       # ldp/stp
+)
+
+
+def imm_form(x):
+    for m, v, im_, kind in IMM_FORMS:
+        if (x & m) == v:
+            return x & ~im_, kind, im_
+    return None
+
+
+def is_branch_word(x):
+    return ((x & 0x7c000000) == 0x14000000 or (x & 0xff000010) == 0x54000000
+            or (x & 0x7e000000) in (0x34000000, 0x36000000))
+
+
+def strip_suffix(n):
+    import re
+    return re.sub(r"(\.(part|constprop|isra|cold)\.\d+|\.\d+)+$", "", n)
+
+
+def printable_string(im, a):
+    if not im.in_file(a):
+        return None
+    e = im.raw.find(b"\0", a)
+    s = im.raw[a:e]
+    if s[:1] == b"\x01":          # printk KERN_<level> prefix
+        s = s[1:]
+    if e < 0 or len(s) < 2 or len(s) > 300 or \
+            any(not (32 <= c < 127 or c in (9, 10, 13)) for c in s):
+        return None
+    return s.decode("ascii")
+
+
+def ref_token(im, a):
+    """Layout independent description of a data address."""
+    if a < im.by_name["__end_rodata"][0]:
+        s = printable_string(im, a)
+        if s is not None:
+            return ("str", s)
+    cov = im.sym_cover(a)
+    if cov:
+        return (strip_suffix(cov[2]), a - cov[0])
+    return ("?", a)
+
+
+def normalise(im, f):
+    """One hashable token per word of f; address-bearing words are replaced
+    by layout independent descriptions (object name + offset, string text,
+    callee name)."""
+    lo12 = {e[1]: e[2] for e in f.events if e[0] == "lo12"}
+    # ldr from a link-time pointer slot: describe the slot by its target
+    slot = {e[1]: e[3] for e in f.events if e[0] == "slot"}
+    toks = []
+    for i, x in enumerate(f.words):
+        pc = f.lo + 4 * i
+        if f.states[i] is None:
+            toks.append(("data", x))
+        elif (x & 0x9f000000) == 0x90000000:
+            toks.append(("adrp", x & 31))
+        elif (x & 0xfc000000) in (0x94000000, 0x14000000) and \
+                not (not (x >> 31) and f.lo <= pc + sx(x & 0x3ffffff, 26) * 4 < f.hi):
+            t = pc + sx(x & 0x3ffffff, 26) * 4
+            nm = [n for _, n in im.sym_at(t)]
+            toks.append(("call", x >> 31, strip_suffix(nm[0]) if nm else "%#x" % t))
+        elif pc in lo12:
+            frm = imm_form(x)
+            tok = ref_token(im, lo12[pc])
+            if pc in slot:
+                tok = ("slot",) + ref_token(im, slot[pc])
+            toks.append(("lo12", frm[0] if frm else x, tok))
+        else:
+            toks.append(("w", x))
+    return toks
+
+
+def pair_class(ta, tb):
+    """classify one differing token pair -> (class, detail)"""
+    if ta[0] != tb[0]:
+        return "logic", None
+    k = ta[0]
+    if k == "lo12":
+        if ta[1] != tb[1]:
+            return "logic", None
+        ra, rb = ta[2], tb[2]
+        if ra[0] == "str" and rb[0] == "str":
+            return "string", (ra[1], rb[1])
+        return "data-ref", (ra, rb)
+    if k == "call":
+        return "logic", ("callee", ta[2], tb[2])
+    if k == "w":
+        xa, xb = ta[1], tb[1]
+        fa, fb = imm_form(xa), imm_form(xb)
+        if fa and fb and fa[0] == fb[0]:
+            m = fa[2]
+            sh = (m & -m).bit_length() - 1
+            return fa[1], ((xa & m) >> sh, (xb & m) >> sh)
+        if is_branch_word(xa) and is_branch_word(xb) and \
+                (xa >> 24) == (xb >> 24):
+            return "branch", None
+        return "logic", None
+    return "logic", None
+
+
+def diff_function(im_a, fa, im_b, fb):
+    ta, tb = normalise(im_a, fa), normalise(im_b, fb)
+    if ta == tb:
+        return dict(status="identical", classes=collections.Counter(),
+                    details=[], len=(len(ta), len(tb)))
+    import difflib
+    sm = difflib.SequenceMatcher(None, ta, tb, autojunk=False)
+    classes = collections.Counter()
+    details = []
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op == "equal":
+            continue
+        if op == "replace" and i2 - i1 == j2 - j1:
+            for k in range(i2 - i1):
+                c, d = pair_class(ta[i1 + k], tb[j1 + k])
+                classes[c] += 1
+                details.append((i1 + k, c, d, ta[i1 + k], tb[j1 + k]))
+        else:
+            classes["logic"] += (i2 - i1) + (j2 - j1)
+            details.append((i1, "logic", ("%s A[%d:%d] B[%d:%d]" % (op, i1, i2, j1, j2)),
+                            None, None))
+    soft = {"const", "offset", "string", "data-ref"}
+    hard = {c for c in classes if c not in soft}
+    if not hard:
+        status = "tables/constants only"
+    elif hard == {"branch"} and len(ta) == len(tb):
+        status = "logic (branch targets only)"
+    else:
+        status = "logic"
+    return dict(status=status, classes=classes, details=details,
+                len=(len(ta), len(tb)))
+
+
+def struct_fields(cv):
+    """{func: set((offset, size, 'ld'|'st'))} accessed through the pointer
+    loaded from the vendor struct slot, plus dynamic-index accesses."""
+    out = {}
+    for f in cv.funcs:
+        s = set()
+        for e in f.events:
+            if e[0] == "sfield":
+                s.add((e[2], e[3], "ld" if e[4] else "st"))
+            elif e[0] == "sdyn":
+                s.add((e[2], e[3], "dyn"))
+        if s:
+            out[f.name] = s
+    return out
+
+
+def data_objects(cv):
+    """{name: bytes or size} for the data objects inside the carved chunks"""
+    im = cv.im
+    out = {}
+    cnt = collections.Counter()
+    for c in cv.chunks:
+        syms = [(a, t, n) for a, t, n in im.ks if c.lo <= a < c.hi and t in DATA_TYPES]
+        for k, (a, t, n) in enumerate(syms):
+            e = syms[k + 1][0] if k + 1 < len(syms) else c.hi
+            e = min(e, c.hi)
+            nm = strip_suffix(n)
+            cnt[nm] += 1
+            if cnt[nm] > 1:
+                nm = "%s#%d" % (nm, cnt[nm])
+            body = None if c.cls == "bss" else im.raw[a:e]
+            out[nm] = (c.cls, e - a, body)
+    return out
+
+
+def ro_strings(cv):
+    im = cv.im
+    out = set()
+    for c in cv.chunks:
+        if c.cls == "ro":
+            for part in im.raw[c.lo:c.hi].split(b"\0"):
+                if len(part) >= 3 and all(32 <= b < 127 or b in (9, 10, 13) for b in part):
+                    out.add(part.decode("ascii"))
+    return out
+
+
+def diff_report(A, B):
+    R = []
+    R.append("== blob diff (A = --boot-img, B = --diff-with)")
+    R.append("")
+    fa = {f.name: f for f in A.funcs}
+    fb = {f.name: f for f in B.funcs}
+    only_a = sorted(set(fa) - set(fb))
+    only_b = sorted(set(fb) - set(fa))
+    R.append("== function set")
+    R.append("A: " + func_set_summary(A))
+    R.append("B: " + func_set_summary(B))
+    R.append("only in A: %s" % (only_a or "none"))
+    R.append("only in B: %s" % (only_b or "none"))
+    order_same = [f.name for f in A.funcs if f.name in fb] == \
+        [f.name for f in B.funcs if f.name in fa]
+    R.append("common functions in the same order: %s" % order_same)
+    R.append("")
+    last_layer = max(f.lo for f in A.funcs if f.name.startswith(LAYER_PREFIX))
+    results = {}
+    for n in fa:
+        if n in fb:
+            results[n] = diff_function(A.im, fa[n], B.im, fb[n])
+
+    def group(f):
+        # layer = everything up to and including the last LAYER_PREFIX
+        # function; the rest (hr_sqrt, tyhx_*, spo2_sort_*) is the algorithm
+        return "layer" if f.lo <= last_layer else "algorithm"
+    for g in ("layer", "algorithm"):
+        names = [f.name for f in A.funcs if group(f) == g and f.name in results]
+        by = collections.defaultdict(list)
+        for n in names:
+            by[results[n]["status"]].append(n)
+        R.append("== %s: %d common functions" % (g, len(names)))
+        for st in ("identical", "tables/constants only", "logic (branch targets only)", "logic"):
+            R.append("  %-30s %d" % (st, len(by.get(st, []))))
+        for st in ("tables/constants only", "logic (branch targets only)", "logic"):
+            for n in by.get(st, []):
+                r = results[n]
+                R.append("  [%s] %s  words A=%d B=%d  %s" % (
+                    st.split()[0], n, r["len"][0], r["len"][1],
+                    dict(sorted(r["classes"].items()))))
+                shown = 0
+                for idx, c, d, ta, tb in r["details"]:
+                    if shown >= 12:
+                        R.append("      ... (%d more)" % (len(r["details"]) - shown))
+                        break
+                    shown += 1
+                    if c in ("const", "offset"):
+                        R.append("      word %d %s: %#x -> %#x" % (idx, c, d[0], d[1]))
+                    elif c == "string":
+                        R.append("      word %d string: %r -> %r" % (idx, d[0], d[1]))
+                    elif c == "data-ref":
+                        R.append("      word %d data-ref: %s -> %s" % (idx, d[0], d[1]))
+                    else:
+                        R.append("      word %d %s: %s" % (idx, c, d if d else (
+                            "%08x -> %08x" % (ta[1], tb[1]) if ta and tb and
+                            ta[0] == "w" and tb[0] == "w" else "%s -> %s" % (ta, tb))))
+        R.append("")
+    # undefined symbols
+    ua, ub = set(A.em.undef), set(B.em.undef)
+    R.append("== undefined symbols (names, link-time addresses ignored)")
+    R.append("A: %d, B: %d, identical sets: %s" % (len(ua), len(ub), ua == ub))
+    if ua != ub:
+        R.append("  only A: %s  only B: %s" % (sorted(ua - ub), sorted(ub - ua)))
+    R.append("  set: %s" % sorted(ua | ub))
+    # call edges to undefined symbols, per function
+    def edges(cv):
+        out = {}
+        for f in cv.funcs:
+            s = set()
+            for pc, t in list(f.bl.items()):
+                nm = [n for _, n in cv.im.sym_at(t)]
+                if nm and strip_suffix(nm[0]) in {strip_suffix(u) for u in cv.em.undef}:
+                    s.add(strip_suffix(nm[0]))
+            if s:
+                out[f.name] = s
+        return out
+    ea, eb = edges(A), edges(B)
+    R.append("per-function calls into undefined (kernel/glue) symbols identical: %s" % (ea == eb))
+    if ea != eb:
+        for n in sorted(set(ea) | set(eb)):
+            if ea.get(n) != eb.get(n):
+                R.append("  %s: A=%s B=%s" % (n, sorted(ea.get(n, [])), sorted(eb.get(n, []))))
+    R.append("")
+    # struct offsets
+    sa, sb = struct_fields(A), struct_fields(B)
+    offs_a = sorted({x for s in sa.values() for x in s})
+    offs_b = sorted({x for s in sb.values() for x in s})
+    R.append("== fields of the vendor struct used through the %s pointer" % STRUCT_SLOT)
+    R.append("A: %s" % ", ".join("+%#x/%d%s" % x for x in offs_a))
+    R.append("B: %s" % ", ".join("+%#x/%d%s" % x for x in offs_b))
+    R.append("identical field sets: %s ; per-function identical: %s" % (
+        offs_a == offs_b, sa == sb))
+    if sa != sb:
+        for n in sorted(set(sa) | set(sb)):
+            if sa.get(n) != sb.get(n):
+                R.append("  %s: A=%s B=%s" % (n, sorted(sa.get(n, [])), sorted(sb.get(n, []))))
+    for n in sorted(sa):
+        R.append("  %-34s %s" % (n, ", ".join("+%#x/%d%s" % x for x in sorted(sa[n]))))
+    # raw (unclassified) accesses by displacement in the layer functions
+    R.append("")
+    R.append("== data objects in the chunks")
+    oa, ob = data_objects(A), data_objects(B)
+    only_oa = sorted(set(oa) - set(ob))
+    only_ob = sorted(set(ob) - set(oa))
+    R.append("only in A: %s" % (only_oa or "none"))
+    R.append("only in B: %s" % (only_ob or "none"))
+    diffs = []
+    for n in sorted(set(oa) & set(ob)):
+        (ca_, sa_, ba_), (cb_, sb_, bb_) = oa[n], ob[n]
+        if ca_ != cb_ or sa_ != sb_:
+            diffs.append("%s: %s/%d vs %s/%d" % (n, ca_, sa_, cb_, sb_))
+        elif ba_ is not None and ba_ != bb_:
+            nd = sum(1 for x, y in zip(ba_, bb_) if x != y)
+            diffs.append("%s: %s/%d bytes differ %d" % (n, ca_, sa_, nd))
+    R.append("common objects with different size/content: %s" % (diffs or "none"))
+    ra, rb = ro_strings(A), ro_strings(B)
+    R.append("ro strings only in A: %s" % (sorted(ra - rb) or "none"))
+    R.append("ro strings only in B: %s" % (sorted(rb - ra) or "none"))
+    R.append("")
+    # verdict
+    layer_logic = [n for n, r in results.items()
+                   if r["status"].startswith("logic") and group(fa[n]) == "layer"]
+    alg_diff = [n for n, r in results.items()
+                if r["status"] != "identical" and group(fa[n]) == "algorithm"]
+    R.append("== summary")
+    R.append("function sets equal: %s" % (not only_a and not only_b))
+    R.append("layer functions with logic differences: %s" % (layer_logic or "none"))
+    R.append("algorithm functions that differ at all: %s" % (alg_diff or "none"))
+    R.append("undefined sets equal: %s" % (ua == ub))
+    R.append("vendor-struct field sets equal: %s" % (sa == sb))
+    return R
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--boot-img", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--cross", help="toolchain prefix, e.g. /path/aarch64-linux-gnu-")
+    ap.add_argument("--diff-with", metavar="OTHER_BOOT_IMG",
+                    help="also compare this image's blob with OTHER_BOOT_IMG "
+                         "and write diff_report.txt (needs no toolchain)")
     ap.add_argument("--text-va", type=lambda v: int(v, 0), default=TEXT_VA_DEFAULT)
     args = ap.parse_args()
     try:
