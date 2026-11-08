@@ -5,7 +5,15 @@ Required properties:
 - reg: I2C address of the sensor
 
 Optional properties:
-- layout: mounting orientation from 0 through 7. Defaults to 0.
+- layout: mounting orientation from 0 through 7. Defaults to 0. Written to the
+  orientation register as layout | 0x70.
+- angle: hand-up angle, written to the hand-up angle register. Defaults to 10.
+  The K18 stock tree uses 0x75.
+- irq-gpio: GPIO of the chip's interrupt line (level high). Without it the
+  hand-raise key is not available.
+- hand-up-ctrl: value for the hand-up control register (0x08) of the 0x13
+  part. Defaults to 0x11 (the DM63 and MT107 stock firmware); the K18 and
+  DW100U stock firmware writes 0x21.
 
 Example:
 
@@ -13,4 +21,6 @@ Example:
 		compatible = "sprd,sc7a22";
 		reg = <0x18>;
 		layout = <0>;
+		angle = <0x75>;
+		irq-gpio = <&gpio 93 0>;
 	};

@@ -290,6 +290,7 @@
 					layout = <0x01>;
 					angle = <0x75>;
 					irq-gpio = <&gpio_controller_40280000 0x5d 0x00>;
+					hand-up-ctrl = <0x21>;
 					status = "okay";
 				};
 			};
