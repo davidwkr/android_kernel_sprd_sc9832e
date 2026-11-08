@@ -8,7 +8,8 @@ obj-y := sprd_drm.o \
 	sprd_dpu.o \
 	sprd_dsi.o \
 	sprd_dphy.o \
-	sprd_panel.o
+	sprd_panel.o \
+	sprd_panel_notifier.o
 
 obj-y += dummy/dummy_crtc.o
 obj-y += dummy/dummy_connector.o

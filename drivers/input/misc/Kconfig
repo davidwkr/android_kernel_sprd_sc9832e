@@ -882,6 +882,7 @@ config INPUT_QMA6981_I2C
 config SENSORS_SC7A22
 	tristate "SC7A22 accelerometer sensor device with I2C bus"
 	depends on I2C
+	depends on DRM_SPRD || !DRM_SPRD
 	default n
 	help
 	  Say Y here if you have an SC7A22 or SC7A20 accelerometer on an
@@ -890,9 +891,9 @@ config SENSORS_SC7A22
 	  raise-to-wake key of the stock kernel (step_value, step_clean,
 	  hand_start, motion_state, sc7a22_input_key).
 
-	  The raise-to-wake key is only sent while the screen is off. The
-	  4.14 sprd DRM driver has no screen state notifier, so the screen
-	  is taken as on unless an fb blank event says otherwise.
+	  The raise-to-wake key is only sent while the screen is off, as
+	  reported by the sprd DRM panel notifier. Without the sprd DRM
+	  driver the screen is taken as on and the key is never sent.
 
 	  To compile this driver as a module, choose M here.
 

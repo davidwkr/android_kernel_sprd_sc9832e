@@ -23,6 +23,7 @@
 
 #include "sprd_dpu.h"
 #include "sprd_panel.h"
+#include "sprd_panel_notifier.h"
 #include "dsi/sprd_dsi_api.h"
 #include "sysfs/sysfs_display.h"
 
@@ -417,8 +418,10 @@ static void sprd_panel_esd_work_func(struct work_struct *work)
 		}
 
 		DRM_INFO("====== esd recovery start ========\n");
+		sprd_panel_notify_quiet(true);
 		funcs->disable(encoder);
 		funcs->enable(encoder);
+		sprd_panel_notify_quiet(false);
 		DRM_INFO("======= esd recovery end =========\n");
 	} else
 		schedule_delayed_work(&panel->esd_work,

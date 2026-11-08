@@ -206,14 +206,42 @@ The stock misc device is named `sc7a22` with an ioctl that returns 0 (`sc7a22_un
 ## 4.14 port notes (`kwt-414k`)
 
 - The stock ADF blank notifier (`<video/adf_notifier.h>`) does not exist on 4.14: the sprd display
-  is DRM/KMS (`drivers/gpu/drm/sprd`), which has no screen state notifier, `sprd_drm` sets up no
-  fbdev emulation and the sprd backlight is not mapped on the watch boards. The driver registers
-  an fb blank notifier (`fb_register_client`, `FB_EVENT_BLANK`; `FB_BLANK_UNBLANK` is screen on,
-  `FB_BLANK_POWERDOWN` screen off) when `CONFIG_FB_NOTIFY` is set. Nothing in the 4.14 sprd stack
-  raises that event, so the screen stays "on" (its initial value) and the raise-to-wake key
-  (KEY_F10, only sent with the screen off) is never sent. A display driver hook that calls
-  `fb_notifier_call_chain(FB_EVENT_BLANK)` from `sprd_panel_enable/disable` would enable it.
-- Because of that the DTS maps `hand-up-ctrl` (K18, DW100U) but not `irq-gpio` and `angle`: the
-  interrupt would only cause wakeups without a key. Add them together with the display hook.
+  is DRM/KMS (`drivers/gpu/drm/sprd`) and raises no fb blank event (no fbdev emulation, so
+  `fb_notifier_call_chain(FB_EVENT_BLANK)` has no `fb_info` to pass; other fb listeners would
+  dereference it). The sprd DRM driver therefore exports its own blocking notifier chain,
+  `<linux/sprd_panel_notifier.h>` (`drivers/gpu/drm/sprd/sprd_panel_notifier.c`):
+  `sprd_panel_notifier_register()` / `_unregister()`, events `SPRD_PANEL_EVENT_ON` and
+  `SPRD_PANEL_EVENT_OFF`, and `sprd_panel_screen_is_on()` for the last state (true before the
+  first event). The driver registers on it when `CONFIG_DRM_SPRD` is enabled
+  (`SENSORS_SC7A22` has `depends on DRM_SPRD || !DRM_SPRD`, so it cannot be built in with a
+  modular sprd DRM). Without `CONFIG_DRM_SPRD` the screen is taken as on and the raise-to-wake
+  key is never sent.
+- Where the events come from: `sprd_dsi_encoder_enable()` / `_disable()`, after `dsi_lock` is
+  released (process context, the chain may sleep). Every blank, unblank, DPMS and system
+  suspend / resume goes through the atomic modeset to these, and they are where the panel is
+  powered and the DPU pipe started / stopped, so they are the one place where the state is
+  known. `ON` is sent after `drm_panel_enable()` and `sprd_dpu_run()` (also for the bootloader-lit
+  first enable); `OFF` after the pipe is stopped and the panel is unprepared. Not sent for the
+  mode-only modeset (SR feature) or the "skip dsi resume" and "dsi isn't inited" early exits.
+  ESD recovery (`sprd_panel_esd_work_func()` calls the encoder disable / enable directly) is
+  wrapped in `sprd_panel_notify_quiet()` so the key is not armed by a recovery.
+- Meaning, same as stock: stock `ADF_EVENT_BLANK` is sent from `sprd_adf_interface_dpms_on/off`
+  (`DRM_MODE_DPMS_ON` / `DRM_MODE_DPMS_OFF`, pipe and panel powered up / down; the sprd ADF
+  interface rejects the STANDBY / SUSPEND states). Stock AOD (`sprd_aod_idle`, DCS 0x38 / 0x39
+  idle mode) does not change the DPMS state, so in stock the screen counted as "on" during AOD
+  and no raise-to-wake key was sent; only a double tap woke a watch from AOD. 4.14 has no AOD
+  port yet (see the lcd and DM63 DTS notes); an AOD port that only toggles the panel idle mode
+  and leaves the encoder enabled keeps these semantics and needs no notifier call. If AOD is
+  ever implemented by disabling the encoder, it will report "off" and raise-to-wake will fire.
+- Initial `screen_on` is true as in stock; at registration the driver reads
+  `sprd_panel_screen_is_on()`.
+- Because the key now works, the DTS can map `irq-gpio` and `angle` together with the existing
+  `hand-up-ctrl` (not done in this change; the DTS is untouched and untested on a device).
+- Touch drivers: in 4.4 the sprd `hynitron_ts` has no ADF / fb blank hook, and the stock
+  `cst0xx` / `btl` drivers have no source here (they are only in the stock images; whether
+  the binaries registered an ADF client was not checked). The 4.14 `btl_ts.c`, `cst0xx_ts.c`
+  and `hynitron_cst9217.c` use only system sleep PM ops (late suspend / resume) and never put
+  the controller to sleep on blank, which is what the stock cst0xx did for AOD double tap.
+  Nothing is missing that this notifier would feed; left unchanged.
 - Step counter, sysfs ABI and `/dev/qmax981` do not depend on the screen state.
 

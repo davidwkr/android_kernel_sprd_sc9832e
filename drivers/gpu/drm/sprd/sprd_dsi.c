@@ -24,6 +24,7 @@
 #include "disp_lib.h"
 #include "sprd_dpu.h"
 #include "sprd_dsi.h"
+#include "sprd_panel_notifier.h"
 #include "dsi/sprd_dsi_api.h"
 #include "sysfs/sysfs_display.h"
 
@@ -112,6 +113,8 @@ static void sprd_dsi_encoder_enable(struct drm_encoder *encoder)
 		is_enabled = false;
 		dsi->ctx.is_inited = true;
 		mutex_unlock(&dsi_lock);
+		/* panel was left on by the bootloader */
+		sprd_panel_notify(SPRD_PANEL_EVENT_ON);
 		return;
 	}
 
@@ -141,6 +144,9 @@ static void sprd_dsi_encoder_enable(struct drm_encoder *encoder)
 
 	dsi->ctx.is_inited = true;
 	mutex_unlock(&dsi_lock);
+
+	/* screen is on: sent outside dsi_lock, the chain may sleep */
+	sprd_panel_notify(SPRD_PANEL_EVENT_ON);
 }
 
 static void sprd_dsi_encoder_disable(struct drm_encoder *encoder)
@@ -181,6 +187,9 @@ static void sprd_dsi_encoder_disable(struct drm_encoder *encoder)
 
 	dsi->ctx.is_inited = false;
 	mutex_unlock(&dsi_lock);
+
+	/* screen is off: sent outside dsi_lock, the chain may sleep */
+	sprd_panel_notify(SPRD_PANEL_EVENT_OFF);
 }
 
 static void sprd_dsi_encoder_mode_set(struct drm_encoder *encoder,
