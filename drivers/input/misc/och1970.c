@@ -883,45 +883,50 @@ static int och1970_hw_init(struct och1970_data *data)
 
 	switch (data->gen) {
 	case OCH1970_GEN1_DM82:
-		och1970_write_thr(data, 1, 0, data->open_bop, data->open_brp);
-		och1970_write_thr(data, 2, 0, data->rot_bop, data->rot_brp);
-		och1970_axis_enable(data, 1, 0, false);
-		och1970_rmw_block(data, 1, 0, OCH1970_EN_X2);
-		och1970_rmw_block(data, 1, OCH1970_EN_Y1, 0);
-		och1970_rmw_block(data, 1, OCH1970_EN_Y2, 0);
-		och1970_rmw_block(data, 1, OCH1970_EN_Z1, 0);
-		och1970_rmw_block(data, 1, OCH1970_EN_Z2, 0);
+		ret = ret ?: och1970_write_thr(data, 1, 0, data->open_bop,
+						 data->open_brp);
+		ret = ret ?: och1970_write_thr(data, 2, 0, data->rot_bop,
+						 data->rot_brp);
+		ret = ret ?: och1970_axis_enable(data, 1, 0, false);
+		ret = ret ?: och1970_rmw_block(data, 1, 0, OCH1970_EN_X2);
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_Y1, 0);
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_Y2, 0);
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_Z1, 0);
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_Z2, 0);
 		break;
 	case OCH1970_GEN1_MT107:
-		och1970_write_thr(data, 1, 1, data->open_bop, data->open_brp);
-		och1970_write_thr(data, 2, 1, data->rot_bop, data->rot_brp);
-		och1970_rmw_block(data, 1, OCH1970_EN_X1, 0);
-		och1970_rmw_block(data, 1, OCH1970_EN_X2, 0);
-		och1970_axis_enable(data, 1, 1, false);
-		och1970_rmw_block(data, 1, 0, OCH1970_EN_Y2);
-		och1970_rmw_block(data, 1, OCH1970_EN_Z1, 0);
-		och1970_rmw_block(data, 1, OCH1970_EN_Z2, 0);
+		ret = ret ?: och1970_write_thr(data, 1, 1, data->open_bop,
+						 data->open_brp);
+		ret = ret ?: och1970_write_thr(data, 2, 1, data->rot_bop,
+						 data->rot_brp);
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_X1, 0);
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_X2, 0);
+		ret = ret ?: och1970_axis_enable(data, 1, 1, false);
+		ret = ret ?: och1970_rmw_block(data, 1, 0, OCH1970_EN_Y2);
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_Z1, 0);
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_Z2, 0);
 		break;
 	default:
-		och1970_rmw_block(data, 1, OCH1970_EN_X1, 0);
-		och1970_rmw_block(data, 1, OCH1970_EN_X2, 0);
-		och1970_rmw_block(data, 1, OCH1970_EN_Y1, 0);
-		och1970_rmw_block(data, 1, OCH1970_EN_Y2, 0);
-		och1970_rmw_block(data, 1, OCH1970_EN_Z1, 0);
-		och1970_rmw_block(data, 1, OCH1970_EN_Z2, 0);
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_X1, 0);
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_X2, 0);
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_Y1, 0);
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_Y2, 0);
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_Z1, 0);
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_Z2, 0);
 		break;
 	}
-	och1970_rmw_block(data, 0, 0, 0x04);
-	och1970_rmw_block(data, 1, 0x01, 0);
+	ret = ret ?: och1970_rmw_block(data, 0, 0, 0x04);
+	ret = ret ?: och1970_rmw_block(data, 1, 0x01, 0);
 
 	if (data->gen == OCH1970_GEN3) {
-		och1970_write_thr(data, 1, data->open_axis, data->open_bop,
-				  data->open_brp);
-		och1970_write_thr(data, 2, data->rot_axis, data->rot_bop,
-				  data->rot_brp);
+		ret = ret ?: och1970_write_thr(data, 1, data->open_axis,
+						 data->open_bop, data->open_brp);
+		ret = ret ?: och1970_write_thr(data, 2, data->rot_axis,
+						 data->rot_bop, data->rot_brp);
 	}
 
-	return 0;
+	/* every step above is skipped after the first failed transfer */
+	return ret;
 }
 
 /* Mask the line, drain the evaluation (its enable_irq() undoes only the
