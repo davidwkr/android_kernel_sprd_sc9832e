@@ -362,17 +362,21 @@ static void och1970_irq_work(struct work_struct *work)
 	 * Stock samples in the handler; read here instead, under the lock,
 	 * so the poll work cannot replace the sample before it is judged.
 	 */
-	och1970_get_xyz(data);
-	switch (data->gen) {
-	case OCH1970_GEN3:
-		och1970_eval_gen3(data);
-		break;
-	case OCH1970_GEN2:
-		och1970_eval_gen2(data);
-		break;
-	default:
-		och1970_eval_gen1(data);
-		break;
+	if (och1970_get_xyz(data)) {
+		/* no fresh sample: judge nothing, wait for the next edge */
+		dev_warn_ratelimited(&data->client->dev, "axis read failed\n");
+	} else {
+		switch (data->gen) {
+		case OCH1970_GEN3:
+			och1970_eval_gen3(data);
+			break;
+		case OCH1970_GEN2:
+			och1970_eval_gen2(data);
+			break;
+		default:
+			och1970_eval_gen1(data);
+			break;
+		}
 	}
 	enable_irq(data->irq);
 	mutex_unlock(&data->lock);
@@ -1096,28 +1100,53 @@ static void och1970_shutdown(struct i2c_client *client)
 }
 
 #ifdef CONFIG_PM_SLEEP
+/* polling mode (enable = 2 or 3) is stopped across suspend */
+static void och1970_restart_poll(struct och1970_data *data)
+{
+	if (data->enable_val == 2 || data->enable_val == 3)
+		schedule_delayed_work(&data->poll_work,
+				      msecs_to_jiffies(OCH1970_POLL_MS));
+}
+
 static int och1970_suspend(struct device *dev)
 {
 	struct och1970_data *data = dev_get_drvdata(dev);
+	int ret;
 
-	/* a pending evaluation still has the line masked: finish it first */
-	flush_delayed_work(&data->irq_work);
 	cancel_delayed_work_sync(&data->poll_work);
 
 	if (!device_may_wakeup(dev)) {
-		int ret;
-
+		/*
+		 * Mask first so no new evaluation is queued, then finish a
+		 * pending one (its enable_irq() undoes only the handler's).
+		 */
 		disable_irq(data->irq);
+		flush_delayed_work(&data->irq_work);
 		ret = och1970_powerdown_mode(data);
-		/* a failed suspend gets no resume: undo the disable */
 		if (ret)
-			enable_irq(data->irq);
-		return ret;
+			goto err_irq;
+		return 0;
 	}
+
+	/* a pending evaluation still has the line masked: finish it first */
+	flush_delayed_work(&data->irq_work);
 	och1970_measurement_mode(data, OCH1970_MODE_KEEP);
 	if (data->gen == OCH1970_GEN1_DM82)
 		irq_set_irq_type(data->irq, IRQ_TYPE_LEVEL_LOW);
-	return irq_set_irq_wake(data->irq, 1);
+	ret = irq_set_irq_wake(data->irq, 1);
+	if (ret) {
+		if (data->gen == OCH1970_GEN1_DM82)
+			irq_set_irq_type(data->irq, IRQ_TYPE_EDGE_FALLING);
+		goto err_poll;
+	}
+	return 0;
+
+	/* a failed suspend gets no resume: undo what was done here */
+err_irq:
+	enable_irq(data->irq);
+err_poll:
+	och1970_restart_poll(data);
+	return ret;
 }
 
 static int och1970_resume(struct device *dev)
@@ -1135,10 +1164,7 @@ static int och1970_resume(struct device *dev)
 		ret = irq_set_irq_wake(data->irq, 0);
 	}
 
-	/* suspend stopped the polling mode (enable = 2 or 3) */
-	if (data->enable_val == 2 || data->enable_val == 3)
-		schedule_delayed_work(&data->poll_work,
-				      msecs_to_jiffies(OCH1970_POLL_MS));
+	och1970_restart_poll(data);
 
 	return ret;
 }
