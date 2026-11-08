@@ -101,4 +101,24 @@ obj-y += $(foreach item,$(zyt_GSENSOR_LISTS),$(item)/)
 obj-$(CONFIG_INPUT_LSM6DS3) += lsm6ds3/
 obj-$(CONFIG_INPUT_ST480)  += st480/
 obj-$(CONFIG_INPUT_SENSORS_HRS3XXX)	+= hrs3xxx.o
+hrs3xxx-y := hrs3xxx_core.o
+
+ifeq ($(CONFIG_HRS3XXX_TYHX_BLOB),y)
+# Stock vendor code carved from the device's own boot.img (tools/blobcarve).
+# Never stored in the tree: its path comes from the make variable or Kconfig.
+HRS3XXX_TYHX_BLOB_S ?= $(patsubst "%",%,$(CONFIG_HRS3XXX_TYHX_BLOB_S))
+ifeq ($(HRS3XXX_TYHX_BLOB_S),)
+$(error CONFIG_HRS3XXX_TYHX_BLOB is set but no hrsblob.S path is given: set CONFIG_HRS3XXX_TYHX_BLOB_S or pass HRS3XXX_TYHX_BLOB_S=/abs/path/hrsblob.S (generate it with tools/blobcarve, see devices/HRS3XXX_INTERFACE.md))
+endif
+ifeq ($(wildcard $(HRS3XXX_TYHX_BLOB_S)),)
+$(error CONFIG_HRS3XXX_TYHX_BLOB is set but '$(HRS3XXX_TYHX_BLOB_S)' does not exist: generate it with tools/blobcarve from the stock boot.img, see devices/HRS3XXX_INTERFACE.md)
+endif
+hrs3xxx-y += hrs3xxx_blob.o hrsblob.o
+
+quiet_cmd_hrsblob = AS      $@
+      cmd_hrsblob = $(CC) $(a_flags) -c -o $@ $(HRS3XXX_TYHX_BLOB_S)
+
+$(obj)/hrsblob.o: $(HRS3XXX_TYHX_BLOB_S) FORCE
+	$(call if_changed,hrsblob)
+endif
 obj-$(CONFIG_INPUT_SENSORS_BD1XXX)	+= bd1xxx.o

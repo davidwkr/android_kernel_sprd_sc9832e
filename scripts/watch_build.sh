@@ -4,6 +4,11 @@
 #   DEVICE: dm63 | dw100u-silver | dw100u-v13m | mt107 | mt108 | dm82 | k18
 #   OUTDIR: default ../watch_out (outside the repo); results in OUTDIR/DEVICE/
 # Env: ARCH (arm64), CROSS_COMPILE (aarch64-linux-gnu-), JOBS (nproc)
+#      HRS_STOCK_BOOT_IMG (optional; dm63, dw100u-silver, dw100u-v13m, mt107):
+#      path of THIS device's own stock boot image (the hx3918 layers differ
+#      between devices). Runs tools/blobcarve into OUTDIR/hrsblob-DEVICE/ and
+#      builds with CONFIG_HRS3XXX_TYHX_BLOB=y (stock bytes: never commit or
+#      ship that dir).
 set -euo pipefail
 
 usage() { echo "usage: $0 DEVICE [OUTDIR]  (dm63|dw100u-silver|dw100u-v13m|mt107|mt108|dm82|k18)" >&2; exit 2; }
@@ -30,6 +35,22 @@ MK() { make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" O="$O" "$@"; }
 
 watch_assemble
 watch_verify
+
+if [ -n "${HRS_STOCK_BOOT_IMG:-}" ]; then
+  case $DEVICE in
+    dm63|dw100u-silver|dw100u-v13m|mt107) ;;
+    *) echo "HRS_STOCK_BOOT_IMG: not supported for $DEVICE (dm63, dw100u-silver, dw100u-v13m, mt107)" >&2; exit 2 ;;
+  esac
+  [ -r "$HRS_STOCK_BOOT_IMG" ] || { echo "cannot read $HRS_STOCK_BOOT_IMG" >&2; exit 2; }
+  HRSBLOB=$OUTBASE/hrsblob-$DEVICE
+  echo "== hrs blob: blobcarve $HRS_STOCK_BOOT_IMG -> $HRSBLOB"
+  python3 -I "$SRC/tools/blobcarve/blobcarve.py" --boot-img "$HRS_STOCK_BOOT_IMG" \
+    --out "$HRSBLOB" --cross "$CROSS_COMPILE"
+  "$SRC/scripts/config" --file "$O/.config" -e HRS3XXX_TYHX_BLOB \
+    --set-str HRS3XXX_TYHX_BLOB_S "$HRSBLOB/hrsblob.S"
+  MK olddefconfig
+  grep -qx 'CONFIG_HRS3XXX_TYHX_BLOB=y' "$O/.config" || { echo "FAIL: HRS3XXX_TYHX_BLOB not enabled" >&2; exit 1; }
+fi
 
 echo "== build Image + modules (-j$JOBS)"
 MK -j"$JOBS" Image modules

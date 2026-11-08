@@ -955,6 +955,28 @@ config HEARTRATE_HRS3300
 	  probing, power and the sysfs/input interface are provided; no
 	  measurement is implemented for this chip.
 
+config HRS3XXX_TYHX_BLOB
+	bool "Use the stock TYHX HX3918 measurement code (external object)"
+	depends on INPUT_SENSORS_HRS3XXX
+	help
+	  Link the stock vendor HX3918 hardware layer and HR/SpO2 algorithm
+	  into the hrs3xxx driver and run measurements with it. The code is
+	  not part of this tree: it must be generated from the device's own
+	  stock boot.img with tools/blobcarve (see
+	  devices/HRS3XXX_INTERFACE.md) and its assembly file named by
+	  HRS3XXX_TYHX_BLOB_S. The build fails if the file is missing.
+	  If unsure, say N: the driver then only provides probe, power and
+	  the userspace ABI.
+
+config HRS3XXX_TYHX_BLOB_S
+	string "Absolute path of the generated hrsblob.S"
+	depends on HRS3XXX_TYHX_BLOB
+	default ""
+	help
+	  Absolute path, outside the source tree, of the hrsblob.S written
+	  by tools/blobcarve. Can be overridden on the make command line
+	  with HRS3XXX_TYHX_BLOB_S=/path/hrsblob.S.
+
 config INPUT_SENSORS_BD1XXX
 	tristate "Rohm BD1xxx heart-rate sensor"
 	depends on I2C
