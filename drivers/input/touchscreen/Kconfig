@@ -149,10 +149,14 @@ config TOUCHSCREEN_CST9217
 	depends on I2C
 	depends on INPUT
 	depends on OF && GPIOLIB
+	depends on ADF_SPRD
 	help
 	  Say Y here if you have a Hynitron CST9217 touch panel described
 	  by a "hynitron,hyn_ts" device tree node, as found on the DW100U
-	  smartwatch. The input device is named "hyn_ts".
+	  smartwatch. The input device is named "hyn_ts". The controller
+	  is put to sleep while the screen is off (ADF blank notifier) and
+	  the input device has a wake_gesture attribute to wake the device
+	  with a gesture report.
 
 	  If unsure, say N.
 
