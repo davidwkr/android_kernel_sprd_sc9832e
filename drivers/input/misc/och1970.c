@@ -24,6 +24,7 @@
 #include <linux/delay.h>
 #include <linux/gpio.h>
 #include <linux/i2c.h>
+#include <linux/kref.h>
 #include <linux/input.h>
 #include <linux/interrupt.h>
 #include <linux/jiffies.h>
@@ -88,6 +89,8 @@ struct och1970_data {
 	struct miscdevice misc;
 	struct wakeup_source *ws;
 	struct mutex lock;		/* flags, thresholds, register sequences */
+	struct kref ref;		/* probe + one per open misc descriptor */
+	bool removed;			/* under lock: client gone, no I/O */
 	struct delayed_work poll_work;
 	struct delayed_work irq_work;
 	enum och1970_gen gen;
@@ -380,7 +383,10 @@ static irqreturn_t och1970_irq_thread(int irq, void *dev_id)
 	__pm_wakeup_event(data->ws, jiffies_to_msecs(OCH1970_WAKE_JIFFIES));
 	if (device_may_wakeup(&data->client->dev))
 		pm_stay_awake(&data->client->dev);
+	/* the poll work reads the same registers and fields */
+	mutex_lock(&data->lock);
 	och1970_get_xyz(data);
+	mutex_unlock(&data->lock);
 	schedule_delayed_work(&data->irq_work, msecs_to_jiffies(delay));
 
 	return IRQ_HANDLED;
@@ -590,12 +596,40 @@ static const struct attribute_group och1970_attr_group = {
 	.attrs = och1970_attrs,
 };
 
+static void och1970_free(struct kref *ref)
+{
+	kfree(container_of(ref, struct och1970_data, ref));
+}
+
+/*
+ * Descriptors can outlive the client (adapter unbind): each one holds a
+ * reference, and writes after remove fail with -ENODEV.
+ */
+static int och1970_misc_open(struct inode *inode, struct file *file)
+{
+	struct miscdevice *misc = file->private_data;
+	struct och1970_data *data = container_of(misc, struct och1970_data, misc);
+
+	/* misc_open() holds misc_mtx: remove has not deregistered us yet. */
+	kref_get(&data->ref);
+	file->private_data = data;
+
+	return nonseekable_open(inode, file);
+}
+
+static int och1970_misc_release(struct inode *inode, struct file *file)
+{
+	struct och1970_data *data = file->private_data;
+
+	kref_put(&data->ref, och1970_free);
+	return 0;
+}
+
 /* /dev/och1970: write "open" or "close" */
 static ssize_t och1970_misc_write(struct file *file, const char __user *ubuf,
 				  size_t count, loff_t *ppos)
 {
-	struct miscdevice *misc = file->private_data;
-	struct och1970_data *data = container_of(misc, struct och1970_data, misc);
+	struct och1970_data *data = file->private_data;
 	char cmd[16] = { };
 
 	if (count >= sizeof(cmd))
@@ -605,6 +639,10 @@ static ssize_t och1970_misc_write(struct file *file, const char __user *ubuf,
 	strim(cmd);
 
 	mutex_lock(&data->lock);
+	if (data->removed) {
+		mutex_unlock(&data->lock);
+		return -ENODEV;
+	}
 	if (!strcmp(cmd, "open")) {
 		och1970_axis_enable(data, 2, data->rot_axis, true);
 		och1970_measurement_mode(data, OCH1970_MODE_OPEN);
@@ -622,7 +660,8 @@ static ssize_t och1970_misc_write(struct file *file, const char __user *ubuf,
 
 static const struct file_operations och1970_misc_fops = {
 	.owner = THIS_MODULE,
-	.open = nonseekable_open,
+	.open = och1970_misc_open,
+	.release = och1970_misc_release,
 	.write = och1970_misc_write,
 	.llseek = no_llseek,
 };
@@ -874,20 +913,20 @@ static int och1970_hw_init(struct och1970_data *data)
 	return 0;
 }
 
-static int och1970_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+/* Mask the line, drain the evaluation (its enable_irq() undoes only the
+ * handler's disable), then free the irq. */
+static void och1970_release_irq(struct och1970_data *data)
+{
+	disable_irq(data->irq);
+	cancel_delayed_work_sync(&data->irq_work);
+	free_irq(data->irq, data);
+}
+
+static int och1970_setup(struct i2c_client *client, struct och1970_data *data)
 {
 	struct device *dev = &client->dev;
-	struct och1970_data *data;
 	struct input_dev *input;
 	int ret;
-
-	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
-		return -EOPNOTSUPP;
-
-	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
-	if (!data)
-		return -ENOMEM;
 
 	data->client = client;
 	data->wake = true;		/* stock initial flags are all set */
@@ -989,9 +1028,32 @@ static int och1970_probe(struct i2c_client *client,
 err_misc:
 	misc_deregister(&data->misc);
 err_irq:
-	free_irq(data->irq, data);
+	och1970_release_irq(data);
 err_ws:
+	device_init_wakeup(dev, false);
 	wakeup_source_unregister(data->ws);
+	return ret;
+}
+
+static int och1970_probe(struct i2c_client *client,
+			 const struct i2c_device_id *id)
+{
+	struct och1970_data *data;
+	int ret;
+
+	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
+		return -EOPNOTSUPP;
+
+	/* not devm: open /dev/och1970 descriptors may outlive the client */
+	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	if (!data)
+		return -ENOMEM;
+	kref_init(&data->ref);
+
+	ret = och1970_setup(client, data);
+	if (ret)
+		kref_put(&data->ref, och1970_free);
+
 	return ret;
 }
 
@@ -1001,11 +1063,17 @@ static int och1970_remove(struct i2c_client *client)
 
 	sysfs_remove_group(&data->input->dev.kobj, &och1970_attr_group);
 	misc_deregister(&data->misc);
-	free_irq(data->irq, data);
-	cancel_delayed_work_sync(&data->irq_work);
+	och1970_release_irq(data);
 	cancel_delayed_work_sync(&data->poll_work);
-	wakeup_source_unregister(data->ws);
+
+	mutex_lock(&data->lock);
 	och1970_powerdown_mode(data);
+	data->removed = true;
+	mutex_unlock(&data->lock);
+
+	device_init_wakeup(&client->dev, false);
+	wakeup_source_unregister(data->ws);
+	kref_put(&data->ref, och1970_free);
 
 	return 0;
 }
@@ -1023,6 +1091,10 @@ static int och1970_suspend(struct device *dev)
 {
 	struct och1970_data *data = dev_get_drvdata(dev);
 
+	/* a pending evaluation still has the line masked: finish it first */
+	flush_delayed_work(&data->irq_work);
+	cancel_delayed_work_sync(&data->poll_work);
+
 	if (!device_may_wakeup(dev)) {
 		disable_irq(data->irq);
 		return och1970_powerdown_mode(data);
@@ -1036,16 +1108,24 @@ static int och1970_suspend(struct device *dev)
 static int och1970_resume(struct device *dev)
 {
 	struct och1970_data *data = dev_get_drvdata(dev);
+	int ret = 0;
 
 	if (!device_may_wakeup(dev)) {
 		och1970_powerdown_mode(data);
 		enable_irq(data->irq);
-		return 0;
+	} else {
+		och1970_measurement_mode(data, OCH1970_MODE_KEEP);
+		if (data->gen == OCH1970_GEN1_DM82)
+			irq_set_irq_type(data->irq, IRQ_TYPE_EDGE_FALLING);
+		ret = irq_set_irq_wake(data->irq, 0);
 	}
-	och1970_measurement_mode(data, OCH1970_MODE_KEEP);
-	if (data->gen == OCH1970_GEN1_DM82)
-		irq_set_irq_type(data->irq, IRQ_TYPE_EDGE_FALLING);
-	return irq_set_irq_wake(data->irq, 0);
+
+	/* suspend stopped the polling mode (enable = 2 or 3) */
+	if (data->enable_val == 2 || data->enable_val == 3)
+		schedule_delayed_work(&data->poll_work,
+				      msecs_to_jiffies(OCH1970_POLL_MS));
+
+	return ret;
 }
 
 static SIMPLE_DEV_PM_OPS(och1970_pm_ops, och1970_suspend, och1970_resume);
