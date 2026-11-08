@@ -9,9 +9,10 @@
  *    device, i.e. /sys/class/input/inputN/{enable,chipinfo}.
  *
  * The heart-rate / SpO2 algorithms of the stock driver are closed vendor
- * code and are not part of this driver.  This driver handles probing,
- * power sequencing and the userspace ABI only; until a measurement
- * back end is added it reports "no valid measurement" (all values 0,
+ * code and are not part of this tree.  This driver handles probing,
+ * power sequencing and the userspace ABI; measurements come from the stock
+ * code only with CONFIG_HRS3XXX_TYHX_BLOB (see hrs3xxx_blob.c).  Without
+ * it the driver reports "no valid measurement" (all values 0,
  * REL_HWHEEL/REL_MISC = -1) once per second while enabled.
  *
  * Interface details and evidence: devices/HRS3XXX_INTERFACE.md
@@ -32,6 +33,8 @@
 #include <linux/slab.h>
 #include <linux/sysfs.h>
 #include <linux/workqueue.h>
+
+#include "hrs3xxx_blob.h"
 
 #define HRS3XXX_DRV_NAME	"hrs3xxx"
 #define HRS3XXX_INPUT_NAME	"heartrate"
@@ -59,6 +62,7 @@ struct hrs3xxx_data {
 	unsigned int mode;	/* 0 = off, 1..3 = measurement mode */
 	bool powered;
 	bool ready;		/* input device registered; work may run */
+	struct hrsb *blob;	/* stock measurement code, NULL when unused */
 };
 
 static int hrs3xxx_read_reg(struct i2c_client *client, u8 reg, u8 *val)
@@ -156,11 +160,37 @@ static void hrs3xxx_work(struct work_struct *work)
 	mutex_lock(&data->lock);
 	if (data->ready && data->mode) {
 		hrs3xxx_power_on(data);	/* no-op unless resuming */
-		hrs3xxx_report(data);
-		schedule_delayed_work(&data->work,
+		if (data->blob) {
+			/* Resume: the stock code reports from its own works. */
+			hrsb_start(data->blob, data->mode);
+		} else {
+			hrs3xxx_report(data);
+			schedule_delayed_work(&data->work,
 				msecs_to_jiffies(HRS3XXX_REPORT_PERIOD_MS));
+		}
 	}
 	mutex_unlock(&data->lock);
+}
+
+/* data->lock held. Starts measuring (or the 1 s dummy report without blob). */
+static void hrs3xxx_meas_start(struct hrs3xxx_data *data)
+{
+	if (data->blob) {
+		hrsb_start(data->blob, data->mode);
+		return;
+	}
+	schedule_delayed_work(&data->work,
+			      msecs_to_jiffies(HRS3XXX_REPORT_PERIOD_MS));
+}
+
+/*
+ * data->lock held. Stops the stock measurement (timers, works, exit); the
+ * delayed work of this driver is cancelled by the caller without the lock.
+ */
+static void hrs3xxx_meas_stop(struct hrs3xxx_data *data)
+{
+	if (data->blob)
+		hrsb_stop(data->blob);
 }
 
 static void hrs3xxx_set_mode(struct hrs3xxx_data *data, unsigned int mode)
@@ -174,11 +204,11 @@ static void hrs3xxx_set_mode(struct hrs3xxx_data *data, unsigned int mode)
 		/* Before registration completes only remember the request. */
 		if (data->ready) {
 			hrs3xxx_power_on(data);
-			schedule_delayed_work(&data->work,
-				msecs_to_jiffies(HRS3XXX_REPORT_PERIOD_MS));
+			hrs3xxx_meas_start(data);
 		}
 	} else {
 		data->mode = 0;
+		hrs3xxx_meas_stop(data);
 		hrs3xxx_power_off(data);
 	}
 	mutex_unlock(&data->lock);
@@ -362,11 +392,26 @@ static int hrs3xxx_probe(struct i2c_client *client,
 	data->input = input;
 
 	i2c_set_clientdata(client, data);
+
+	if (IS_ENABLED(CONFIG_HRS3XXX_TYHX_BLOB)) {
+		/* Starts "not live": nothing can start before probe is done. */
+		data->blob = hrsb_create(client, input);
+		if (IS_ERR(data->blob)) {
+			ret = PTR_ERR(data->blob);
+			data->blob = NULL;
+			dev_err(dev, "cannot set up measurement code: %d\n", ret);
+			input_free_device(input);
+			goto err_off;
+		}
+	}
+
 	ret = input_register_device(input);
 	if (ret) {
 		dev_err(dev, "cannot register input device: %d\n", ret);
 		/* ready was never set, so no work was queued; be defensive. */
 		cancel_delayed_work_sync(&data->work);
+		hrsb_destroy(data->blob);
+		data->blob = NULL;
 		input_free_device(input);
 		goto err_off;
 	}
@@ -374,10 +419,11 @@ static int hrs3xxx_probe(struct i2c_client *client,
 	/* Start anything requested through sysfs during registration. */
 	mutex_lock(&data->lock);
 	data->ready = true;
+	if (data->blob)
+		hrsb_set_live(data->blob, true);
 	if (data->mode) {
 		hrs3xxx_power_on(data);
-		schedule_delayed_work(&data->work,
-				msecs_to_jiffies(HRS3XXX_REPORT_PERIOD_MS));
+		hrs3xxx_meas_start(data);
 	}
 	mutex_unlock(&data->lock);
 
@@ -394,6 +440,8 @@ static int hrs3xxx_remove(struct i2c_client *client)
 
 	mutex_lock(&data->lock);
 	data->ready = false;
+	if (data->blob)
+		hrsb_set_live(data->blob, false);	/* no start from now on */
 	mutex_unlock(&data->lock);
 
 	/* Keep the input device alive until the work item is stopped. */
@@ -408,9 +456,12 @@ static int hrs3xxx_remove(struct i2c_client *client)
 
 	mutex_lock(&data->lock);
 	data->mode = 0;
+	hrs3xxx_meas_stop(data);	/* timers, works, exit; input still held */
 	hrs3xxx_power_off(data);
 	mutex_unlock(&data->lock);
 
+	hrsb_destroy(data->blob);
+	data->blob = NULL;
 	input_put_device(data->input);
 	return 0;
 }
@@ -422,7 +473,20 @@ static int hrs3xxx_suspend(struct device *dev)
 
 	cancel_delayed_work_sync(&data->work);
 
-	mutex_lock(&data->lock);
+	if (data->blob) {
+		/*
+		 * An enable/disable in progress holds the lock: refuse to
+		 * suspend, restoring the resume work cancelled above (it
+		 * restarts the sensor if it is still wanted).
+		 */
+		if (!mutex_trylock(&data->lock)) {
+			schedule_delayed_work(&data->work, 0);
+			return -EBUSY;
+		}
+	} else {
+		mutex_lock(&data->lock);
+	}
+	hrs3xxx_meas_stop(data);
 	hrs3xxx_power_off(data);	/* mode is kept for resume */
 	mutex_unlock(&data->lock);
 
