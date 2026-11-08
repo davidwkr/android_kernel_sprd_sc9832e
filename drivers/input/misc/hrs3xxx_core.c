@@ -61,6 +61,7 @@ struct hrs3xxx_data {
 	int power_gpio;		/* < 0 when the board has no power switch */
 	unsigned int mode;	/* 0 = off, 1..3 = measurement mode */
 	bool powered;
+	bool hx3918;		/* HX3918: reg 0x01 is 0 = on, 1 = standby */
 	bool ready;		/* input device registered; work may run */
 	struct hrsb *blob;	/* stock measurement code, NULL when unused */
 };
@@ -101,8 +102,13 @@ static void hrs3xxx_power_off(struct hrs3xxx_data *data)
 	if (!data->powered)
 		return;
 
-	/* Software standby first, then cut the supply if there is a switch. */
-	ret = hrs3xxx_write_reg(data->client, HRS3XXX_REG_ENABLE, 0);
+	/*
+	 * Software standby first, then cut the supply if there is a switch.
+	 * Stock hx3918 "ppg off" writes reg 0x01 = 1 and "ppg on" writes 0;
+	 * for the HRS3300 ENABLE = 0 is the disabled state.
+	 */
+	ret = hrs3xxx_write_reg(data->client, HRS3XXX_REG_ENABLE,
+				data->hx3918 ? 1 : 0);
 	if (ret)
 		dev_warn_ratelimited(&data->client->dev,
 				     "standby write failed: %d\n", ret);
@@ -116,8 +122,9 @@ static void hrs3xxx_power_off(struct hrs3xxx_data *data)
 
 /*
  * Note: on boards without a power switch (DW100U) power_off() leaves the chip
- * in software standby (reg 0x01 = 0) and power_on() does not wake it. A future
- * measurement back end must write the enable register itself.
+ * in software standby and power_on() does not wake it. The stock hx3918_init()
+ * wakes the chip itself (hx3918_ppg_on), so the measurement back end needs no
+ * extra step.
  */
 static void hrs3xxx_power_on(struct hrs3xxx_data *data)
 {
@@ -160,14 +167,9 @@ static void hrs3xxx_work(struct work_struct *work)
 	mutex_lock(&data->lock);
 	if (data->ready && data->mode) {
 		hrs3xxx_power_on(data);	/* no-op unless resuming */
-		if (data->blob) {
-			/* Resume: the stock code reports from its own works. */
-			hrsb_start(data->blob, data->mode);
-		} else {
-			hrs3xxx_report(data);
-			schedule_delayed_work(&data->work,
+		hrs3xxx_report(data);
+		schedule_delayed_work(&data->work,
 				msecs_to_jiffies(HRS3XXX_REPORT_PERIOD_MS));
-		}
 	}
 	mutex_unlock(&data->lock);
 }
@@ -361,6 +363,7 @@ static int hrs3xxx_probe(struct i2c_client *client,
 		ret = -ENODEV;
 		goto err_off;
 	}
+	data->hx3918 = (chip_id == HRS3XXX_ID_HRS3918);
 	dev_info(dev, "found %s (id 0x%02x)\n", data->chipinfo, chip_id);
 
 	/* The sensor stays off until userspace enables it. */
@@ -467,26 +470,26 @@ static int hrs3xxx_remove(struct i2c_client *client)
 }
 
 #ifdef CONFIG_PM_SLEEP
+/*
+ * With the stock measurement code the sensor and the algorithm keep their
+ * state across suspend, as in the stock driver (its suspend/resume only
+ * print): the blob timers and works stop and are re-armed on resume. If a
+ * later device fails to suspend the PM core resumes this one, which re-arms
+ * them. Userspace is frozen during device suspend, so no enable write can
+ * race with this.
+ */
 static int hrs3xxx_suspend(struct device *dev)
 {
 	struct hrs3xxx_data *data = dev_get_drvdata(dev);
 
+	if (data->blob) {
+		hrsb_suspend(data->blob);
+		return 0;
+	}
+
 	cancel_delayed_work_sync(&data->work);
 
-	if (data->blob) {
-		/*
-		 * An enable/disable in progress holds the lock: refuse to
-		 * suspend, restoring the resume work cancelled above (it
-		 * restarts the sensor if it is still wanted).
-		 */
-		if (!mutex_trylock(&data->lock)) {
-			schedule_delayed_work(&data->work, 0);
-			return -EBUSY;
-		}
-	} else {
-		mutex_lock(&data->lock);
-	}
-	hrs3xxx_meas_stop(data);
+	mutex_lock(&data->lock);
 	hrs3xxx_power_off(data);	/* mode is kept for resume */
 	mutex_unlock(&data->lock);
 
@@ -496,6 +499,11 @@ static int hrs3xxx_suspend(struct device *dev)
 static int hrs3xxx_resume(struct device *dev)
 {
 	struct hrs3xxx_data *data = dev_get_drvdata(dev);
+
+	if (data->blob) {
+		hrsb_resume(data->blob);
+		return 0;
+	}
 
 	mutex_lock(&data->lock);
 	/* No sleeping here: the work item powers the chip back on. */

@@ -4,9 +4,11 @@
 #   DEVICE: dm63 | dw100u-silver | dw100u-v13m | mt107 | mt108 | dm82 | k18
 #   OUTDIR: default ../watch_out (outside the repo); results in OUTDIR/DEVICE/
 # Env: ARCH (arm64), CROSS_COMPILE (aarch64-linux-gnu-), JOBS (nproc)
-#      HRS_STOCK_BOOT_IMG (optional, dm63 only): path of the device's own stock
-#      boot.img. Runs tools/blobcarve into OUTDIR/hrsblob-DEVICE/ and builds with
-#      CONFIG_HRS3XXX_TYHX_BLOB=y (stock bytes: never commit or ship that dir).
+#      HRS_STOCK_BOOT_IMG (optional; dm63, dw100u-silver, dw100u-v13m, mt107):
+#      path of THIS device's own stock boot image (the hx3918 layers differ
+#      between devices). Runs tools/blobcarve into OUTDIR/hrsblob-DEVICE/ and
+#      builds with CONFIG_HRS3XXX_TYHX_BLOB=y (stock bytes: never commit or
+#      ship that dir).
 set -euo pipefail
 
 usage() { echo "usage: $0 DEVICE [OUTDIR]  (dm63|dw100u-silver|dw100u-v13m|mt107|mt108|dm82|k18)" >&2; exit 2; }
@@ -35,7 +37,10 @@ watch_assemble
 watch_verify
 
 if [ -n "${HRS_STOCK_BOOT_IMG:-}" ]; then
-  [ "$DEVICE" = dm63 ] || { echo "HRS_STOCK_BOOT_IMG: blobcarve supports dm63 only" >&2; exit 2; }
+  case $DEVICE in
+    dm63|dw100u-silver|dw100u-v13m|mt107) ;;
+    *) echo "HRS_STOCK_BOOT_IMG: not supported for $DEVICE (dm63, dw100u-silver, dw100u-v13m, mt107)" >&2; exit 2 ;;
+  esac
   [ -r "$HRS_STOCK_BOOT_IMG" ] || { echo "cannot read $HRS_STOCK_BOOT_IMG" >&2; exit 2; }
   HRSBLOB=$OUTBASE/hrsblob-$DEVICE
   echo "== hrs blob: blobcarve $HRS_STOCK_BOOT_IMG -> $HRSBLOB"

@@ -27,6 +27,14 @@ int hrsb_start(struct hrsb *b, unsigned int mode);
  * measurement works take (none in the core driver). */
 void hrsb_stop(struct hrsb *b);
 bool hrsb_running(struct hrsb *b);
+/*
+ * System suspend/resume as stock: the algorithm and the chip keep their
+ * state. Suspend only stops the timers and works (remembering which timers
+ * were on), resume re-arms those; no exit/init, no power change. Both are
+ * idempotent.
+ */
+void hrsb_suspend(struct hrsb *b);
+void hrsb_resume(struct hrsb *b);
 
 #else
 
@@ -43,6 +51,8 @@ static inline int hrsb_start(struct hrsb *b, unsigned int mode)
 }
 static inline void hrsb_stop(struct hrsb *b) { }
 static inline bool hrsb_running(struct hrsb *b) { return false; }
+static inline void hrsb_suspend(struct hrsb *b) { }
+static inline void hrsb_resume(struct hrsb *b) { }
 
 #endif /* CONFIG_HRS3XXX_TYHX_BLOB */
 

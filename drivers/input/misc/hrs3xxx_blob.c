@@ -66,6 +66,9 @@ struct hrsb {
 	atomic_t ppg_run;		/* timer re-arms itself while set */
 	atomic_t agc_run;
 	bool live;			/* probe finished, not removed */
+	bool suspended;			/* between hrsb_suspend and resume */
+	bool ppg_was_on;		/* timers that were on at suspend */
+	bool agc_was_on;
 };
 
 /* Vendor code (carved object). */
@@ -250,7 +253,7 @@ static void hrsb_ppg_work(struct work_struct *work)
 	struct hrsb *b = container_of(work, struct hrsb, ppg_work);
 
 	mutex_lock(&b->lock);
-	if (b->live && b->v.enabled) {
+	if (b->live && b->v.enabled && !b->suspended) {
 		hrsblob_hrs3xxx_t = &b->v;
 		heart_rate_meas_timeout_handler(&b->v);
 		hrsb_report(b);
@@ -263,7 +266,7 @@ static void hrsb_agc_work(struct work_struct *work)
 	struct hrsb *b = container_of(work, struct hrsb, agc_work);
 
 	mutex_lock(&b->lock);
-	if (b->live && b->v.enabled) {
+	if (b->live && b->v.enabled && !b->suspended) {
 		hrsblob_hrs3xxx_t = &b->v;
 		agc_timeout_handler(&b->v);
 	}
@@ -364,6 +367,7 @@ int hrsb_start(struct hrsb *b, unsigned int mode)
 		mutex_unlock(&b->lock);
 		return -ENODEV;
 	}
+	b->suspended = false;	/* a fresh start supersedes a suspend */
 
 	hrsblob_hrs3xxx_t = &b->v;
 	if (b->v.enabled) {
@@ -391,11 +395,55 @@ int hrsb_start(struct hrsb *b, unsigned int mode)
 	return 0;
 }
 
+void hrsb_suspend(struct hrsb *b)
+{
+	mutex_lock(&b->lock);
+	if (b->suspended) {
+		mutex_unlock(&b->lock);
+		return;
+	}
+	b->suspended = true;
+	b->ppg_was_on = atomic_read(&b->ppg_run);
+	b->agc_was_on = atomic_read(&b->agc_run);
+	mutex_unlock(&b->lock);
+
+	/* Works that already queued see "suspended" and do nothing. */
+	hrsb_quiesce(b);
+}
+
+void hrsb_resume(struct hrsb *b)
+{
+	mutex_lock(&b->lock);
+	if (b->suspended) {
+		b->suspended = false;
+		if (b->live && b->v.enabled) {
+			if (b->ppg_was_on) {
+				atomic_set(&b->ppg_run, 1);
+				hrtimer_start(&b->ppg_timer,
+					      ms_to_ktime(HRSB_PERIOD_MS),
+					      HRTIMER_MODE_REL);
+			}
+			if (b->agc_was_on) {
+				atomic_set(&b->agc_run, 1);
+				hrtimer_start(&b->agc_timer,
+					      ms_to_ktime(HRSB_PERIOD_MS),
+					      HRTIMER_MODE_REL);
+			}
+		}
+		b->ppg_was_on = false;
+		b->agc_was_on = false;
+	}
+	mutex_unlock(&b->lock);
+}
+
 void hrsb_stop(struct hrsb *b)
 {
 	hrsb_quiesce(b);
 
 	mutex_lock(&b->lock);
+	b->suspended = false;
+	b->ppg_was_on = false;
+	b->agc_was_on = false;
 	if (b->v.enabled) {
 		b->v.enabled = 0;
 		hrsblob_hrs3xxx_t = &b->v;

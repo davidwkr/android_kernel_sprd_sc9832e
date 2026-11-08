@@ -23,7 +23,7 @@ Register facts seen in the stock driver [K], used by this driver:
 |---|---|
 | Transfer style | write 1-byte register address (STOP), then read (two transfers) |
 | Reg 0x00 | chip ID: 0x21 HRS3300, 0x22 HRS3602, 0x25 HRS3605, 0x27 HRS3918 |
-| Reg 0x01 | written 0 (then 5 ms) to put the chip in standby |
+| Reg 0x01 | HX3918 [D]: 0 = on (`hx3918_ppg_on` 0x4d4d8c writes 0, then 5 ms), 1 = standby (`hx3918_ppg_off` 0x4d4d4c writes regs 0x2a, 0x2b, 0x16 = 0, then reg 0x01 = 1). HRS3300: ENABLE, 0 = disabled |
 | Probe delay | 10 ms after power-up before reading the ID |
 | Enable delay | 100 ms after raising the power GPIO |
 
@@ -84,8 +84,8 @@ driven by a 40 ms timer plus the chip FIFO.
 ## Implemented by `drivers/input/misc/hrs3xxx_core.c`
 
 Probe (power GPIO, ID check for HRS3918 `0x27` and HRS3300 `0x21`, each behind its Kconfig bool `HEARTRATE_HRS3918` / `HEARTRATE_HRS3300`; `chipinfo` reports `hrs3918` or `hrs3300`; power off), input device and capabilities, `enable` and
-`chipinfo` attributes with the formats above, suspend/resume (sensor powered off while
-suspended, mode kept). Without `CONFIG_HRS3XXX_TYHX_BLOB` the chip measurement and the heart-rate/SpO2
+`chipinfo` attributes with the formats above, suspend/resume (without the blob: sensor powered off while
+suspended, mode kept; with it: see below). Without `CONFIG_HRS3XXX_TYHX_BLOB` the chip measurement and the heart-rate/SpO2
 algorithms are not implemented (see the next sections for the option); while enabled the driver reports "no valid sample" (0 for bpm/SpO2/wear,
 -1 for REL_HWHEEL/REL_MISC) once per second.
 
@@ -141,8 +141,44 @@ and a vendor-layout struct with only the used fields at the offsets above
 state is global). `enable` 1..3 maps as stock (2 -> mode 1, 3 -> mode 6, else
 0); the 40 ms work calls `heart_rate_meas_timeout_handler`, the second timer's
 work `agc_timeout_handler`, and all eight REL codes are reported after each
-measurement work as stock does. Teardown order on disable, suspend and remove:
-timers, then works, then `hx3918_exit`, then the power switch. The context
-starts "not live" and is made live at the end of probe. Resume restarts the
-sensor from a work item. Suspend returns `-EBUSY` (state untouched) if an
-enable write is in progress.
+measurement work as stock does. Teardown order on disable and remove:
+timers, then works, then `hx3918_exit`, then the power switch. Suspend and resume
+keep the algorithm state (next section). The context starts "not live" and is
+made live at the end of probe.
+
+### Suspend/resume and standby (stock) [D]
+
+- Stock `dev_pm_ops` [D]: the `i2c_driver` `.driver.pm` (0x10ca9b8 in the data) points at an
+  ops table at 0x87db00 whose suspend/resume/freeze/thaw/poweroff/restore slots all hold
+  `hrs3xxx_i2c_suspend` (0x4d3cd0) and `hrs3xxx_i2c_resume` (0x4d3ca8). Both only `printk` and
+  return 0. The i2c_driver has no legacy suspend/resume, and the glue calls no early-suspend,
+  PM-notifier or fb-notifier registration. So stock keeps the chip powered, the algorithm
+  state and the timers' configuration across suspend; the monotonic hrtimers simply do not
+  expire while the system sleeps and continue afterwards.
+- With the blob, suspend therefore only stops the timers and works (`hrsb_suspend`: run
+  flags cleared, both hrtimers cancelled, both works cancelled; works that were already
+  queued see "suspended" and do nothing), remembering which timers were on. Resume
+  (`hrsb_resume`) re-arms exactly those with the 40 ms period. No `hx3918_exit/init`, no
+  standby write and no GPIO change, so HR/SpO2 do not re-converge on wake. If a later device
+  fails to suspend, the PM core resumes this one and the same call re-arms; both calls are
+  idempotent. There is no -EBUSY path: userspace is frozen before device suspend, so no
+  `enable` write can be in progress, and the shim's mutex covers the rest.
+- Standby on disable [D]: `hx3918_exit` (0x4d4ee0) -> `hx3918_hrs_disable` (0x4d67dc) ->
+  `hx3918_hrs_set_mode(1)` (0x4d64b4, jump-table entry 1 = 0x4d650c) -> `hx3918_ppg_off`
+  (0x4d4d4c): the stock exit itself puts the chip in standby (reg 0x01 = 1). The stock
+  glue writes nothing else on disable except dropping the power GPIO when there is one.
+  `hx3918_init` (0x4d4f14) calls `hx3918_ppg_on` (0x4d4d8c: reg 0x01 = 0, 5 ms) first, so it
+  wakes the chip by itself: on DW100U (no power GPIO) nothing else is needed.
+- Fix: the driver's `power_off` wrote reg 0x01 = 0, which on the HX3918 is the *on* value.
+  It now writes 1 for the HX3918 (chip ID 0x27) and keeps 0 for the HRS3300. This applies
+  with and without the blob; on boards with a power GPIO the supply is cut right after.
+
+### One stock image per device
+
+The hx3918 hardware layers and some logic differ between devices (blobcarve verifies
+DM63, DW100U and MT107 and derives the function set per image), although the shim
+interface is identical. Each device must be built from the object carved from its own stock
+image: DM63 from the DM63 `boot.img`, DW100U silver and v13m from the DW100U one,
+MT107 from the MT107 image. `scripts/watch_build.sh` accepts `HRS_STOCK_BOOT_IMG` for
+`dm63`, `dw100u-silver`, `dw100u-v13m` and `mt107` and refuses other devices. The DW100U
+and MT107 offsets above were not re-derived; only DM63 is documented here.
