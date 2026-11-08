@@ -278,11 +278,11 @@ Measurement: Init block per mode and Close exactly as above; hrtimer (50 ms, 200
 item that runs the Data_Read state machine of the three paths (DC loops, 20-sample frames, trailer words),
 copies the frame to the read buffer and reports REL_X/Y/Z + SYN. A `ctl` mutex serialises enable, disable,
 suspend, resume and remove and is held across `cancel_work_sync`; `lock` protects the sampling state, and the
-timer and work are cancelled (timer first) before the Close sequence and the power-off in disable, suspend
-and remove.
+timer and work are cancelled (timer first) before the Close sequence and the power-off in disable and
+remove. Suspend only cancels the timer and the work: the chip stays powered and programmed, as in stock, and
+resume re-arms the timer (or runs the full start if the sensor was enabled while suspended).
 
-Differences from stock: write returns the byte count, `enable` show always prints 0; suspend stops sampling,
-closes and powers the chip off and resume restarts it; the poller uses the mode captured at start; a
+Differences from stock: write returns the byte count, `enable` show always prints 0; the poller uses the mode captured at start; a
 failed Init write aborts the start (stock carries on); a failed read drops the sample before touching state
 (stock stores garbage and drops the frame); the HRV FIFO drain is bounded to 32 reads; the read buffer is
 cleared at start; the wear state is fixed at 2; mode 15 never reports KEY 63; the working buffer is not exposed.

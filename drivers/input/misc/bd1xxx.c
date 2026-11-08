@@ -1027,12 +1027,13 @@ static int bd1xxx_suspend(struct device *dev)
 	struct bd1xxx_data *data = dev_get_drvdata(dev);
 
 	/*
-	 * Stock does nothing here and keeps polling.  Stop the timer and the
-	 * work, close the chip and cut its power; resume starts it again.
+	 * Stock keeps the chip programmed across suspend (its hrtimer just
+	 * stops).  Do the same: stop polling only, so the DC-cancel state is
+	 * not lost on every wake; resume picks up where it left.
 	 */
 	mutex_lock(&data->ctl);
 	data->suspended = true;
-	bd1xxx_stop(data);
+	bd1xxx_poll_cancel(data);
 	mutex_unlock(&data->ctl);
 
 	return 0;
@@ -1041,14 +1042,25 @@ static int bd1xxx_suspend(struct device *dev)
 static int bd1xxx_resume(struct device *dev)
 {
 	struct bd1xxx_data *data = dev_get_drvdata(dev);
+	bool resume_poll;
 	int ret = 0;
 
 	mutex_lock(&data->ctl);
 	data->suspended = false;
 	if (data->enabled && !data->removed) {
-		ret = bd1xxx_start(data);
-		if (ret)
-			data->enabled = false;
+		mutex_lock(&data->lock);
+		resume_poll = data->programmed && data->powered;
+		data->running = resume_poll;
+		mutex_unlock(&data->lock);
+		if (resume_poll) {
+			hrtimer_start(&data->timer, data->period,
+				      HRTIMER_MODE_REL);
+		} else {
+			/* enabled while suspended: start from scratch */
+			ret = bd1xxx_start(data);
+			if (ret)
+				data->enabled = false;
+		}
 	}
 	mutex_unlock(&data->ctl);
 
