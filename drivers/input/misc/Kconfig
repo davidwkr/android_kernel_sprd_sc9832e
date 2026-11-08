@@ -860,12 +860,14 @@ config INPUT_QMA6981_I2C
 	  To compile this driver as a module, choose M here.
 config SENSORS_SC7A22
 	tristate "SC7A22 accelerometer sensor device with I2C bus"
-	depends on I2C
+	depends on I2C && ADF_SPRD
 	default n
 	help
 	  Say Y here if you have an SC7A22 or SC7A20 accelerometer on an
 	  I2C bus. The driver exposes the legacy qmax981 userspace ABI used
-	  by the Spreadtrum sensor HAL.
+	  by the Spreadtrum sensor HAL, the in-chip step counter and the
+	  raise-to-wake key of the stock kernel (step_value, step_clean,
+	  hand_start, motion_state, sc7a22_input_key).
 
 	  To compile this driver as a module, choose M here.
 
