@@ -293,6 +293,8 @@
 					reg = <0x0d>;
 					linux,front = <0x3d>;
 					linux,back = <0x3c>;
+					/* not in the stock DT: selects the stock MT107 axis and thresholds */
+					och1970,variant = "mt107";
 					irq-gpio = <&gpio_controller_40280000 0x5a 0x00>;
 					rst-gpio = <&gpio_controller_40280000 0x79 0x00>;
 					status = "okay";

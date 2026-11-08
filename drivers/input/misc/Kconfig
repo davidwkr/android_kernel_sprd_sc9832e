@@ -875,9 +875,10 @@ config SENSORS_OCH1970
 	default n
 	help
 	  Say Y here if you have an OCH1970 magnetic sensor on an I2C bus.
-	  The driver reports X/Y/Z as an input device and is controlled
-	  through the "enable" and "delay" sysfs attributes of the I2C
-	  device. The sensor stays in power-down mode unless enabled.
+	  The driver registers the input device "magnetic" and reports the
+	  open/close/front/back keys configured in the device tree
+	  (interrupt driven, as the stock driver). It is controlled through
+	  the "enable" sysfs attribute of the input device and /dev/och1970.
 
 	  To compile this driver as a module, choose M here.
 config INPUT_EPL259x_I2C
