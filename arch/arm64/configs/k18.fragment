@@ -2,13 +2,14 @@
 # Merge on top of the device config. The DT lists three touch candidates, two
 # with drivers here (cst0xx_ts 0x38, hyn_ts 0x5a, sharing the reset/irq GPIOs);
 # the one that answers probes, the other fails probe and releases its GPIOs.
-# Not needed: btl_ts (no driver in tree). bd1xxx_hr (BD1820) has an
+# btl_ts (Betterlife, 0x2d) is enabled too. bd1xxx_hr (BD1820) has an
 # interface-only driver (no measurement yet). No rotary
 # encoder node (decorative crown): the parity-enabled rotary driver stays inert.
 # The panel is not known (no lcd_id) and the DT has non-CO5300 candidates, so
 # SPRD_AOD_IDLE stays off until the panel is identified.
 # watch_otg.fragment is deliberately not enabled.
 CONFIG_TOUCHSCREEN_CST0XX=y
+CONFIG_TOUCHSCREEN_BTL=y
 CONFIG_TOUCHSCREEN_CST9217=y
 # CONFIG_SPRD_AOD_IDLE is not set
 CONFIG_INPUT_SENSORS_HRS3XXX=y
