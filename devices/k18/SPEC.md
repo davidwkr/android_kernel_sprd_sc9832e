@@ -12,6 +12,9 @@ Specs derived only from the stock boot image of one unit (header and DT-table in
 | Boot image | `ANDROID!` v0, page 2048, arm64 Image 18 020 512 B (image_size 20 066 304), ramdisk 1 374 736 B, no second stage, `SPRD` DT table 137 216 B holding **1 DTB** (135 123 B, id 0x2668); os_version 8.1.0, patch 2019-11; AVB footer and `boot` hash ok |
 | Header cmdline | `console=ttyS1,115200n8 buildvariant=user` (U-Boot appends `lcd_id`, ...) |
 | DT bootargs | `earlycon=sprd_serial,0x70100000,115200n8 console=ttyS1,115200n8 loglevel=1 init=/init root=/dev/ram0 rw androidboot.hardware=sl8541e_1h10` |
+| Storage | **32 GB eMMC**: the partition list read by FDL2 gives `userdata` 25 288 MB + 4 531 MB fixed partitions = 29 819 MB (29.1 GiB, the usual user area of a 32 GB part). RPMB 4 MB (U-Boot log) |
+| RAM | **2 GB, not confirmed**: the stock DT `memory@80000000` is 2 GB (U-Boot may rewrite it; its log does not print the size), and the system `build.prop` maps a 32 GB unit to `ram.set32g.true=2GB` |
+| Reported RAM / storage | **faked by the firmware**: `ro.hsc.fake_romram=true`, `ram.set*g=8GB`, `rom.set*g=128G`; Settings and the watch UI show these, not the real sizes |
 
 Files: `stock.config` (IKCONFIG from the Image, 4263 lines, 1237 options enabled), `stock.dts` (the single DTB, `dtc -I dtb -O dts`, 5433 lines).
 
