@@ -635,13 +635,16 @@
 	};
 
 	/*
-	 * stock sc7a22_acc@18: layout 1. The stock angle 0x75 and irq-gpio
-	 * (ap_gpio 93) are not read by the 4.14 sc7a22 port (polled).
+	 * stock sc7a22_acc@18: layout 1, hand-up-ctrl 0x21. The stock angle
+	 * 0x75 and irq-gpio (ap_gpio 93) are not mapped: the 4.14 sprd display
+	 * stack has no screen state notifier, so the raise-to-wake key could
+	 * not be sent and the irq would only wake the system.
 	 */
 	sc7a22_acc@18 {
 		compatible = "sprd,sc7a22";
 		reg = <0x18>;
 		layout = <1>;
+		hand-up-ctrl = <0x21>;
 	};
 };
 
@@ -651,16 +654,24 @@
 
 	/*
 	 * stock och1970@0d (magnetic,och1970, hall sensor). The 4.14 och1970
-	 * driver reads only rst-gpio (stock ap_gpio 155); the stock irq-gpio
-	 * (ap_gpio 154) and the open / rotate thresholds and axes (open-bop
-	 * -5000, open-brp -6000, rotate-bop -1500, rotate-brp -1800, open-axis
-	 * x1, rotate-axis y2, control-axis z, control-data 0) are not read
-	 * (polled driver).
+	 * port follows the stock driver and is interrupt driven: irq-gpio
+	 * stock ap_gpio 154, rst-gpio ap_gpio 155. "open-bop" selects the
+	 * K18 generation (gen3), thresholds as strings like stock. Key codes
+	 * are the gen3 defaults (open F8, close F1, back F2, front F3).
 	 */
 	och1970@d {
 		compatible = "magnetic,och1970";
 		reg = <0x0d>;
+		irq-gpio = <&ap_gpio 154 GPIO_ACTIVE_HIGH>;
 		rst-gpio = <&ap_gpio 155 GPIO_ACTIVE_HIGH>;
+		open-bop = "-5000";
+		open-brp = "-6000";
+		rotate-bop = "-1500";
+		rotate-brp = "-1800";
+		open-axis = "x1";
+		rotate-axis = "y2";
+		control-axis = "z";
+		control-data = <0>;
 	};
 
 	/* heart rate, stock hrs3xxx@44, power-gpio ap_gpio 55 */
@@ -727,7 +738,25 @@
 		vddsdcore-supply = <&vddsdcore>;
 	};
 
-	/* TODO not mapped: stock bl_ts@2d (btl,btl_ts, BetterLife), no 4.14 driver. */
+	/*
+	 * stock bl_ts@2d (btl,btl_ts, Betterlife BL6133/BL6138): gpios =
+	 * <ap_gpio 145 (reset)>, <ap_gpio 144 (irq)> in this order, vdd_name
+	 * "vddsdcore", TP_MAX_X 0x1e0 (480), TP_MAX_Y 0x1e0 (480). "virtualkeys" is
+	 * not read by the 4.14 btl_ts port. It shares reset and irq with the
+	 * other touch nodes and is placed after them; it identifies the chip in
+	 * probe and fails with -ENODEV (or -EBUSY while another touch driver
+	 * holds the gpios) on a unit with another controller.
+	 */
+	bl_ts@2d {
+		compatible = "btl,btl_ts";
+		reg = <0x2d>;
+		gpios = <&ap_gpio 145 GPIO_ACTIVE_HIGH>,
+			<&ap_gpio 144 GPIO_ACTIVE_HIGH>;
+		vdd_name = "vddsdcore";
+		vddsdcore-supply = <&vddsdcore>;
+		TP_MAX_X = <480>;
+		TP_MAX_Y = <480>;
+	};
 };
 
 /*

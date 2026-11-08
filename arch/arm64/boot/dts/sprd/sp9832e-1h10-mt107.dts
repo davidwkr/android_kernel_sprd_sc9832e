@@ -618,17 +618,21 @@
 	clock-frequency = <100000>;
 
 	/*
-	 * stock och1970@0d (magnetic,och1970, hall sensor). The 4.14 och1970
-	 * driver reads only rst-gpio (stock ap_gpio 121); the stock irq-gpio
-	 * (ap_gpio 90) and linux,front 0x3d / linux,back 0x3c are not read
-	 * (polled driver). Stock ap_gpio 90 is also the power-gpio of
-	 * bd1xxx_hr@38 (no 4.14 driver, not mapped), so the two are
-	 * alternatives on this pin.
+	 * stock och1970@0d (magnetic,och1970, hall sensor), interrupt driven
+	 * in the 4.14 port: irq-gpio stock ap_gpio 90, rst-gpio ap_gpio 121,
+	 * linux,front 0x3d / linux,back 0x3c. Stock ap_gpio 90 is also the
+	 * power-gpio of bd1xxx_hr@38 (no 4.14 driver, not mapped), so the
+	 * two are alternatives on this pin. "och1970,variant" is not in the
+	 * stock DT: it selects the stock MT107 axis and thresholds (gen1).
 	 */
 	och1970@d {
 		compatible = "magnetic,och1970";
 		reg = <0x0d>;
+		irq-gpio = <&ap_gpio 90 GPIO_ACTIVE_HIGH>;
 		rst-gpio = <&ap_gpio 121 GPIO_ACTIVE_HIGH>;
+		linux,front = <0x3d>;
+		linux,back = <0x3c>;
+		och1970,variant = "mt107";
 	};
 
 	/*
@@ -707,7 +711,25 @@
 		vddsdcore-supply = <&vddsdcore>;
 	};
 
-	/* TODO not mapped: stock bl_ts@2d (btl,btl_ts, BetterLife), no 4.14 driver. */
+	/*
+	 * stock bl_ts@2d (btl,btl_ts, Betterlife BL6133/BL6138): gpios =
+	 * <ap_gpio 145 (reset)>, <ap_gpio 144 (irq)> in this order, vdd_name
+	 * "vddsdcore", TP_MAX_X 0x19c (412), TP_MAX_Y 0x1f6 (502). "virtualkeys" is
+	 * not read by the 4.14 btl_ts port. It shares reset and irq with the
+	 * other touch nodes and is placed after them; it identifies the chip in
+	 * probe and fails with -ENODEV (or -EBUSY while another touch driver
+	 * holds the gpios) on a unit with another controller.
+	 */
+	bl_ts@2d {
+		compatible = "btl,btl_ts";
+		reg = <0x2d>;
+		gpios = <&ap_gpio 145 GPIO_ACTIVE_HIGH>,
+			<&ap_gpio 144 GPIO_ACTIVE_HIGH>;
+		vdd_name = "vddsdcore";
+		vddsdcore-supply = <&vddsdcore>;
+		TP_MAX_X = <412>;
+		TP_MAX_Y = <502>;
+	};
 };
 
 /*

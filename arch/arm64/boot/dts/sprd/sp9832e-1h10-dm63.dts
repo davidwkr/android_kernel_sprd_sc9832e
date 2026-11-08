@@ -674,7 +674,25 @@
 		status = "disabled";
 	};
 
-	/* TODO not mapped: stock bl_ts@2d (btl,btl_ts), no driver, unbound. */
+	/*
+	 * stock bl_ts@2d (btl,btl_ts, Betterlife BL6133/BL6138): gpios =
+	 * <ap_gpio 145 (reset)>, <ap_gpio 144 (irq)> in this order, vdd_name
+	 * "vddsdcore", TP_MAX_X 0x19c (412), TP_MAX_Y 0x1f6 (502). "virtualkeys" is
+	 * not read by the 4.14 btl_ts port. It shares reset and irq with the
+	 * other touch nodes and is placed after them; it identifies the chip in
+	 * probe and fails with -ENODEV (or -EBUSY while another touch driver
+	 * holds the gpios) on a unit with another controller.
+	 */
+	bl_ts@2d {
+		compatible = "btl,btl_ts";
+		reg = <0x2d>;
+		gpios = <&ap_gpio 145 GPIO_ACTIVE_HIGH>,
+			<&ap_gpio 144 GPIO_ACTIVE_HIGH>;
+		vdd_name = "vddsdcore";
+		vddsdcore-supply = <&vddsdcore>;
+		TP_MAX_X = <412>;
+		TP_MAX_Y = <502>;
+	};
 };
 
 /*
