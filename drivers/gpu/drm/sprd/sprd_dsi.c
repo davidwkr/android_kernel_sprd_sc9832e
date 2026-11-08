@@ -166,6 +166,11 @@ static void sprd_dsi_encoder_disable(struct drm_encoder *encoder)
 	if (!dsi->ctx.is_inited) {
 		mutex_unlock(&dsi_lock);
 		DRM_ERROR("dsi isn't inited\n");
+		/*
+		 * Already down (e.g. ESD recovery disabled it silently): the
+		 * screen is still going off, so report it.
+		 */
+		sprd_panel_notify(SPRD_PANEL_EVENT_OFF);
 		return;
 	}
 
