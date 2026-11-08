@@ -233,15 +233,11 @@ The stock misc device is named `sc7a22` with an ioctl that returns 0 (`sc7a22_un
   port yet (see the lcd and DM63 DTS notes); an AOD port that only toggles the panel idle mode
   and leaves the encoder enabled keeps these semantics and needs no notifier call. If AOD is
   ever implemented by disabling the encoder, it will report "off" and raise-to-wake will fire.
-- Initial `screen_on` is true as in stock; at registration the driver reads
-  `sprd_panel_screen_is_on()`.
-- Because the key now works, the DTS can map `irq-gpio` and `angle` together with the existing
-  `hand-up-ctrl` (not done in this change; the DTS is untouched and untested on a device).
-- Touch drivers: in 4.4 the sprd `hynitron_ts` has no ADF / fb blank hook, and the stock
-  `cst0xx` / `btl` drivers have no source here (they are only in the stock images; whether
-  the binaries registered an ADF client was not checked). The 4.14 `btl_ts.c`, `cst0xx_ts.c`
-  and `hynitron_cst9217.c` use only system sleep PM ops (late suspend / resume) and never put
-  the controller to sleep on blank, which is what the stock cst0xx did for AOD double tap.
-  Nothing is missing that this notifier would feed; left unchanged.
+- Initial `screen_on` is true as in stock; registration delivers the current screen state to
+  the callback, in order with later events.
+- The 1h10 DTS map `irq-gpio` (ap_gpio 90 on DM63, 93 elsewhere) and `angle` 0x75 (DM82, K18,
+  MT108) together with `hand-up-ctrl`; untested on a device.
+- Touch drivers (`btl_ts`, `cst0xx_ts`, `hynitron_cst9217`) also follow this notifier: they put
+  the controller to sleep when the screen is off. See `devices/TOUCH_WAKE.md`.
 - Step counter, sysfs ABI and `/dev/qmax981` do not depend on the screen state.
 
