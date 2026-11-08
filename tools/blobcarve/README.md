@@ -19,7 +19,7 @@ Per-device usage (same command, only the image changes; the function set and
 all addresses are derived per image; `--out` must be a fresh directory per
 image):
 
-    # DM63 stock boot.img
+    # DM63 stock boot.img (sfd_tool/dm63/boot.img; sfd_tool/boot.img is K18)
     python3 -I tools/blobcarve/blobcarve.py --boot-img <DM63>/boot.img \
         --out /tmp/blob-dm63 --cross /usr/bin/aarch64-linux-gnu-
     # DW100U stock boot.img
@@ -137,20 +137,23 @@ helpers), 10 undefined symbols, 8 folded pointer slots, 6 jump tables:
 
 | image | round trip | layout independence |
 |-------|-----------|---------------------|
-| DM63 stock boot.img | byte-identical | pass |
+| DM63 stock boot.img (`sfd_tool/dm63/boot.img`) | byte-identical | pass |
+| K18 stock boot.img (`sfd_tool/boot.img`) | byte-identical | pass |
 | DW100U stock boot.img (and a second DW100U image) | byte-identical | pass |
 | MT107 stock boot image (and its extracted kernel Image) | byte-identical | pass |
 
-Diff findings (see `--diff-with`): the algorithm (`tyhx_*`, `hr_sqrt`,
-`spo2_sort_*`) is instruction-identical on all three. MT107 equals DM63 in the
+Diff findings (see `--diff-with`; redone against the real DM63 image
+`sfd_tool/dm63/boot.img`, with DW100U silver, the older DW100U image, MT107 and
+K18 as the other side): the algorithm (`tyhx_*`, `hr_sqrt`,
+`spo2_sort_*`) is instruction-identical on all of them. MT107 and K18 each equal DM63 in the
 hardware layer apart from one constant in `hx3918_spo2_read`. DW100U differs
 from both in five layer functions (logic: `read_data_packet`,
 `hx3918_hrs_ppg_Int_handle`, `hx3918_spo2_check_unwear`,
 `hx3918_spo2_check_wear`, `hx3918_spo2_read`) plus a few tuning constants and
 data tables. The undefined symbol set and the vendor struct field offsets used
 by the layer (+0x00 and +0x130..+0x14c through the `hrs3xxx_t` pointer) are the
-same on all three, so one kernel-side shim fits all, with the blob taken from
-the matching image.
+same on all of them, so one kernel-side shim fits all, with the blob taken from
+the matching image. The two DW100U images give the same diff against DM63.
 
 ## HRS3300 profile (`--profile hrs3300`)
 

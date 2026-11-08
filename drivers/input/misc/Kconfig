@@ -951,22 +951,41 @@ config HEARTRATE_HRS3300
 	depends on INPUT_SENSORS_HRS3XXX
 	default y
 	help
-	  Accept the HRS3300 (chip ID 0x21) as a supported device. Only
-	  probing, power and the sysfs/input interface are provided; no
-	  measurement is implemented for this chip.
+	  Accept the HRS3300 (chip ID 0x21) as a supported device. Probing,
+	  power and the sysfs/input interface are provided; a measurement
+	  needs HRS3XXX_TYHX_BLOB with the HRS3300 variant.
 
 config HRS3XXX_TYHX_BLOB
-	bool "Use the stock TYHX HX3918 measurement code (external object)"
+	bool "Use the stock TYHX measurement code (external object)"
 	depends on INPUT_SENSORS_HRS3XXX
 	help
-	  Link the stock vendor HX3918 hardware layer and HR/SpO2 algorithm
-	  into the hrs3xxx driver and run measurements with it. The code is
-	  not part of this tree: it must be generated from the device's own
-	  stock boot.img with tools/blobcarve (see
-	  devices/HRS3XXX_INTERFACE.md) and its assembly file named by
+	  Link the stock vendor hardware layer and HR/SpO2 algorithm of one
+	  chip (see the variant choice below) into the hrs3xxx driver and
+	  run measurements with it. The code is not part of this tree: it
+	  must be generated from the device's own stock boot.img with
+	  tools/blobcarve (see devices/HRS3XXX_INTERFACE.md and
+	  devices/HRS3300_BLOB.md) and its assembly file named by
 	  HRS3XXX_TYHX_BLOB_S. The build fails if the file is missing.
 	  If unsure, say N: the driver then only provides probe, power and
 	  the userspace ABI.
+
+choice
+	prompt "Stock measurement code variant"
+	depends on HRS3XXX_TYHX_BLOB
+	default HRS3XXX_TYHX_BLOB_HX3918
+	help
+	  The blob is specific to one chip and to one board's stock image:
+	  a kernel links exactly one. At probe the blob is used only if the
+	  chip ID read from the sensor is the one of this variant; for any
+	  other supported chip the driver logs it and stays ID-only.
+
+config HRS3XXX_TYHX_BLOB_HX3918
+	bool "HX3918 (chip ID 0x27), blobcarve profile hx3918"
+
+config HRS3XXX_TYHX_BLOB_HRS3300
+	bool "HRS3300 (chip ID 0x21), blobcarve profile hrs3300"
+
+endchoice
 
 config HRS3XXX_TYHX_BLOB_S
 	string "Absolute path of the generated hrsblob.S"
@@ -974,7 +993,7 @@ config HRS3XXX_TYHX_BLOB_S
 	default ""
 	help
 	  Absolute path, outside the source tree, of the hrsblob.S written
-	  by tools/blobcarve. Can be overridden on the make command line
+	  by tools/blobcarve (with the profile of the variant chosen above). Can be overridden on the make command line
 	  with HRS3XXX_TYHX_BLOB_S=/path/hrsblob.S.
 
 config INPUT_SENSORS_BD1XXX

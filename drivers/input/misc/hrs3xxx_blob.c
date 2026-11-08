@@ -1,15 +1,24 @@
 /*
- * hrs3xxx: shim around the stock TYHX HX3918 hardware layer and HR/SpO2
- * algorithm (external object, not in this tree).
+ * hrs3xxx: shim around the stock TYHX measurement code (external object, not
+ * in this tree): the HX3918 hardware layer and HR/SpO2 algorithm (chip ID
+ * 0x27), or the HRS3300 layer and algorithm (chip ID 0x21).
  *
  * The stock code expects a vendor "hrs3xxx_t" with the i2c client at offset 0
- * and its results at fixed offsets; it also calls back into three register
- * accessors and two timer switches that the stock glue provided. This file
- * provides exactly those, with the stock semantics, on top of our own
- * hrtimers and work items. The vendor code never sees a kernel hrtimer,
+ * and its results at fixed offsets; it also calls back into register
+ * accessors (HX3918: and two timer switches) that the stock glue provided.
+ * This file provides exactly those, with the stock semantics, on top of our
+ * own hrtimers and work items. The vendor code never sees a kernel hrtimer,
  * work_struct or mutex layout.
  *
- * Evidence for every offset and semantic below: devices/HRS3XXX_INTERFACE.md.
+ * One kernel links one blob, chosen at build time (Kconfig choice
+ * HRS3XXX_TYHX_BLOB_HX3918 / _HRS3300). A per-chip ops table, looked up by the
+ * chip ID, holds the five or four vendor calls that differ; the lock, the
+ * live/suspended handling and the register accessors are common. A chip whose
+ * ID the linked blob does not serve gets no ops: the core driver then keeps
+ * working ID-only.
+ *
+ * Evidence for every offset and semantic below: devices/HRS3XXX_INTERFACE.md
+ * (HX3918) and devices/HRS3300_BLOB.md (HRS3300).
  *
  * All calls into the vendor code are serialised by hrsb->lock: it has global
  * state and a global pointer to the vendor struct.
@@ -29,11 +38,7 @@
 
 #include "hrs3xxx_blob.h"
 
-#define HRSB_PERIOD_MS		40	/* stock: both timers, 0x2625a00 ns */
-
-#define HRSB_INIT_MODE_HRS	0	/* stock: enable 1 and unknown values */
-#define HRSB_INIT_MODE_SPO2	1	/* stock: enable 2 */
-#define HRSB_INIT_MODE_FACTORY	6	/* stock: enable 3 */
+#define HRSB_PERIOD_MS		40	/* stock: every timer, 0x2625a00 ns */
 
 /*
  * The only fields of the stock struct the vendor code touches. Results are
@@ -55,12 +60,15 @@ struct hrsb_vendor {
 	s32 rel_z;				/* +0x14c */
 };
 
+struct hrsb_ops;
+
 struct hrsb {
 	struct hrsb_vendor v;
 	struct input_dev *input;
 	struct mutex lock;		/* serialises all vendor code */
+	const struct hrsb_ops *ops;
 	struct hrtimer ppg_timer;	/* -> ppg_work: measurement */
-	struct hrtimer agc_timer;	/* -> agc_work */
+	struct hrtimer agc_timer;	/* -> agc_work; only if ops->agc_tick */
 	struct work_struct ppg_work;
 	struct work_struct agc_work;
 	atomic_t ppg_run;		/* timer re-arms itself while set */
@@ -71,12 +79,25 @@ struct hrsb {
 	bool agc_was_on;
 };
 
-/* Vendor code (carved object). */
+/*
+ * Per-chip back end. Every method runs with b->lock held and, for start, with
+ * the chip powered and the previous run (if any) stopped.
+ */
+struct hrsb_ops {
+	const char *name;
+	u8 chip_id;
+	/* Initialises the chip and algorithm and arms the timers it needs. */
+	void (*start)(struct hrsb *b, unsigned int mode);
+	/* Stock exit: puts the chip in its disabled state. */
+	void (*stop)(struct hrsb *b);
+	/* One 40 ms measurement tick (ppg_work), including the reporting. */
+	void (*ppg_tick)(struct hrsb *b);
+	/* Second timer's work; NULL when the chip has no separate AGC tick. */
+	void (*agc_tick)(struct hrsb *b);
+};
+
+/* Vendor code (carved object); both blobs export the global pointer. */
 extern struct hrsb_vendor *hrsblob_hrs3xxx_t;	/* its global vendor pointer */
-extern int hx3918_init(struct hrsb_vendor *hrs, int mode);
-extern void hx3918_exit(struct hrsb_vendor *hrs);
-extern void heart_rate_meas_timeout_handler(struct hrsb_vendor *hrs);
-extern void agc_timeout_handler(struct hrsb_vendor *hrs);
 
 /* Offsets must match the stock layout the vendor code was built against. */
 static inline void hrsb_check_layout(void)
@@ -98,8 +119,6 @@ static inline void hrsb_check_layout(void)
 u8 hrs3xxx_i2c_read(struct i2c_client *client, u8 reg, u8 *buf, u8 len);
 u8 hrs3xxx_read_reg(struct i2c_client *client, u8 reg);
 u8 hrs3xxx_write_reg(struct i2c_client *client, u8 reg, u8 val);
-void hx3918_ppg_timer_cfg(u8 on);
-void hx3918_agc_timer_cfg(u8 on);
 
 /* The vendor code is global-state: one instance only. */
 static struct hrsb *hrsb_inst;
@@ -160,53 +179,21 @@ u8 hrs3xxx_write_reg(struct i2c_client *client, u8 reg, u8 val)
 }
 
 /*
- * Stock: on != 0 restarts the hrtimer with a 40 ms relative expiry, 0
- * cancels it. The timer callback re-arms every 40 ms while the switch is on.
- * Called by the vendor code with hrsb->lock held; hrtimer_cancel() only waits
- * for the callback, which never takes the lock.
+ * Restart (on) or cancel (!on) one of the 40 ms timers: the stock timer switch.
+ * The timer callback re-arms every 40 ms while the run flag is set. Callers
+ * hold b->lock; hrtimer_cancel() only waits for the callback, which never
+ * takes the lock.
  */
-void hx3918_ppg_timer_cfg(u8 on)
+static void hrsb_timer_cfg(struct hrsb *b, struct hrtimer *t, atomic_t *run,
+			   u8 on)
 {
-	struct hrsb *b = hrsb_inst;
-
-	if (!b)
-		return;
 	lockdep_assert_held(&b->lock);
 
-	hrtimer_cancel(&b->ppg_timer);
-	atomic_set(&b->ppg_run, !!on);
+	hrtimer_cancel(t);
+	atomic_set(run, !!on);
 	if (on)
-		hrtimer_start(&b->ppg_timer, ms_to_ktime(HRSB_PERIOD_MS),
-			      HRTIMER_MODE_REL);
+		hrtimer_start(t, ms_to_ktime(HRSB_PERIOD_MS), HRTIMER_MODE_REL);
 }
-
-void hx3918_agc_timer_cfg(u8 on)
-{
-	struct hrsb *b = hrsb_inst;
-
-	if (!b)
-		return;
-	lockdep_assert_held(&b->lock);
-
-	hrtimer_cancel(&b->agc_timer);
-	atomic_set(&b->agc_run, !!on);
-	if (on)
-		hrtimer_start(&b->agc_timer, ms_to_ktime(HRSB_PERIOD_MS),
-			      HRTIMER_MODE_REL);
-}
-
-#ifndef CONFIG_CC_STACKPROTECTOR
-/*
- * The vendor object is built with -fstack-protector; the kernel only
- * provides __stack_chk_fail() when it is built with it too
- * (__stack_chk_guard is always defined on arm64).
- */
-void __stack_chk_fail(void)
-{
-	panic("stack-protector: corrupted stack in hrs3xxx vendor code: %p\n",
-	      __builtin_return_address(0));
-}
-#endif
 
 /* ---- timers and works -------------------------------------------------- */
 
@@ -232,8 +219,94 @@ static enum hrtimer_restart hrsb_agc_timer_fn(struct hrtimer *t)
 	return HRTIMER_RESTART;
 }
 
+static void hrsb_ppg_work(struct work_struct *work)
+{
+	struct hrsb *b = container_of(work, struct hrsb, ppg_work);
+
+	mutex_lock(&b->lock);
+	if (b->live && b->v.enabled && !b->suspended) {
+		hrsblob_hrs3xxx_t = &b->v;
+		b->ops->ppg_tick(b);
+	}
+	mutex_unlock(&b->lock);
+}
+
+static void hrsb_agc_work(struct work_struct *work)
+{
+	struct hrsb *b = container_of(work, struct hrsb, agc_work);
+
+	mutex_lock(&b->lock);
+	if (b->live && b->v.enabled && !b->suspended) {
+		hrsblob_hrs3xxx_t = &b->v;
+		b->ops->agc_tick(b);
+	}
+	mutex_unlock(&b->lock);
+}
+
+/*
+ * Timers first, then works: a timer cannot queue a work that was cancelled.
+ * The AGC timer and work exist (are initialised) only for chips with an
+ * agc_tick.
+ */
+static void hrsb_quiesce(struct hrsb *b)
+{
+	atomic_set(&b->ppg_run, 0);
+	hrtimer_cancel(&b->ppg_timer);
+	if (b->ops->agc_tick) {
+		atomic_set(&b->agc_run, 0);
+		hrtimer_cancel(&b->agc_timer);
+	}
+	cancel_work_sync(&b->ppg_work);
+	if (b->ops->agc_tick)
+		cancel_work_sync(&b->agc_work);
+}
+
+/* ---- HX3918 back end (chip ID 0x27) ------------------------------------ */
+
+#ifdef CONFIG_HRS3XXX_TYHX_BLOB_HX3918
+
+extern int hx3918_init(struct hrsb_vendor *hrs, int mode);
+extern void hx3918_exit(struct hrsb_vendor *hrs);
+extern void heart_rate_meas_timeout_handler(struct hrsb_vendor *hrs);
+extern void agc_timeout_handler(struct hrsb_vendor *hrs);
+
+/* Provided here for the vendor code (declared for -Wmissing-prototypes). */
+void hx3918_ppg_timer_cfg(u8 on);
+void hx3918_agc_timer_cfg(u8 on);
+
+/* Stock: on != 0 restarts the timer with a 40 ms relative expiry, 0 cancels. */
+void hx3918_ppg_timer_cfg(u8 on)
+{
+	struct hrsb *b = hrsb_inst;
+
+	if (b)
+		hrsb_timer_cfg(b, &b->ppg_timer, &b->ppg_run, on);
+}
+
+void hx3918_agc_timer_cfg(u8 on)
+{
+	struct hrsb *b = hrsb_inst;
+
+	if (b)
+		hrsb_timer_cfg(b, &b->agc_timer, &b->agc_run, on);
+}
+
+#ifndef CONFIG_CC_STACKPROTECTOR
+/*
+ * The vendor object is built with -fstack-protector; the kernel only
+ * provides __stack_chk_fail() when it is built with it too
+ * (__stack_chk_guard is always defined on arm64).
+ */
+void __stack_chk_fail(void);
+void __stack_chk_fail(void)
+{
+	panic("stack-protector: corrupted stack in hrs3xxx vendor code: %p\n",
+	      __builtin_return_address(0));
+}
+#endif
+
 /* Same events and order as the stock work function (all eight REL codes). */
-static void hrsb_report(struct hrsb *b)
+static void hrsb_report_hx3918(struct hrsb *b)
 {
 	struct input_dev *input = b->input;
 
@@ -248,50 +321,175 @@ static void hrsb_report(struct hrsb *b)
 	input_sync(input);
 }
 
-static void hrsb_ppg_work(struct work_struct *work)
-{
-	struct hrsb *b = container_of(work, struct hrsb, ppg_work);
+#define HRSB_INIT_MODE_HRS	0	/* stock: enable 1 and unknown values */
+#define HRSB_INIT_MODE_SPO2	1	/* stock: enable 2 */
+#define HRSB_INIT_MODE_FACTORY	6	/* stock: enable 3 */
 
-	mutex_lock(&b->lock);
-	if (b->live && b->v.enabled && !b->suspended) {
-		hrsblob_hrs3xxx_t = &b->v;
-		heart_rate_meas_timeout_handler(&b->v);
-		hrsb_report(b);
+static void hrsb_hx3918_start(struct hrsb *b, unsigned int mode)
+{
+	int bmode;
+
+	switch (mode) {
+	case 2:
+		bmode = HRSB_INIT_MODE_SPO2;
+		break;
+	case 3:
+		bmode = HRSB_INIT_MODE_FACTORY;
+		break;
+	default:
+		bmode = HRSB_INIT_MODE_HRS;
+		break;
 	}
-	mutex_unlock(&b->lock);
+
+	/*
+	 * The stock return value is not uniform (0 = success for the
+	 * measurement modes, non-zero for the factory mode) and stock ignores
+	 * it; so do we. hx3918_init() arms the timers through the *_timer_cfg
+	 * switches above.
+	 */
+	hx3918_init(&b->v, bmode);
 }
 
-static void hrsb_agc_work(struct work_struct *work)
+static void hrsb_hx3918_stop(struct hrsb *b)
 {
-	struct hrsb *b = container_of(work, struct hrsb, agc_work);
-
-	mutex_lock(&b->lock);
-	if (b->live && b->v.enabled && !b->suspended) {
-		hrsblob_hrs3xxx_t = &b->v;
-		agc_timeout_handler(&b->v);
-	}
-	mutex_unlock(&b->lock);
+	/* Also puts the chip in standby and switches both timers off. */
+	hx3918_exit(&b->v);
 }
 
-/* Timers first, then works: a timer cannot queue a work that was cancelled. */
-static void hrsb_quiesce(struct hrsb *b)
+static void hrsb_hx3918_ppg_tick(struct hrsb *b)
 {
-	atomic_set(&b->ppg_run, 0);
-	atomic_set(&b->agc_run, 0);
-	hrtimer_cancel(&b->ppg_timer);
-	hrtimer_cancel(&b->agc_timer);
-	cancel_work_sync(&b->ppg_work);
-	cancel_work_sync(&b->agc_work);
+	heart_rate_meas_timeout_handler(&b->v);
+	hrsb_report_hx3918(b);	/* stock reports after every tick */
+}
+
+static void hrsb_hx3918_agc_tick(struct hrsb *b)
+{
+	agc_timeout_handler(&b->v);
+}
+
+static const struct hrsb_ops hrsb_ops_hx3918 = {
+	.name = "hx3918",
+	.chip_id = HRS3XXX_ID_HRS3918,
+	.start = hrsb_hx3918_start,
+	.stop = hrsb_hx3918_stop,
+	.ppg_tick = hrsb_hx3918_ppg_tick,
+	.agc_tick = hrsb_hx3918_agc_tick,
+};
+
+#endif /* CONFIG_HRS3XXX_TYHX_BLOB_HX3918 */
+
+/* ---- HRS3300 back end (chip ID 0x21) ----------------------------------- */
+
+#ifdef CONFIG_HRS3XXX_TYHX_BLOB_HRS3300
+
+extern void Hrs3300_chip_init(struct hrsb_vendor *hrs);	/* sets the global */
+extern void Hrs3300_chip_enable(void);
+extern void Hrs3300_alg_open(void);
+extern void Hrs3300_chip_disable(void);
+extern u8 hrs3300_Int_handle(struct hrsb_vendor *hrs);
+
+/*
+ * Stock init_heartrate() for enable > 0 (the mode is ignored: every positive
+ * value behaves alike): chip_init, chip_enable, alg_open, start the single
+ * 40 ms timer. The caller sets "enabled" afterwards, still under the lock, as
+ * stock sets it after the timer start; the first tick is 40 ms away and takes
+ * the lock anyway. No AGC timer: the AGC runs inside Hrs3300_alg_send_data.
+ */
+static void hrsb_hrs3300_start(struct hrsb *b, unsigned int mode)
+{
+	Hrs3300_chip_init(&b->v);
+	Hrs3300_chip_enable();
+	Hrs3300_alg_open();
+	hrsb_timer_cfg(b, &b->ppg_timer, &b->ppg_run, 1);
+}
+
+/*
+ * Stock disable: Hrs3300_chip_disable() (writes the chip to its disabled
+ * state). The stock 320 ms sleep before it is not reproduced: see
+ * devices/HRS3300_BLOB.md.
+ */
+static void hrsb_hrs3300_stop(struct hrsb *b)
+{
+	Hrs3300_chip_disable();
+}
+
+/*
+ * Stock work function: report REL_X/Y/Z and SYN only when Int_handle wrote new
+ * results (non-zero return). The other five REL codes are never sent.
+ */
+static void hrsb_hrs3300_ppg_tick(struct hrsb *b)
+{
+	struct input_dev *input = b->input;
+
+	if (!hrs3300_Int_handle(&b->v))
+		return;
+
+	input_report_rel(input, REL_X, b->v.rel_x);		/* heart rate */
+	input_report_rel(input, REL_Y, b->v.rel_y);		/* systolic est. */
+	input_report_rel(input, REL_Z, b->v.rel_z);		/* diastolic est. */
+	input_sync(input);
+}
+
+static const struct hrsb_ops hrsb_ops_hrs3300 = {
+	.name = "hrs3300",
+	.chip_id = HRS3XXX_ID_HRS3300,
+	.start = hrsb_hrs3300_start,
+	.stop = hrsb_hrs3300_stop,
+	.ppg_tick = hrsb_hrs3300_ppg_tick,
+	.agc_tick = NULL,
+};
+
+#endif /* CONFIG_HRS3XXX_TYHX_BLOB_HRS3300 */
+
+/* ---- ops selection by chip ID ------------------------------------------ */
+
+#if !defined(CONFIG_HRS3XXX_TYHX_BLOB_HX3918) && \
+	!defined(CONFIG_HRS3XXX_TYHX_BLOB_HRS3300)
+#error "HRS3XXX_TYHX_BLOB needs a variant (HRS3XXX_TYHX_BLOB_HX3918 or _HRS3300)"
+#endif
+
+/* Only the linked variant: the other one's vendor symbols do not exist. */
+static const struct hrsb_ops *const hrsb_ops_tbl[] = {
+#ifdef CONFIG_HRS3XXX_TYHX_BLOB_HX3918
+	&hrsb_ops_hx3918,
+#endif
+#ifdef CONFIG_HRS3XXX_TYHX_BLOB_HRS3300
+	&hrsb_ops_hrs3300,
+#endif
+};
+
+static const struct hrsb_ops *hrsb_find_ops(u8 chip_id)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(hrsb_ops_tbl); i++)
+		if (hrsb_ops_tbl[i]->chip_id == chip_id)
+			return hrsb_ops_tbl[i];
+	return NULL;
+}
+
+bool hrsb_chip_matches(u8 chip_id)
+{
+	return hrsb_find_ops(chip_id) != NULL;
+}
+
+const char *hrsb_variant_name(void)
+{
+	return hrsb_ops_tbl[0]->name;
 }
 
 /* ---- API used by the core driver -------------------------------------- */
 
-struct hrsb *hrsb_create(struct i2c_client *client, struct input_dev *input)
+struct hrsb *hrsb_create(struct i2c_client *client, struct input_dev *input,
+			 u8 chip_id)
 {
+	const struct hrsb_ops *ops = hrsb_find_ops(chip_id);
 	struct hrsb *b;
 
 	hrsb_check_layout();
 
+	if (!ops)
+		return ERR_PTR(-ENODEV);	/* blob is for another chip */
 	if (hrsb_inst)
 		return ERR_PTR(-EBUSY);	/* the vendor code is global-state */
 
@@ -299,15 +497,18 @@ struct hrsb *hrsb_create(struct i2c_client *client, struct input_dev *input)
 	if (!b)
 		return ERR_PTR(-ENOMEM);
 
+	b->ops = ops;
 	b->v.client = client;
 	b->input = input;
 	mutex_init(&b->lock);
 	hrtimer_init(&b->ppg_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	b->ppg_timer.function = hrsb_ppg_timer_fn;
-	hrtimer_init(&b->agc_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	b->agc_timer.function = hrsb_agc_timer_fn;
 	INIT_WORK(&b->ppg_work, hrsb_ppg_work);
-	INIT_WORK(&b->agc_work, hrsb_agc_work);
+	if (ops->agc_tick) {
+		hrtimer_init(&b->agc_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+		b->agc_timer.function = hrsb_agc_timer_fn;
+		INIT_WORK(&b->agc_work, hrsb_agc_work);
+	}
 
 	hrsb_inst = b;
 	return b;
@@ -345,20 +546,6 @@ bool hrsb_running(struct hrsb *b)
 /* The caller has powered the chip (stock: GPIO high, 100 ms) beforehand. */
 int hrsb_start(struct hrsb *b, unsigned int mode)
 {
-	int bmode;
-
-	switch (mode) {
-	case 2:
-		bmode = HRSB_INIT_MODE_SPO2;
-		break;
-	case 3:
-		bmode = HRSB_INIT_MODE_FACTORY;
-		break;
-	default:
-		bmode = HRSB_INIT_MODE_HRS;
-		break;
-	}
-
 	/* Restart cleanly if already running. */
 	hrsb_quiesce(b);
 
@@ -369,10 +556,14 @@ int hrsb_start(struct hrsb *b, unsigned int mode)
 	}
 	b->suspended = false;	/* a fresh start supersedes a suspend */
 
+	/*
+	 * Needed by the HX3918 code before every call; the HRS3300 code sets
+	 * the same value itself in Hrs3300_chip_init().
+	 */
 	hrsblob_hrs3xxx_t = &b->v;
 	if (b->v.enabled) {
 		b->v.enabled = 0;
-		hx3918_exit(&b->v);
+		b->ops->stop(b);
 	}
 	b->v.rel_x = 0;
 	b->v.rel_rx = 0;
@@ -383,12 +574,7 @@ int hrsb_start(struct hrsb *b, unsigned int mode)
 	b->v.rel_hwheel = 0;
 	b->v.rel_misc = 0;
 
-	/*
-	 * The stock return value is not uniform (0 = success for the
-	 * measurement modes, non-zero for the factory mode) and stock ignores
-	 * it; so do we.
-	 */
-	hx3918_init(&b->v, bmode);
+	b->ops->start(b, mode);
 	b->v.enabled = 1;
 	mutex_unlock(&b->lock);
 
@@ -417,18 +603,10 @@ void hrsb_resume(struct hrsb *b)
 	if (b->suspended) {
 		b->suspended = false;
 		if (b->live && b->v.enabled) {
-			if (b->ppg_was_on) {
-				atomic_set(&b->ppg_run, 1);
-				hrtimer_start(&b->ppg_timer,
-					      ms_to_ktime(HRSB_PERIOD_MS),
-					      HRTIMER_MODE_REL);
-			}
-			if (b->agc_was_on) {
-				atomic_set(&b->agc_run, 1);
-				hrtimer_start(&b->agc_timer,
-					      ms_to_ktime(HRSB_PERIOD_MS),
-					      HRTIMER_MODE_REL);
-			}
+			if (b->ppg_was_on)
+				hrsb_timer_cfg(b, &b->ppg_timer, &b->ppg_run, 1);
+			if (b->agc_was_on)
+				hrsb_timer_cfg(b, &b->agc_timer, &b->agc_run, 1);
 		}
 		b->ppg_was_on = false;
 		b->agc_was_on = false;
@@ -447,10 +625,10 @@ void hrsb_stop(struct hrsb *b)
 	if (b->v.enabled) {
 		b->v.enabled = 0;
 		hrsblob_hrs3xxx_t = &b->v;
-		hx3918_exit(&b->v);
+		b->ops->stop(b);
 	}
 	mutex_unlock(&b->lock);
 
-	/* hx3918_exit() switches both timers off; make sure nothing is left. */
+	/* The stock exit may switch timers off itself; make sure nothing is left. */
 	hrsb_quiesce(b);
 }
