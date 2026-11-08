@@ -162,7 +162,7 @@ Same as the MT107 table except:
 
 | Compatible | Driver in tree | Status |
 |---|---|---|
-| `heartrate,bd1xxx` | none (stock `INPUT_SENSORS_BD1XXX`, `HEARTRATE_BD1820` enabled in the stock config, not in source) | **missing, and it is the fitted chip**: heart rate and SpO2 do not work on this kernel until a BD1xxx driver exists (port planned, interface to be recovered from the stock kernel and HAL) |
+| `heartrate,bd1xxx` | `bd1xxx.c` (`INPUT_SENSORS_BD1XXX`, `HEARTRATE_BD1820`), interface only | **fitted chip; partial**: probe, power, ID check and the stock HAL interface (`heartrate` input device, `enable` / `chipinfo`, `/dev/bd1662rate`) exist, but no measurement back end, so heart rate and SpO2 still give no data. Interface and open items: `devices/BD1XXX_INTERFACE.md`. Also in the 4.14 tree |
 | `btl,btl_ts` | none | missing, only needed if fitted |
 | `magnetic,och1970` | `drivers/input/misc/och1970.c` (`SENSORS_OCH1970`) | yes (polled; the stock HAL's thresholds and open / rotate logic are not implemented) |
 | `pressure,msp891`, `compass,af6837` | none | no node in this DT: not needed |
@@ -170,7 +170,7 @@ Same as the MT107 table except:
 
 ## Kernel config comparison (`stock.config`)
 
-Against the MT107 `stock.config` the enabled options differ only by `CONFIG_INPUT_SENSORS_BD1XXX=y` and `CONFIG_HEARTRATE_BD1820=y` (both missing from this source, no driver). Everything else (touch, `INPUT_QMAX981`, `SENSORS_MSP891`, `SENSORS_OCH1970`, `SENSORS_COMPASS_AF6837`, `INPUT_GPIO_ROTARY_ENCODER`, `SUNWAVE_FINGERPRINT`, `CHARGER_FAN54015`, ...) is identical; `MSP891` and `AF6837` stay in the config although the DT has no node.
+Against the MT107 `stock.config` the enabled options differ only by `CONFIG_INPUT_SENSORS_BD1XXX=y` and `CONFIG_HEARTRATE_BD1820=y` (now provided by the interface-only `bd1xxx.c`). Everything else (touch, `INPUT_QMAX981`, `SENSORS_MSP891`, `SENSORS_OCH1970`, `SENSORS_COMPASS_AF6837`, `INPUT_GPIO_ROTARY_ENCODER`, `SUNWAVE_FINGERPRINT`, `CHARGER_FAN54015`, ...) is identical; `MSP891` and `AF6837` stay in the config although the DT has no node.
 
 ## Differences vs MT107
 
@@ -184,11 +184,11 @@ Against the MT107 `stock.config` the enabled options differ only by `CONFIG_INPU
 ## Gap list
 
 1. **Touch:** `cst0xx_ts` and `hyn_ts` are in the tree; `btl_ts` is not. Find which one answers (i2c-3 bind) before porting anything.
-2. **Heart rate:** `bd1xxx_hr` has no driver (stock `HEARTRATE_BD1820` / `INPUT_SENSORS_BD1XXX` not in source); the stock vendor HAL shows the fitted chip is the BD1820, so heart rate and SpO2 need this driver; `hrs3xxx` covers only the unused node.
+2. **Heart rate:** the fitted chip is the BD1820 (stock vendor HAL). `bd1xxx.c` provides the stock interface but no measurement yet (chip init register order, sample read and polling still to recover, `devices/BD1XXX_INTERFACE.md`), so heart rate and SpO2 give no data; `hrs3xxx` covers only the unused node.
 3. **Panel:** controller confirmed as ICNA3311 from the U-Boot log (148 or 214 node; the exact `lcd_id` is not logged). `SPRD_AOD_IDLE` is **not** enabled in `k18.fragment` until it is known (DT candidates include non-CO5300 controllers); enable it for the ICNA3311 / CO5300 / SH8601 nodes with `aod-in` once confirmed.
 4. **Modules:** rebuild the four ramdisk modules for the new kernel.
 5. **Unverified:** everything above is from the dumps (no running unit): touch, accelerometer and the NV-derived modem profile. Heart-rate chip (BD1820) from the vendor HAL and panel controller (ICNA3311) from the U-Boot log.
 
 ## Config fragment
 
-`arch/arm64/configs/k18.fragment` (and the generated `k18_defconfig`): `TOUCHSCREEN_CST0XX`, `TOUCHSCREEN_CST9217`, `hrs3xxx` (HRS3918), `sc7a22`, `QMA6981_I2C` (for `qmax981`), `SENSORS_OCH1970`; `SPRD_AOD_IDLE` off; no rotary option of its own (parity keeps the inert driver); BD1820 / BD1XXX not enabled (no driver). Build-checked only, not run on a unit.
+`arch/arm64/configs/k18.fragment` (and the generated `k18_defconfig`): `TOUCHSCREEN_CST0XX`, `TOUCHSCREEN_CST9217`, `hrs3xxx` (HRS3918), `sc7a22`, `QMA6981_I2C` (for `qmax981`), `SENSORS_OCH1970`; `SPRD_AOD_IDLE` off; no rotary option of its own (parity keeps the inert driver); `INPUT_SENSORS_BD1XXX` + `HEARTRATE_BD1820` (interface-only driver). Build-checked only, not run on a unit.
