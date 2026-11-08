@@ -9,7 +9,8 @@
 #      differ between devices). Runs tools/blobcarve into OUTDIR/hrsblob-DEVICE/
 #      (profile hrs3300 for mt108, hx3918 for the others) and builds with
 #      CONFIG_HRS3XXX_TYHX_BLOB=y and the matching variant (stock bytes: never
-#      commit or ship that dir).
+#      commit or ship that dir). Use each device's own image, e.g. dm63:
+#      sfd_tool/dm63/boot.img (sfd_tool/boot.img is the K18 image).
 set -euo pipefail
 
 usage() { echo "usage: $0 DEVICE [OUTDIR]  (dm63|dw100u-silver|dw100u-v13m|mt107|mt108|dm82|k18)" >&2; exit 2; }
