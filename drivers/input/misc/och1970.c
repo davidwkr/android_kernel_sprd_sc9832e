@@ -1,72 +1,123 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Orient-Chip OCH1970 3-axis Hall magnetic sensor driver (input device).
+ * Orient-Chip OCH1970 3-axis Hall sensor used as an open/close/front/back
+ * key source (input device).
  *
- * Written from the public OCH1970VAD-H datasheet (V1.1). The sensor is
- * left in power-down mode and is only run while a userspace sensor HAL
- * has it enabled through sysfs. Each sample is a single measurement
- * (the chip returns to power-down by itself afterwards), polled from a
- * delayed work. The DRDY/irq pin and the hall "open/close" thresholds of
- * the stock firmware are not used.
+ * Behaviour follows the stock vendor driver (see devices/OCH1970_INTERFACE.md
+ * for the evidence). The stock driver exists in three generations, told apart
+ * by the device tree:
+ *   "open-bop" (string) present       K18 generation  (gen3)
+ *   "open-threshold" (u32 pair)       MT108/DW100U    (gen2)
+ *   neither                           DM82/MT107      (gen1), fixed axis and
+ *                                     thresholds; "och1970,variant" selects
+ *                                     "dm82" (default) or "mt107"
  *
- * Output: input device "och1970", ABS_X/Y/Z as raw signed 16 bit counts,
- * 1.1 uT/LSB (high sensitivity, SMR=0; range about +-36 mT).
+ * Output: input device "magnetic", EV_KEY (linux,open/close/back/front, each
+ * a press+release pulse) and, while polling is enabled, EV_REL X/Y/Z.
+ * The chip is interrupt driven (irq-gpio); the thresholds are evaluated in
+ * software on the sample read from the interrupt.
  *
- * sysfs ABI (on the i2c device):
- *   enable  0/1   start/stop periodic measurement
- *   delay   ms    sample period; values below 10 are clamped to 10 (and
- *                 above 10000 to 10000), applied from the next sample
+ * sysfs (on the input device): enable, wakeup, chipinfo, threshold{x,y,z}{1,2}
+ * misc device /dev/och1970: write "open" / "close".
  */
 
 #include <linux/delay.h>
 #include <linux/gpio.h>
 #include <linux/i2c.h>
+#include <linux/kref.h>
 #include <linux/input.h>
+#include <linux/interrupt.h>
+#include <linux/jiffies.h>
+#include <linux/kernel.h>
+#include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_gpio.h>
 #include <linux/pm.h>
+#include <linux/pm_wakeup.h>
 #include <linux/slab.h>
+#include <linux/string.h>
 #include <linux/sysfs.h>
+#include <linux/uaccess.h>
 #include <linux/workqueue.h>
 
 #define OCH1970_DRV_NAME	"och1970"
-#define OCH1970_INPUT_NAME	"och1970"
+#define OCH1970_INPUT_NAME	"magnetic"
 
-/* Registers (datasheet Table 12.1) */
-#define OCH1970_REG_WIA		0x00	/* 2 bytes: WIA[15:8], WIA[7:0] */
-#define OCH1970_REG_DATA_ZYX	0x17	/* ST(2), HZ, HY, HX; 16 bit big endian */
+/* Registers */
+#define OCH1970_REG_WIA		0x00	/* 2 bytes: company 0x48, device 0xc0 */
+#define OCH1970_REG_ST		0x10	/* 2 bytes, bit 0 of the second: data ready */
+#define OCH1970_REG_DATA	0x17	/* 8 bytes; Z, Y, X at +2, +4, +6, big endian */
+#define OCH1970_REG_CNTL1	0x20	/* read/written as a 2 byte block with CNTL2 */
 #define OCH1970_REG_CNTL2	0x21
-#define OCH1970_REG_SRST	0x30
+#define OCH1970_REG_THR_BASE	0x22	/* x1 x2 y1 y2 z1 z2: BOP, BRP (2 x s16 BE) */
 
 #define OCH1970_WIA_COMPANY	0x48
 #define OCH1970_WIA_DEVICE	0xc0
 
-#define OCH1970_ST_DRDY		BIT(0)	/* ST[7:0] */
+#define OCH1970_MODE_MASK	0x0f
+#define OCH1970_MODE_KEEP	0x0a	/* measurement mode kept while wake armed */
+#define OCH1970_MODE_OPEN	0x0e	/* sysfs enable=4, misc "open" */
 
-#define OCH1970_CNTL2_SDR	BIT(4)	/* 0: low noise drive */
-#define OCH1970_CNTL2_SMR	BIT(5)	/* 0: high sensitivity (1.1 uT/LSB) */
-#define OCH1970_MODE_POWERDOWN	0x0
-#define OCH1970_MODE_SINGLE	0x1
+/*
+ * Per-axis interrupt enable bits, in the second byte of the CNTL1 block as
+ * the stock driver uses them. They share CNTL2 with the MODE field; the
+ * stock sequence is reproduced as is.
+ */
+#define OCH1970_EN_X1		0x02
+#define OCH1970_EN_X2		0x04
+#define OCH1970_EN_Y1		0x08
+#define OCH1970_EN_Y2		0x10
+#define OCH1970_EN_Z1		0x20
+#define OCH1970_EN_Z2		0x40
 
-#define OCH1970_SRST		BIT(0)
+#define OCH1970_POLL_MS		100
+#define OCH1970_WAKE_JIFFIES	500	/* stock: jiffies_to_msecs(500) */
+#define OCH1970_DEF_DEBOUNCE_MS	5
 
-#define OCH1970_DEFAULT_DELAY_MS	200
-#define OCH1970_MIN_DELAY_MS		10
-#define OCH1970_MAX_DELAY_MS		10000
-
-#define OCH1970_ABS_MAX		32768
+enum och1970_gen {
+	OCH1970_GEN1_DM82,
+	OCH1970_GEN1_MT107,
+	OCH1970_GEN2,
+	OCH1970_GEN3,
+};
 
 struct och1970_data {
 	struct i2c_client *client;
 	struct input_dev *input;
-	struct delayed_work work;
-	struct mutex enable_lock;	/* serialises set_enabled(); not taken by the work */
-	struct mutex lock;		/* enabled, delay_ms, chip mode */
-	unsigned int delay_ms;
-	bool enabled;
-	bool resume_enabled;
+	struct miscdevice misc;
+	struct wakeup_source *ws;
+	struct mutex lock;		/* flags, thresholds, register sequences */
+	struct kref ref;		/* probe + one per open misc descriptor */
+	struct mutex ctl;		/* whole enable transitions, incl. cancel */
+	bool removed;			/* under lock: client gone, no I/O */
+	bool polling;			/* under lock: enable 2/3 started the poll work */
+	struct delayed_work poll_work;
+	struct delayed_work irq_work;
+	enum och1970_gen gen;
+	int irq_gpio;
+	int rst_gpio;
+	int irq;
+	unsigned int irq_flags;
+	unsigned int debounce_ms;
+	unsigned int enable_val;
+
+	s16 x, y, z;
+	u32 key_open, key_close, key_back, key_front;
+	s16 open_bop, open_brp, rot_bop, rot_brp;
+	s16 control_data;
+	int open_axis;			/* 0..2 = x, y, z; open = level 1 */
+	int rot_axis;			/* level 2 */
+	int ctl_axis;
+	bool wake;			/* stock +496: wakeup / key enable */
+	bool state;			/* stock +497 */
+	bool extra_back;		/* stock +498 (gen3 only) */
+};
+
+static const u8 och1970_axis_en[2][3] = {
+	{ OCH1970_EN_X1, OCH1970_EN_Y1, OCH1970_EN_Z1 },
+	{ OCH1970_EN_X2, OCH1970_EN_Y2, OCH1970_EN_Z2 },
 };
 
 static int och1970_read(struct i2c_client *client, u8 reg, u8 *buf, int len)
@@ -84,167 +135,471 @@ static int och1970_read(struct i2c_client *client, u8 reg, u8 *buf, int len)
 	return ret == 2 ? 0 : -EIO;
 }
 
-static int och1970_write(struct i2c_client *client, u8 reg, u8 val)
+static int och1970_write(struct i2c_client *client, u8 reg, const u8 *val,
+			 int len)
 {
-	u8 buf[2] = { reg, val };
+	u8 buf[5];
 	int ret;
 
-	ret = i2c_master_send(client, buf, 2);
+	if (len > 4)
+		return -EINVAL;
+	buf[0] = reg;
+	memcpy(buf + 1, val, len);
+	ret = i2c_master_send(client, buf, len + 1);
 	if (ret < 0)
 		return ret;
-	return ret == 2 ? 0 : -EIO;
+	return ret == len + 1 ? 0 : -EIO;
 }
 
-static int och1970_power_down(struct och1970_data *data)
+/* CNTL2 read-modify-write, one register */
+static int och1970_rmw_cntl2(struct och1970_data *data, u8 clear, u8 set)
 {
-	return och1970_write(data->client, OCH1970_REG_CNTL2,
-			     OCH1970_MODE_POWERDOWN);
-}
+	u8 v;
+	int ret;
 
-/* One single measurement, then report. Called from the work only. */
-static int och1970_sample(struct och1970_data *data)
-{
-	u8 buf[8];
-	int ret, retry;
-
-	ret = och1970_write(data->client, OCH1970_REG_CNTL2,
-			    OCH1970_MODE_SINGLE);
+	ret = och1970_read(data->client, OCH1970_REG_CNTL2, &v, 1);
 	if (ret)
 		return ret;
+	v = (v & ~clear) | set;
+	return och1970_write(data->client, OCH1970_REG_CNTL2, &v, 1);
+}
 
-	for (retry = 0; retry < 3; retry++) {
-		/* measurement time is 0.872 ms max (low noise drive) */
-		usleep_range(1000, 1500);
-		ret = och1970_read(data->client, OCH1970_REG_DATA_ZYX,
-				   buf, sizeof(buf));
-		if (ret)
-			return ret;
-		if (buf[1] & OCH1970_ST_DRDY)
-			break;
-	}
-	if (!(buf[1] & OCH1970_ST_DRDY))
-		return -EAGAIN;
+static int och1970_measurement_mode(struct och1970_data *data, u8 mode)
+{
+	return och1970_rmw_cntl2(data, OCH1970_MODE_MASK, mode);
+}
 
-	input_report_abs(data->input, ABS_X, (s16)((buf[6] << 8) | buf[7]));
-	input_report_abs(data->input, ABS_Y, (s16)((buf[4] << 8) | buf[5]));
-	input_report_abs(data->input, ABS_Z, (s16)((buf[2] << 8) | buf[3]));
-	input_sync(data->input);
+static int och1970_powerdown_mode(struct och1970_data *data)
+{
+	return och1970_rmw_cntl2(data, OCH1970_MODE_MASK, 0);
+}
 
+/* read-modify-write of the 2 byte block at CNTL1; idx selects the byte */
+static int och1970_rmw_block(struct och1970_data *data, int idx, u8 clear,
+			     u8 set)
+{
+	u8 b[2];
+	int ret;
+
+	ret = och1970_read(data->client, OCH1970_REG_CNTL1, b, 2);
+	if (ret)
+		return ret;
+	b[idx] = (b[idx] & ~clear) | set;
+	return och1970_write(data->client, OCH1970_REG_CNTL1, b, 2);
+}
+
+static int och1970_axis_enable(struct och1970_data *data, int level, int axis,
+			       bool on)
+{
+	u8 bit;
+
+	if (axis < 0)
+		return 0;
+	bit = och1970_axis_en[level - 1][axis];
+	return och1970_rmw_block(data, 1, on ? 0 : bit, on ? bit : 0);
+}
+
+static int och1970_thr_reg(int level, int axis)
+{
+	return OCH1970_REG_THR_BASE + axis * 2 + (level - 1);
+}
+
+static int och1970_write_thr(struct och1970_data *data, int level, int axis,
+			     s16 bop, s16 brp)
+{
+	u8 b[4] = { (u16)bop >> 8, (u16)bop & 0xff, (u16)brp >> 8,
+		    (u16)brp & 0xff };
+
+	if (axis < 0)
+		return 0;
+	return och1970_write(data->client, och1970_thr_reg(level, axis), b, 4);
+}
+
+/* stock och1970_get_xyz_data: no data-ready check, chip runs continuously */
+static int och1970_get_xyz(struct och1970_data *data)
+{
+	u8 b[8];
+	int ret;
+
+	ret = och1970_read(data->client, OCH1970_REG_DATA, b, sizeof(b));
+	if (ret)
+		return ret;
+	data->x = (s16)((b[6] << 8) | b[7]);
+	data->y = (s16)((b[4] << 8) | b[5]);
+	data->z = (s16)((b[2] << 8) | b[3]);
 	return 0;
 }
 
-static void och1970_work(struct work_struct *work)
+static s16 och1970_val(struct och1970_data *data, int axis)
+{
+	switch (axis) {
+	case 0:
+		return data->x;
+	case 1:
+		return data->y;
+	case 2:
+		return data->z;
+	}
+	return 0;
+}
+
+/* key press + release + sync, as the stock work function */
+static void och1970_pulse(struct och1970_data *data, u32 code)
+{
+	input_report_key(data->input, code, 1);
+	input_report_key(data->input, code, 0);
+	input_sync(data->input);
+}
+
+static void och1970_front_back(struct och1970_data *data, s16 ctl)
+{
+	data->state = true;
+	och1970_pulse(data, data->control_data <= ctl ? data->key_back :
+							data->key_front);
+}
+
+/* gen3 (K18), stock och1970_irq_work_fun */
+static void och1970_eval_gen3(struct och1970_data *data)
+{
+	s16 o = och1970_val(data, data->open_axis);
+	s16 r = och1970_val(data, data->rot_axis);
+
+	if (o > data->open_bop && r > data->rot_bop) {
+		och1970_front_back(data, och1970_val(data, data->ctl_axis));
+	} else if (o > data->open_bop && r < data->rot_brp) {
+		och1970_axis_enable(data, 2, data->rot_axis, true);
+		if (data->wake && data->state) {
+			data->state = false;
+			och1970_pulse(data, data->key_open);
+		}
+	} else if (o < data->open_brp) {
+		och1970_axis_enable(data, 2, data->rot_axis, false);
+		if (data->wake && !data->state) {
+			data->state = true;
+			och1970_pulse(data, data->key_close);
+			if (data->extra_back)
+				och1970_pulse(data, data->key_back);
+		}
+	}
+}
+
+/* gen2 (MT108, DW100U): the sign of open_bop selects the polarity */
+static void och1970_eval_gen2(struct och1970_data *data)
+{
+	s16 o = och1970_val(data, data->open_axis);
+	s16 r = och1970_val(data, data->rot_axis);
+
+	if (data->open_bop < 0) {
+		if (r > data->rot_bop) {
+			och1970_front_back(data, och1970_val(data, data->ctl_axis));
+		} else if (o > data->open_bop) {
+			if (data->state) {
+				data->state = false;
+				och1970_pulse(data, data->key_back);
+			} else if (data->wake) {
+				och1970_pulse(data, data->key_open);
+			}
+		} else if (o < data->open_brp && data->wake) {
+			och1970_pulse(data, data->key_close);
+		}
+	} else {
+		if (r < data->rot_brp) {
+			och1970_front_back(data, och1970_val(data, data->ctl_axis));
+		} else if (o < data->open_brp) {
+			if (data->state) {
+				data->state = false;
+				och1970_pulse(data, data->key_front);
+			} else if (data->wake) {
+				och1970_pulse(data, data->key_open);
+			}
+		} else if (o > data->open_bop && data->wake) {
+			och1970_pulse(data, data->key_close);
+		}
+	}
+}
+
+/* gen1 (DM82: X axis; MT107: Y axis), z picks back/front */
+static void och1970_eval_gen1(struct och1970_data *data)
+{
+	bool dm82 = data->gen == OCH1970_GEN1_DM82;
+	s16 v = dm82 ? data->x : data->y;
+	bool a, b, c;
+
+	if (dm82) {
+		a = v > data->rot_bop;
+		b = v > data->open_brp && v < data->rot_brp;
+		c = v < data->open_bop && v < data->rot_brp;
+	} else {
+		a = v < data->rot_brp;
+		b = v > data->rot_bop && v < data->open_brp;
+		c = v > data->open_bop && v > data->rot_bop;
+	}
+
+	if (a) {
+		data->state = true;
+		och1970_pulse(data, data->z >= 0 ? data->key_back :
+						    data->key_front);
+	} else if (b) {
+		if (data->state) {
+			data->state = false;
+			och1970_pulse(data, data->key_back);
+		} else if (data->wake) {
+			och1970_pulse(data, data->key_close);
+		}
+	} else if (c && data->wake) {
+		och1970_pulse(data, data->key_open);
+	}
+}
+
+static void och1970_irq_work(struct work_struct *work)
 {
 	struct och1970_data *data =
-		container_of(work, struct och1970_data, work.work);
-	int ret;
+		container_of(work, struct och1970_data, irq_work.work);
 
 	mutex_lock(&data->lock);
-	if (data->enabled) {
-		ret = och1970_sample(data);
-		if (ret)
-			dev_dbg(&data->client->dev, "sample failed: %d\n", ret);
-		schedule_delayed_work(&data->work,
-				      msecs_to_jiffies(data->delay_ms));
+	if (device_may_wakeup(&data->client->dev))
+		pm_relax(&data->client->dev);
+	/*
+	 * Stock samples in the handler; read here instead, under the lock,
+	 * so the poll work cannot replace the sample before it is judged.
+	 */
+	if (och1970_get_xyz(data)) {
+		/* no fresh sample: judge nothing, wait for the next edge */
+		dev_warn_ratelimited(&data->client->dev, "axis read failed\n");
+	} else {
+		switch (data->gen) {
+		case OCH1970_GEN3:
+			och1970_eval_gen3(data);
+			break;
+		case OCH1970_GEN2:
+			och1970_eval_gen2(data);
+			break;
+		default:
+			och1970_eval_gen1(data);
+			break;
+		}
 	}
+	enable_irq(data->irq);
 	mutex_unlock(&data->lock);
 }
 
-static int och1970_set_enabled(struct och1970_data *data, bool enable)
+/* stock och1970_handle_fun: threaded, level or edge, oneshot */
+static irqreturn_t och1970_irq_thread(int irq, void *dev_id)
 {
-	int ret = 0;
+	struct och1970_data *data = dev_id;
+	unsigned int delay = data->gen <= OCH1970_GEN1_MT107 ?
+			     data->debounce_ms : 0;
 
-	mutex_lock(&data->enable_lock);
+	disable_irq_nosync(irq);
+	__pm_wakeup_event(data->ws, jiffies_to_msecs(OCH1970_WAKE_JIFFIES));
+	if (device_may_wakeup(&data->client->dev))
+		pm_stay_awake(&data->client->dev);
+	schedule_delayed_work(&data->irq_work, msecs_to_jiffies(delay));
+
+	return IRQ_HANDLED;
+}
+
+/* polling mode (sysfs enable = 2 or 3): EV_REL X/Y/Z */
+static void och1970_poll_work(struct work_struct *work)
+{
+	struct och1970_data *data =
+		container_of(work, struct och1970_data, poll_work.work);
+	u8 st[2];
+
 	mutex_lock(&data->lock);
-	if (data->enabled == enable) {
-		mutex_unlock(&data->lock);
-		/* a failed power-down is retried by the next disable */
-		if (!enable)
-			ret = och1970_power_down(data);
-		goto out;
+	if (!och1970_read(data->client, OCH1970_REG_ST, st, 2) &&
+	    (st[1] & 1) && !och1970_get_xyz(data)) {
+		input_report_rel(data->input, REL_X, data->x);
+		input_report_rel(data->input, REL_Y, data->y);
+		input_report_rel(data->input, REL_Z, data->z);
+		input_sync(data->input);
 	}
-	data->enabled = enable;
-	if (enable)
-		schedule_delayed_work(&data->work, 0);
 	mutex_unlock(&data->lock);
+	schedule_delayed_work(&data->poll_work,
+			      msecs_to_jiffies(OCH1970_POLL_MS));
+}
 
-	if (!enable) {
-		/* the work cannot rearm itself once enabled is false */
-		cancel_delayed_work_sync(&data->work);
-		ret = och1970_power_down(data);
-	}
-out:
-	mutex_unlock(&data->enable_lock);
-	return ret;
+/* gen2 only: write the DT thresholds and arm the rotate axis (stock set_axis_threshold) */
+static void och1970_gen2_thresholds(struct och1970_data *data)
+{
+	och1970_write_thr(data, 1, data->open_axis, data->open_bop,
+			  data->open_brp);
+	och1970_axis_enable(data, 2, data->rot_axis, true);
+	och1970_write_thr(data, 2, data->rot_axis, data->rot_bop,
+			  data->rot_brp);
 }
 
 static ssize_t enable_show(struct device *dev, struct device_attribute *attr,
 			   char *buf)
 {
-	struct och1970_data *data = dev_get_drvdata(dev);
-	bool enabled;
+	struct och1970_data *data = dev_get_drvdata(dev->parent);
 
-	mutex_lock(&data->lock);
-	enabled = data->enabled;
-	mutex_unlock(&data->lock);
-
-	return scnprintf(buf, PAGE_SIZE, "%d\n", enabled);
+	return scnprintf(buf, PAGE_SIZE, "%u\n", data->enable_val);
 }
 
 static ssize_t enable_store(struct device *dev, struct device_attribute *attr,
 			    const char *buf, size_t count)
 {
-	struct och1970_data *data = dev_get_drvdata(dev);
-	bool enable;
+	struct och1970_data *data = dev_get_drvdata(dev->parent);
+	struct device *cdev = &data->client->dev;
+	unsigned int val;
+	bool stop_poll = false;
 	int ret;
 
-	ret = kstrtobool(buf, &enable);
-	if (ret)
-		return ret;
-	ret = och1970_set_enabled(data, enable);
-
-	return ret ? ret : count;
-}
-
-static ssize_t delay_show(struct device *dev, struct device_attribute *attr,
-			  char *buf)
-{
-	struct och1970_data *data = dev_get_drvdata(dev);
-	unsigned int delay_ms;
-
-	mutex_lock(&data->lock);
-	delay_ms = data->delay_ms;
-	mutex_unlock(&data->lock);
-
-	return scnprintf(buf, PAGE_SIZE, "%u\n", delay_ms);
-}
-
-static ssize_t delay_store(struct device *dev, struct device_attribute *attr,
-			   const char *buf, size_t count)
-{
-	struct och1970_data *data = dev_get_drvdata(dev);
-	unsigned int delay_ms;
-	int ret;
-
-	ret = kstrtouint(buf, 10, &delay_ms);
+	ret = kstrtouint(buf, 10, &val);
 	if (ret)
 		return ret;
 
-	delay_ms = clamp_t(unsigned int, delay_ms, OCH1970_MIN_DELAY_MS,
-			   OCH1970_MAX_DELAY_MS);
+	mutex_lock(&data->ctl);
 	mutex_lock(&data->lock);
-	data->delay_ms = delay_ms;	/* applies from the next sample */
+	data->enable_val = val;
+	switch (val) {
+	case 1:
+		data->wake = true;
+		device_init_wakeup(cdev, true);
+		och1970_axis_enable(data, 1, data->open_axis, true);
+		if (data->gen == OCH1970_GEN2)
+			och1970_gen2_thresholds(data);
+		break;
+	case 2:
+	case 3:
+		if (val == 3)
+			och1970_axis_enable(data, 1, data->open_axis, true);
+		data->polling = true;
+		schedule_delayed_work(&data->poll_work,
+				      msecs_to_jiffies(OCH1970_POLL_MS));
+		break;
+	case 4:
+		data->extra_back = false;
+		och1970_measurement_mode(data, OCH1970_MODE_OPEN);
+		break;
+	case 5:
+		data->extra_back = true;
+		if (data->wake)
+			och1970_measurement_mode(data, OCH1970_MODE_KEEP);
+		else
+			och1970_powerdown_mode(data);
+		break;
+	default:
+		data->wake = false;
+		device_init_wakeup(cdev, false);
+		och1970_axis_enable(data, 1, data->open_axis, false);
+		och1970_powerdown_mode(data);
+		data->polling = false;
+		stop_poll = true;
+		break;
+	}
 	mutex_unlock(&data->lock);
+
+	if (stop_poll)
+		cancel_delayed_work_sync(&data->poll_work);
+	mutex_unlock(&data->ctl);
 
 	return count;
 }
 
+static ssize_t wakeup_show(struct device *dev, struct device_attribute *attr,
+			   char *buf)
+{
+	struct och1970_data *data = dev_get_drvdata(dev->parent);
+
+	return scnprintf(buf, PAGE_SIZE, "%s\n", data->wake ? "true" : "false");
+}
+
+static ssize_t wakeup_store(struct device *dev, struct device_attribute *attr,
+			    const char *buf, size_t count)
+{
+	struct och1970_data *data = dev_get_drvdata(dev->parent);
+	unsigned int val;
+	int ret;
+
+	ret = kstrtouint(buf, 10, &val);
+	if (ret)
+		return ret;
+	data->wake = val == 1;
+	device_init_wakeup(&data->client->dev, data->wake);
+
+	return count;
+}
+
+static ssize_t chipinfo_show(struct device *dev, struct device_attribute *attr,
+			     char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "och1970");
+}
+
 static DEVICE_ATTR_RW(enable);
-static DEVICE_ATTR_RW(delay);
+static DEVICE_ATTR_RW(wakeup);
+static DEVICE_ATTR_RO(chipinfo);
+
+/* threshold{x,y,z}{1,2}: hardware registers only, as the stock attributes */
+static ssize_t thr_show(struct device *dev, int level, int axis, char *buf)
+{
+	struct och1970_data *data = dev_get_drvdata(dev->parent);
+	u8 b[4];
+	int ret;
+
+	mutex_lock(&data->lock);
+	ret = och1970_read(data->client, och1970_thr_reg(level, axis), b, 4);
+	mutex_unlock(&data->lock);
+	if (ret)
+		return ret;
+
+	return scnprintf(buf, PAGE_SIZE, "BOP:%d\nBRP:%d\n",
+			 (s16)((b[0] << 8) | b[1]), (s16)((b[2] << 8) | b[3]));
+}
+
+static ssize_t thr_store(struct device *dev, int level, int axis,
+			 const char *buf, size_t count)
+{
+	struct och1970_data *data = dev_get_drvdata(dev->parent);
+	int bop, brp, ret = 0;
+
+	if (sscanf(buf, "%d %d", &bop, &brp) != 2)
+		return -EINVAL;
+	/* stock ignores 0 and 0xffff */
+	if ((u16)bop == 0 || (u16)bop == 0xffff || (u16)brp == 0 ||
+	    (u16)brp == 0xffff)
+		return count;
+
+	mutex_lock(&data->lock);
+	ret = och1970_write_thr(data, level, axis, bop, brp);
+	mutex_unlock(&data->lock);
+
+	return ret ? ret : (ssize_t)count;
+}
+
+#define OCH1970_THR_ATTR(name, level, axis)				\
+static ssize_t name##_show(struct device *dev,				\
+			   struct device_attribute *attr, char *buf)	\
+{									\
+	return thr_show(dev, level, axis, buf);				\
+}									\
+static ssize_t name##_store(struct device *dev,				\
+			    struct device_attribute *attr,		\
+			    const char *buf, size_t count)		\
+{									\
+	return thr_store(dev, level, axis, buf, count);			\
+}									\
+static DEVICE_ATTR_RW(name)
+
+OCH1970_THR_ATTR(thresholdx1, 1, 0);
+OCH1970_THR_ATTR(thresholdx2, 2, 0);
+OCH1970_THR_ATTR(thresholdy1, 1, 1);
+OCH1970_THR_ATTR(thresholdy2, 2, 1);
+OCH1970_THR_ATTR(thresholdz1, 1, 2);
+OCH1970_THR_ATTR(thresholdz2, 2, 2);
 
 static struct attribute *och1970_attrs[] = {
 	&dev_attr_enable.attr,
-	&dev_attr_delay.attr,
+	&dev_attr_wakeup.attr,
+	&dev_attr_chipinfo.attr,
+	&dev_attr_thresholdx1.attr,
+	&dev_attr_thresholdx2.attr,
+	&dev_attr_thresholdy1.attr,
+	&dev_attr_thresholdy2.attr,
+	&dev_attr_thresholdz1.attr,
+	&dev_attr_thresholdz2.attr,
 	NULL
 };
 
@@ -252,28 +607,243 @@ static const struct attribute_group och1970_attr_group = {
 	.attrs = och1970_attrs,
 };
 
-static int och1970_hw_reset(struct i2c_client *client)
+static void och1970_free(struct kref *ref)
 {
-	int gpio = of_get_named_gpio(client->dev.of_node, "rst-gpio", 0);
+	kfree(container_of(ref, struct och1970_data, ref));
+}
+
+/*
+ * Descriptors can outlive the client (adapter unbind): each one holds a
+ * reference, and writes after remove fail with -ENODEV.
+ */
+static int och1970_misc_open(struct inode *inode, struct file *file)
+{
+	struct miscdevice *misc = file->private_data;
+	struct och1970_data *data = container_of(misc, struct och1970_data, misc);
+
+	/* misc_open() holds misc_mtx: remove has not deregistered us yet. */
+	kref_get(&data->ref);
+	file->private_data = data;
+
+	return nonseekable_open(inode, file);
+}
+
+static int och1970_misc_release(struct inode *inode, struct file *file)
+{
+	struct och1970_data *data = file->private_data;
+
+	kref_put(&data->ref, och1970_free);
+	return 0;
+}
+
+/* /dev/och1970: write "open" or "close" */
+static ssize_t och1970_misc_write(struct file *file, const char __user *ubuf,
+				  size_t count, loff_t *ppos)
+{
+	struct och1970_data *data = file->private_data;
+	char cmd[16] = { };
+
+	if (count >= sizeof(cmd))
+		return -EINVAL;
+	if (copy_from_user(cmd, ubuf, count))
+		return -EFAULT;
+	strim(cmd);
+
+	mutex_lock(&data->lock);
+	if (data->removed) {
+		mutex_unlock(&data->lock);
+		return -ENODEV;
+	}
+	if (!strcmp(cmd, "open")) {
+		och1970_axis_enable(data, 2, data->rot_axis, true);
+		och1970_measurement_mode(data, OCH1970_MODE_OPEN);
+	} else if (!strcmp(cmd, "close")) {
+		och1970_axis_enable(data, 2, data->rot_axis, false);
+		if (data->wake)
+			och1970_measurement_mode(data, OCH1970_MODE_KEEP);
+		else
+			och1970_powerdown_mode(data);
+	}
+	mutex_unlock(&data->lock);
+
+	return count;
+}
+
+static const struct file_operations och1970_misc_fops = {
+	.owner = THIS_MODULE,
+	.open = och1970_misc_open,
+	.release = och1970_misc_release,
+	.write = och1970_misc_write,
+	.llseek = no_llseek,
+};
+
+static int och1970_axis_idx(const char *s, char level)
+{
+	if (!s || s[0] < 'x' || s[0] > 'z')
+		return -EINVAL;
+	if (level) {
+		if (s[1] != level || s[2])
+			return -EINVAL;
+	} else if (s[1]) {
+		return -EINVAL;
+	}
+	return s[0] - 'x';
+}
+
+static int och1970_parse_axis(struct device_node *np, const char *prop,
+			      char level, int *axis)
+{
+	const char *s;
 	int ret;
 
-	if (gpio == -ENOENT) {
-		dev_dbg(&client->dev, "no rst-gpio, soft reset only\n");
-		return 0;
-	}
-	if (!gpio_is_valid(gpio))
-		return gpio < 0 ? gpio : -EINVAL;
-
-	ret = devm_gpio_request_one(&client->dev, gpio, GPIOF_OUT_INIT_HIGH,
-				    "och1970-rstn");
+	ret = of_property_read_string(np, prop, &s);
 	if (ret)
 		return ret;
+	ret = och1970_axis_idx(s, level);
+	if (ret < 0)
+		return ret;
+	*axis = ret;
+	return 0;
+}
 
-	/* RSTN is active low: >= 5 us low pulse, then >= 5 us wait */
-	gpio_set_value_cansleep(gpio, 0);
-	usleep_range(20, 50);
-	gpio_set_value_cansleep(gpio, 1);
-	usleep_range(100, 200);
+static int och1970_parse_s16_str(struct device_node *np, const char *prop,
+				 s16 *val)
+{
+	const char *s;
+	int v, ret;
+
+	ret = of_property_read_string(np, prop, &s);
+	if (ret)
+		return ret;
+	ret = kstrtoint(s, 10, &v);
+	if (ret)
+		return ret;
+	*val = v;
+	return 0;
+}
+
+static int och1970_parse_thr_pair(struct device_node *np, const char *prop,
+				  s16 *bop, s16 *brp)
+{
+	u32 v[2];
+	int ret;
+
+	ret = of_property_read_u32_array(np, prop, v, 2);
+	if (ret)
+		return ret;
+	*bop = v[0];
+	*brp = v[1];
+	return 0;
+}
+
+static int och1970_parse_dt(struct och1970_data *data)
+{
+	struct device *dev = &data->client->dev;
+	struct device_node *np = dev->of_node;
+	const char *s;
+	u32 v;
+	int ret;
+
+	if (!np)
+		return -EINVAL;
+
+	if (of_find_property(np, "open-bop", NULL))
+		data->gen = OCH1970_GEN3;
+	else if (of_find_property(np, "open-threshold", NULL))
+		data->gen = OCH1970_GEN2;
+	else if (!of_property_read_string(np, "och1970,variant", &s) &&
+		 !strcmp(s, "mt107"))
+		data->gen = OCH1970_GEN1_MT107;
+	else
+		data->gen = OCH1970_GEN1_DM82;
+
+	/* default key codes differ between the generations (stock) */
+	if (data->gen <= OCH1970_GEN1_MT107) {
+		data->key_open = KEY_F1;
+		data->key_close = KEY_F8;
+		data->key_back = KEY_F3;
+		data->key_front = KEY_F2;
+	} else {
+		data->key_open = KEY_F8;
+		data->key_close = KEY_F1;
+		data->key_back = KEY_F2;
+		data->key_front = KEY_F3;
+	}
+	of_property_read_u32(np, "linux,open", &data->key_open);
+	of_property_read_u32(np, "linux,close", &data->key_close);
+	of_property_read_u32(np, "linux,back", &data->key_back);
+	of_property_read_u32(np, "linux,front", &data->key_front);
+
+	data->debounce_ms = OCH1970_DEF_DEBOUNCE_MS;
+	of_property_read_u32(np, "debounce-interval", &data->debounce_ms);
+
+	switch (data->gen) {
+	case OCH1970_GEN1_DM82:
+		data->open_axis = 0;
+		data->rot_axis = 0;
+		data->open_bop = -4000;
+		data->open_brp = -6000;
+		data->rot_bop = -100;
+		data->rot_brp = -280;
+		data->irq_flags = IRQF_TRIGGER_FALLING;
+		break;
+	case OCH1970_GEN1_MT107:
+		data->open_axis = 1;
+		data->rot_axis = 1;
+		data->open_bop = 4500;
+		data->open_brp = 4000;
+		data->rot_bop = 180;
+		data->rot_brp = 50;
+		data->irq_flags = IRQF_TRIGGER_LOW;
+		break;
+	default:
+		data->irq_flags = IRQF_TRIGGER_LOW;
+		ret = och1970_parse_axis(np, "control-axis", 0, &data->ctl_axis);
+		if (ret)
+			return ret;
+		if (!of_property_read_u32(np, "control-data", &v))
+			data->control_data = v;
+		ret = och1970_parse_axis(np, "open-axis", '1', &data->open_axis);
+		if (ret)
+			return ret;
+		ret = och1970_parse_axis(np, "rotate-axis", '2', &data->rot_axis);
+		if (ret)
+			return ret;
+		if (data->gen == OCH1970_GEN3) {
+			ret = och1970_parse_s16_str(np, "open-bop", &data->open_bop);
+			if (!ret)
+				ret = och1970_parse_s16_str(np, "open-brp", &data->open_brp);
+			if (!ret)
+				ret = och1970_parse_s16_str(np, "rotate-bop", &data->rot_bop);
+			if (!ret)
+				ret = och1970_parse_s16_str(np, "rotate-brp", &data->rot_brp);
+		} else {
+			ret = och1970_parse_thr_pair(np, "open-threshold",
+						     &data->open_bop, &data->open_brp);
+			if (!ret)
+				ret = och1970_parse_thr_pair(np, "rotate-threshold",
+							     &data->rot_bop, &data->rot_brp);
+		}
+		if (ret)
+			return ret;
+		break;
+	}
+
+	return 0;
+}
+
+static int och1970_hw_reset(struct och1970_data *data)
+{
+	if (!gpio_is_valid(data->rst_gpio))
+		return 0;
+
+	/* stock: high 20 ms, low 20 ms, high, 200 ms */
+	gpio_set_value_cansleep(data->rst_gpio, 1);
+	msleep(20);
+	gpio_set_value_cansleep(data->rst_gpio, 0);
+	msleep(20);
+	gpio_set_value_cansleep(data->rst_gpio, 1);
+	msleep(200);
 
 	return 0;
 }
@@ -296,33 +866,194 @@ static int och1970_check_id(struct i2c_client *client)
 	return 0;
 }
 
-static int och1970_detect(struct och1970_data *data)
+/* stock probe-time register sequence, per generation */
+static int och1970_hw_init(struct och1970_data *data)
 {
-	u8 id[2];
-	int ret, pass;
+	int ret;
 
-	/* check the id before any write, so a foreign chip is never touched */
-	for (pass = 0; pass < 2; pass++) {
-		ret = och1970_read(data->client, OCH1970_REG_WIA, id,
-				   sizeof(id));
-		if (ret)
-			return ret;
-		if (id[0] != OCH1970_WIA_COMPANY ||
-		    id[1] != OCH1970_WIA_DEVICE) {
-			dev_err(&data->client->dev,
-				"unexpected chip id %02x%02x\n", id[0], id[1]);
-			return -ENODEV;
-		}
-		if (pass)
-			break;
-		ret = och1970_write(data->client, OCH1970_REG_SRST,
-				    OCH1970_SRST);
-		if (ret)
-			return ret;
-		usleep_range(1000, 2000);
+	ret = och1970_rmw_cntl2(data, 0x0f, 0);
+	if (!ret)
+		ret = och1970_rmw_cntl2(data, 0, 0x0a);
+	if (!ret)
+		ret = och1970_rmw_cntl2(data, 0x10, 0);
+	if (!ret)
+		ret = och1970_rmw_cntl2(data, 0, 0x20);
+	if (ret)
+		return ret;
+
+	switch (data->gen) {
+	case OCH1970_GEN1_DM82:
+		ret = ret ?: och1970_write_thr(data, 1, 0, data->open_bop,
+						 data->open_brp);
+		ret = ret ?: och1970_write_thr(data, 2, 0, data->rot_bop,
+						 data->rot_brp);
+		ret = ret ?: och1970_axis_enable(data, 1, 0, false);
+		ret = ret ?: och1970_rmw_block(data, 1, 0, OCH1970_EN_X2);
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_Y1, 0);
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_Y2, 0);
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_Z1, 0);
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_Z2, 0);
+		break;
+	case OCH1970_GEN1_MT107:
+		ret = ret ?: och1970_write_thr(data, 1, 1, data->open_bop,
+						 data->open_brp);
+		ret = ret ?: och1970_write_thr(data, 2, 1, data->rot_bop,
+						 data->rot_brp);
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_X1, 0);
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_X2, 0);
+		ret = ret ?: och1970_axis_enable(data, 1, 1, false);
+		ret = ret ?: och1970_rmw_block(data, 1, 0, OCH1970_EN_Y2);
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_Z1, 0);
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_Z2, 0);
+		break;
+	default:
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_X1, 0);
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_X2, 0);
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_Y1, 0);
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_Y2, 0);
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_Z1, 0);
+		ret = ret ?: och1970_rmw_block(data, 1, OCH1970_EN_Z2, 0);
+		break;
+	}
+	ret = ret ?: och1970_rmw_block(data, 0, 0, 0x04);
+	ret = ret ?: och1970_rmw_block(data, 1, 0x01, 0);
+
+	if (data->gen == OCH1970_GEN3) {
+		ret = ret ?: och1970_write_thr(data, 1, data->open_axis,
+						 data->open_bop, data->open_brp);
+		ret = ret ?: och1970_write_thr(data, 2, data->rot_axis,
+						 data->rot_bop, data->rot_brp);
 	}
 
-	return och1970_power_down(data);
+	/* every step above is skipped after the first failed transfer */
+	return ret;
+}
+
+/* Mask the line, drain the evaluation (its enable_irq() undoes only the
+ * handler's disable), then free the irq. */
+static void och1970_release_irq(struct och1970_data *data)
+{
+	disable_irq(data->irq);
+	cancel_delayed_work_sync(&data->irq_work);
+	free_irq(data->irq, data);
+}
+
+static int och1970_setup(struct i2c_client *client, struct och1970_data *data)
+{
+	struct device *dev = &client->dev;
+	struct input_dev *input;
+	int ret;
+
+	data->client = client;
+	data->wake = true;		/* stock initial flags are all set */
+	data->state = true;
+	data->extra_back = true;
+	mutex_init(&data->lock);
+	mutex_init(&data->ctl);
+	INIT_DELAYED_WORK(&data->poll_work, och1970_poll_work);
+	INIT_DELAYED_WORK(&data->irq_work, och1970_irq_work);
+	i2c_set_clientdata(client, data);
+
+	ret = och1970_parse_dt(data);
+	if (ret) {
+		dev_err(dev, "bad device tree: %d\n", ret);
+		return ret;
+	}
+
+	data->irq_gpio = of_get_named_gpio(dev->of_node, "irq-gpio", 0);
+	if (!gpio_is_valid(data->irq_gpio))
+		return data->irq_gpio < 0 ? data->irq_gpio : -EINVAL;
+	data->rst_gpio = of_get_named_gpio(dev->of_node, "rst-gpio", 0);
+
+	/* validate the chip before touching rst-gpio or writing anything */
+	ret = och1970_check_id(client);
+	if (ret)
+		return ret;
+
+	ret = devm_gpio_request_one(dev, data->irq_gpio, GPIOF_IN,
+				    "och1970-irq");
+	if (ret)
+		return ret;
+	if (gpio_is_valid(data->rst_gpio)) {
+		ret = devm_gpio_request_one(dev, data->rst_gpio,
+					    GPIOF_OUT_INIT_LOW, "och1970-rst");
+		if (ret)
+			return ret;
+	}
+	data->irq = gpio_to_irq(data->irq_gpio);
+	if (data->irq < 0)
+		return data->irq;
+
+	och1970_hw_reset(data);
+	ret = och1970_check_id(client);
+	if (ret)
+		return ret;
+	ret = och1970_hw_init(data);
+	if (ret)
+		return ret;
+
+	input = devm_input_allocate_device(dev);
+	if (!input)
+		return -ENOMEM;
+	data->input = input;
+	input->name = OCH1970_INPUT_NAME;
+	input->id.bustype = BUS_I2C;
+	input->dev.parent = dev;
+	input_set_drvdata(input, data);
+	input_set_capability(input, EV_KEY, KEY_F1);
+	input_set_capability(input, EV_KEY, KEY_F2);
+	input_set_capability(input, EV_KEY, KEY_F3);
+	input_set_capability(input, EV_KEY, KEY_F8);
+	input_set_capability(input, EV_KEY, data->key_open);
+	input_set_capability(input, EV_KEY, data->key_close);
+	input_set_capability(input, EV_KEY, data->key_back);
+	input_set_capability(input, EV_KEY, data->key_front);
+	input_set_capability(input, EV_REL, REL_X);
+	input_set_capability(input, EV_REL, REL_Y);
+	input_set_capability(input, EV_REL, REL_Z);
+	input_set_capability(input, EV_REL, REL_MISC);
+	ret = input_register_device(input);
+	if (ret)
+		return ret;
+
+	data->ws = wakeup_source_register("och1970-time");
+	if (!data->ws)
+		return -ENOMEM;
+	device_init_wakeup(dev, data->wake);
+
+	ret = request_threaded_irq(data->irq, NULL, och1970_irq_thread,
+				   data->irq_flags | IRQF_ONESHOT,
+				   "och1970-irq", data);
+	if (ret)
+		goto err_ws;
+
+	data->misc.minor = MISC_DYNAMIC_MINOR;
+	data->misc.name = OCH1970_DRV_NAME;
+	data->misc.fops = &och1970_misc_fops;
+	ret = misc_register(&data->misc);
+	if (ret)
+		goto err_irq;
+
+	ret = sysfs_create_group(&input->dev.kobj, &och1970_attr_group);
+	if (ret)
+		goto err_misc;
+
+	dev_info(dev, "OCH1970 hall sensor, generation %d\n",
+		 data->gen == OCH1970_GEN3 ? 3 : data->gen == OCH1970_GEN2 ? 2 : 1);
+	return 0;
+
+err_misc:
+	/* a descriptor may already be open: no I/O through it from now on */
+	mutex_lock(&data->lock);
+	data->removed = true;
+	mutex_unlock(&data->lock);
+	misc_deregister(&data->misc);
+err_irq:
+	och1970_release_irq(data);
+err_ws:
+	device_init_wakeup(dev, false);
+	wakeup_source_unregister(data->ws);
+	return ret;
 }
 
 static int och1970_probe(struct i2c_client *client,
@@ -334,69 +1065,36 @@ static int och1970_probe(struct i2c_client *client,
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
 		return -EOPNOTSUPP;
 
-	data = devm_kzalloc(&client->dev, sizeof(*data), GFP_KERNEL);
+	/* not devm: open /dev/och1970 descriptors may outlive the client */
+	data = kzalloc(sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
+	kref_init(&data->ref);
 
-	data->client = client;
-	data->delay_ms = OCH1970_DEFAULT_DELAY_MS;
-	mutex_init(&data->lock);
-	mutex_init(&data->enable_lock);
-	INIT_DELAYED_WORK(&data->work, och1970_work);
-	i2c_set_clientdata(client, data);
-
-	/* validate the chip before touching rst-gpio or writing anything */
-	ret = och1970_check_id(client);
+	ret = och1970_setup(client, data);
 	if (ret)
-		return ret;
+		kref_put(&data->ref, och1970_free);
 
-	ret = och1970_hw_reset(client);
-	if (ret)
-		return ret;
-
-	ret = och1970_detect(data);
-	if (ret)
-		return ret;
-
-	data->input = input_allocate_device();
-	if (!data->input)
-		return -ENOMEM;
-
-	data->input->name = OCH1970_INPUT_NAME;
-	data->input->id.bustype = BUS_I2C;
-	data->input->dev.parent = &client->dev;
-	input_set_drvdata(data->input, data);
-	input_set_abs_params(data->input, ABS_X, -OCH1970_ABS_MAX,
-			     OCH1970_ABS_MAX - 1, 0, 0);
-	input_set_abs_params(data->input, ABS_Y, -OCH1970_ABS_MAX,
-			     OCH1970_ABS_MAX - 1, 0, 0);
-	input_set_abs_params(data->input, ABS_Z, -OCH1970_ABS_MAX,
-			     OCH1970_ABS_MAX - 1, 0, 0);
-
-	ret = input_register_device(data->input);
-	if (ret) {
-		input_free_device(data->input);
-		return ret;
-	}
-
-	ret = sysfs_create_group(&client->dev.kobj, &och1970_attr_group);
-	if (ret) {
-		input_unregister_device(data->input);
-		return ret;
-	}
-
-	dev_info(&client->dev, "OCH1970 magnetic sensor detected\n");
-	return 0;
+	return ret;
 }
 
 static int och1970_remove(struct i2c_client *client)
 {
 	struct och1970_data *data = i2c_get_clientdata(client);
 
-	/* userspace interface first, then stop the work, then the input */
-	sysfs_remove_group(&client->dev.kobj, &och1970_attr_group);
-	och1970_set_enabled(data, false);
-	input_unregister_device(data->input);
+	sysfs_remove_group(&data->input->dev.kobj, &och1970_attr_group);
+	misc_deregister(&data->misc);
+	och1970_release_irq(data);
+	cancel_delayed_work_sync(&data->poll_work);
+
+	mutex_lock(&data->lock);
+	och1970_powerdown_mode(data);
+	data->removed = true;
+	mutex_unlock(&data->lock);
+
+	device_init_wakeup(&client->dev, false);
+	wakeup_source_unregister(data->ws);
+	kref_put(&data->ref, och1970_free);
 
 	return 0;
 }
@@ -406,37 +1104,82 @@ static void och1970_shutdown(struct i2c_client *client)
 	struct och1970_data *data = i2c_get_clientdata(client);
 
 	if (data)
-		och1970_set_enabled(data, false);
+		och1970_powerdown_mode(data);
 }
 
 #ifdef CONFIG_PM_SLEEP
+/*
+ * Polling (started by enable 2/3, kept by 1/4/5 as in stock) is stopped
+ * across suspend.
+ */
+static void och1970_restart_poll(struct och1970_data *data)
+{
+	if (data->polling)
+		schedule_delayed_work(&data->poll_work,
+				      msecs_to_jiffies(OCH1970_POLL_MS));
+}
+
 static int och1970_suspend(struct device *dev)
 {
 	struct och1970_data *data = dev_get_drvdata(dev);
-	int ret = 0;
+	int ret;
 
-	mutex_lock(&data->lock);
-	data->resume_enabled = data->enabled;
-	mutex_unlock(&data->lock);
+	cancel_delayed_work_sync(&data->poll_work);
 
-	/* always run the power-down path, it retries an earlier failure */
-	ret = och1970_set_enabled(data, false);
-	if (ret) {
-		dev_warn(dev, "power-down failed on suspend\n");
-		/* PM will not call resume for us: restore the prior state */
-		if (data->resume_enabled)
-			och1970_set_enabled(data, true);
-		data->resume_enabled = false;
+	if (!device_may_wakeup(dev)) {
+		/*
+		 * Mask first so no new evaluation is queued, then finish a
+		 * pending one (its enable_irq() undoes only the handler's).
+		 */
+		disable_irq(data->irq);
+		flush_delayed_work(&data->irq_work);
+		ret = och1970_powerdown_mode(data);
+		if (ret)
+			goto err_irq;
+		return 0;
 	}
 
+	/* a pending evaluation still has the line masked: finish it first */
+	flush_delayed_work(&data->irq_work);
+	ret = och1970_measurement_mode(data, OCH1970_MODE_KEEP);
+	if (ret)
+		goto err_poll;
+	if (data->gen == OCH1970_GEN1_DM82)
+		irq_set_irq_type(data->irq, IRQ_TYPE_LEVEL_LOW);
+	ret = irq_set_irq_wake(data->irq, 1);
+	if (ret) {
+		if (data->gen == OCH1970_GEN1_DM82)
+			irq_set_irq_type(data->irq, IRQ_TYPE_EDGE_FALLING);
+		goto err_poll;
+	}
+	return 0;
+
+	/* a failed suspend gets no resume: undo what was done here */
+err_irq:
+	enable_irq(data->irq);
+err_poll:
+	och1970_restart_poll(data);
 	return ret;
 }
 
 static int och1970_resume(struct device *dev)
 {
 	struct och1970_data *data = dev_get_drvdata(dev);
+	int ret = 0;
 
-	return data->resume_enabled ? och1970_set_enabled(data, true) : 0;
+	if (!device_may_wakeup(dev)) {
+		och1970_powerdown_mode(data);
+		enable_irq(data->irq);
+	} else {
+		och1970_measurement_mode(data, OCH1970_MODE_KEEP);
+		if (data->gen == OCH1970_GEN1_DM82)
+			irq_set_irq_type(data->irq, IRQ_TYPE_EDGE_FALLING);
+		ret = irq_set_irq_wake(data->irq, 0);
+	}
+
+	och1970_restart_poll(data);
+
+	return ret;
 }
 
 static SIMPLE_DEV_PM_OPS(och1970_pm_ops, och1970_suspend, och1970_resume);
@@ -472,5 +1215,5 @@ static struct i2c_driver och1970_driver = {
 
 module_i2c_driver(och1970_driver);
 
-MODULE_DESCRIPTION("Orient-Chip OCH1970 3-axis Hall magnetic sensor");
+MODULE_DESCRIPTION("Orient-Chip OCH1970 Hall sensor (open/close/front/back keys)");
 MODULE_LICENSE("GPL v2");
