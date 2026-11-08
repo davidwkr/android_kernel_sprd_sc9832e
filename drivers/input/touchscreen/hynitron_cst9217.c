@@ -11,6 +11,21 @@
  * during suspend; a report that arrives while the I2C bus is down is read
  * on resume.
  *
+ * Screen state comes from the sprd panel notifier (the 4.4 stock driver used
+ * the ADF blank notifier; without CONFIG_DRM_SPRD the screen is assumed on).
+ * With the screen on the
+ * controller reports touches. With the screen off it is put to sleep with
+ * the stock sleep command (0xd105) and a hardware reset plus the stock
+ * normal command (0xd109) wakes it. The stock driver has no separate
+ * gesture command: it keeps the interrupt armed after the sleep command and
+ * turns a report with 0xf1 in byte 4 into a KEY_WAKEUP press. The same is
+ * done here, controlled by the "wake_gesture" attribute (0 or 1, default 1)
+ * of the input device:
+ *   1: the interrupt stays enabled and is a wake source while the screen
+ *      is off, and a gesture report wakes the device;
+ *   0: the interrupt is disabled and not a wake source while the screen
+ *      is off.
+ *
  * Device tree (compatible "hynitron,hyn_ts"):
  *   hynitron,reset-gpio    : reset gpio (optional)
  *   hynitron,irq-gpio      : interrupt gpio (else the I2C client irq)
@@ -32,16 +47,21 @@
 #include <linux/input/mt.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
+#include <linux/notifier.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_gpio.h>
 #include <linux/pm_wakeup.h>
 #include <linux/regulator/consumer.h>
+#include <linux/sprd_panel_notifier.h>
+#include <linux/sysfs.h>
 
 #define HYN_NAME		"hyn_ts"
 
 #define HYN_REG_BASE		0xd000
 #define HYN_CMD_NORMAL		0xd109
+#define HYN_CMD_SLEEP		0xd105
+#define HYN_GESTURE_ID		0xf1	/* report byte 4 */
 #define HYN_SYNC_BYTE		0xab
 #define HYN_STAT_DOWN		0x06
 
@@ -54,6 +74,9 @@
 #define HYN_SUPPLY_MIN_UV	2800000
 #define HYN_SUPPLY_MAX_UV	3000000
 #define HYN_WAKEUP_MS		200
+#define HYN_GESTURE_WAKEUP_MS	1000
+#define HYN_RESET_LOW_MS	21
+#define HYN_RESET_HIGH_MS	40
 
 struct hyn_ts {
 	struct i2c_client *client;
@@ -63,9 +86,17 @@ struct hyn_ts {
 	int irq;
 	u32 max_x;
 	u32 max_y;
-	struct mutex lock;	/* protects suspended, pending and the report */
+	struct notifier_block panel_nb;
+	struct mutex state_lock; /* serializes screen and switch changes */
+	struct mutex lock;	/* protects the fields below and the report */
 	bool suspended;
 	bool pending;		/* a report arrived while suspended */
+	bool screen_off;	/* last panel notifier state */
+	bool asleep;		/* the controller got the sleep command */
+	bool wake_gesture;	/* the attribute */
+	bool suspend_wake;	/* irq wake armed by system suspend */
+	bool irq_off;		/* state_lock: irq disabled for the screen */
+	bool irq_wake;		/* state_lock: irq wake armed for the screen */
 	u8 buf[HYN_READ_BUF_LEN] ____cacheline_aligned;
 };
 
@@ -121,6 +152,18 @@ static void hyn_hw_reset(struct hyn_ts *ts)
 	msleep(50);
 }
 
+/* The reset of the stock resume: low for 21 ms, high, wait 40 ms. */
+static void hyn_wake_reset(struct hyn_ts *ts)
+{
+	if (!gpio_is_valid(ts->reset_gpio))
+		return;
+
+	gpio_set_value_cansleep(ts->reset_gpio, 0);
+	msleep(HYN_RESET_LOW_MS);
+	gpio_set_value_cansleep(ts->reset_gpio, 1);
+	msleep(HYN_RESET_HIGH_MS);
+}
+
 static const u8 *hyn_point(const u8 *buf, unsigned int i)
 {
 	return i ? buf + HYN_FIRST_LEN + (i - 1) * HYN_POINT_LEN : buf;
@@ -147,9 +190,24 @@ static void hyn_process_report(struct hyn_ts *ts)
 		goto ack;
 	}
 
+	if (buf[6] != HYN_SYNC_BYTE || buf[0] == HYN_SYNC_BYTE)
+		goto ack;
+
+	/* asleep: only the gesture report matters */
+	if (ts->asleep) {
+		if (buf[4] == HYN_GESTURE_ID && ts->wake_gesture) {
+			pm_wakeup_event(&ts->client->dev,
+					HYN_GESTURE_WAKEUP_MS);
+			input_report_key(input, KEY_WAKEUP, 1);
+			input_sync(input);
+			input_report_key(input, KEY_WAKEUP, 0);
+			input_sync(input);
+		}
+		goto ack;
+	}
+
 	/* key frames (bit 7) are not used */
-	if (buf[6] != HYN_SYNC_BYTE || buf[0] == HYN_SYNC_BYTE ||
-	    (buf[5] & 0x80))
+	if (buf[5] & 0x80)
 		goto ack;
 
 	count = buf[5] & 0x7f;
@@ -214,13 +272,188 @@ static irqreturn_t hyn_irq_thread(int irq, void *dev_id)
 		/* the I2C bus is down: read the report on resume */
 		ts->pending = true;
 		pm_wakeup_event(&ts->client->dev, HYN_WAKEUP_MS);
-	} else {
+	} else if (!ts->asleep || ts->wake_gesture) {
 		hyn_process_report(ts);
 	}
 	mutex_unlock(&ts->lock);
 
 	return IRQ_HANDLED;
 }
+
+/* Called with ts->lock held and the I2C bus usable. */
+static void hyn_release_fingers(struct hyn_ts *ts)
+{
+	/* nothing is reported in this frame: every slot is released */
+	input_mt_sync_frame(ts->input);
+	input_sync(ts->input);
+}
+
+/* The stock driver retries the command once. */
+static int hyn_send_cmd(struct hyn_ts *ts, u16 cmd)
+{
+	int ret;
+
+	ret = hyn_write(ts, cmd, NULL);
+	if (ret)
+		ret = hyn_write(ts, cmd, NULL);
+
+	return ret;
+}
+
+/*
+ * Bring the controller and the interrupt in line with ts->screen_off and
+ * ts->wake_gesture. Called with ts->state_lock held and ts->lock not held.
+ * Nothing is done while the I2C bus is suspended: hyn_resume() calls this
+ * again.
+ */
+static void hyn_apply_state(struct hyn_ts *ts)
+{
+	struct device *dev = &ts->client->dev;
+	bool off, gesture;
+	int ret;
+
+	mutex_lock(&ts->lock);
+	if (ts->suspended) {
+		mutex_unlock(&ts->lock);
+		return;
+	}
+
+	off = ts->screen_off;
+	gesture = off && ts->wake_gesture;
+
+	if (off && !ts->asleep) {
+		hyn_release_fingers(ts);
+		ret = hyn_send_cmd(ts, HYN_CMD_SLEEP);
+		if (ret)
+			dev_warn(dev, "sleep command failed: %d\n", ret);
+		ts->asleep = true;
+	} else if (!off && ts->asleep) {
+		/* the irq is disabled or harmless here, see hyn_irq_thread */
+		hyn_wake_reset(ts);
+		ret = hyn_send_cmd(ts, HYN_CMD_NORMAL);
+		if (ret)
+			dev_warn(dev, "wake command failed: %d\n", ret);
+		hyn_release_fingers(ts);
+		ts->asleep = false;
+	}
+	mutex_unlock(&ts->lock);
+
+	/*
+	 * disable_irq() waits for the handler, which takes ts->lock: it must
+	 * not be called with the lock held.
+	 */
+	if (gesture) {
+		if (!ts->irq_wake && !enable_irq_wake(ts->irq))
+			ts->irq_wake = true;
+		if (ts->irq_off) {
+			enable_irq(ts->irq);
+			ts->irq_off = false;
+		}
+	} else if (off) {
+		if (ts->irq_wake) {
+			disable_irq_wake(ts->irq);
+			ts->irq_wake = false;
+		}
+		if (!ts->irq_off) {
+			disable_irq(ts->irq);
+			ts->irq_off = true;
+		}
+	} else {
+		if (ts->irq_wake) {
+			disable_irq_wake(ts->irq);
+			ts->irq_wake = false;
+		}
+		if (ts->irq_off) {
+			enable_irq(ts->irq);
+			ts->irq_off = false;
+		}
+	}
+}
+
+#if IS_ENABLED(CONFIG_DRM_SPRD)
+/*
+ * Called with no driver lock held, also once from sprd_panel_notifier_register()
+ * with the current state.
+ */
+static int hyn_panel_notify(struct notifier_block *nb, unsigned long event,
+			    void *event_data)
+{
+	struct hyn_ts *ts = container_of(nb, struct hyn_ts, panel_nb);
+	bool off;
+
+	switch (event) {
+	case SPRD_PANEL_EVENT_ON:
+		off = false;
+		break;
+	case SPRD_PANEL_EVENT_OFF:
+		off = true;
+		break;
+	default:
+		return NOTIFY_DONE;
+	}
+
+	mutex_lock(&ts->state_lock);
+	mutex_lock(&ts->lock);
+	ts->screen_off = off;
+	mutex_unlock(&ts->lock);
+	hyn_apply_state(ts);
+	mutex_unlock(&ts->state_lock);
+
+	return NOTIFY_OK;
+}
+
+static void hyn_unregister_panel(void *data)
+{
+	struct hyn_ts *ts = data;
+
+	sprd_panel_notifier_unregister(&ts->panel_nb);
+}
+#endif
+
+static ssize_t wake_gesture_show(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	struct hyn_ts *ts = dev_get_drvdata(dev);
+	bool val;
+
+	mutex_lock(&ts->lock);
+	val = ts->wake_gesture;
+	mutex_unlock(&ts->lock);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", val);
+}
+
+static ssize_t wake_gesture_store(struct device *dev,
+				  struct device_attribute *attr,
+				  const char *buf, size_t count)
+{
+	struct hyn_ts *ts = dev_get_drvdata(dev);
+	bool val;
+	int ret;
+
+	ret = kstrtobool(buf, &val);
+	if (ret)
+		return ret;
+
+	mutex_lock(&ts->state_lock);
+	mutex_lock(&ts->lock);
+	ts->wake_gesture = val;
+	mutex_unlock(&ts->lock);
+	hyn_apply_state(ts);
+	mutex_unlock(&ts->state_lock);
+
+	return count;
+}
+static DEVICE_ATTR_RW(wake_gesture);
+
+static struct attribute *hyn_attrs[] = {
+	&dev_attr_wake_gesture.attr,
+	NULL
+};
+
+static const struct attribute_group hyn_attr_group = {
+	.attrs = hyn_attrs,
+};
 
 static int hyn_suspend(struct device *dev)
 {
@@ -229,10 +462,14 @@ static int hyn_suspend(struct device *dev)
 	/* waits for a handler that is reading from the controller */
 	mutex_lock(&ts->lock);
 	ts->suspended = true;
+	/*
+	 * Screen off: hyn_apply_state() has set up the wake source. Screen
+	 * on: a touch wakes the system, as before.
+	 */
+	if (!ts->asleep && device_may_wakeup(dev) &&
+	    !enable_irq_wake(ts->irq))
+		ts->suspend_wake = true;
 	mutex_unlock(&ts->lock);
-
-	if (device_may_wakeup(dev))
-		enable_irq_wake(ts->irq);
 
 	return 0;
 }
@@ -241,17 +478,23 @@ static int hyn_resume(struct device *dev)
 {
 	struct hyn_ts *ts = dev_get_drvdata(dev);
 
-	if (device_may_wakeup(dev))
-		disable_irq_wake(ts->irq);
-
 	/* all resume_noirq callbacks, including the adapter's, have run */
 	mutex_lock(&ts->lock);
+	if (ts->suspend_wake) {
+		disable_irq_wake(ts->irq);
+		ts->suspend_wake = false;
+	}
 	ts->suspended = false;
 	if (ts->pending) {
 		ts->pending = false;
 		hyn_process_report(ts);
 	}
 	mutex_unlock(&ts->lock);
+
+	/* a screen change that came in while suspended */
+	mutex_lock(&ts->state_lock);
+	hyn_apply_state(ts);
+	mutex_unlock(&ts->state_lock);
 
 	return 0;
 }
@@ -265,6 +508,36 @@ static void hyn_disable_regulator(void *data)
 	struct hyn_ts *ts = data;
 
 	regulator_disable(ts->vdd);
+}
+
+static void hyn_remove_attrs(void *data)
+{
+	struct hyn_ts *ts = data;
+
+	sysfs_remove_group(&ts->input->dev.kobj, &hyn_attr_group);
+}
+
+/*
+ * Runs after the notifier and the attributes are gone (devm order) and
+ * before the irq is freed: drop any wake reference still held on the line.
+ */
+static void hyn_release_irq_wake(void *data)
+{
+	struct hyn_ts *ts = data;
+
+	/* lock order: state_lock, then lock (suspend_wake is under lock) */
+	mutex_lock(&ts->state_lock);
+	if (ts->irq_wake) {
+		disable_irq_wake(ts->irq);
+		ts->irq_wake = false;
+	}
+	mutex_lock(&ts->lock);
+	if (ts->suspend_wake) {
+		disable_irq_wake(ts->irq);
+		ts->suspend_wake = false;
+	}
+	mutex_unlock(&ts->lock);
+	mutex_unlock(&ts->state_lock);
 }
 
 static void hyn_disable_wakeup(void *data)
@@ -375,6 +648,8 @@ static int hyn_register_input(struct hyn_ts *ts)
 
 	input->name = HYN_NAME;
 	input->id.bustype = BUS_I2C;
+	input_set_drvdata(input, ts);
+	input_set_capability(input, EV_KEY, KEY_WAKEUP);
 
 	input_set_abs_params(input, ABS_MT_POSITION_X, 0, ts->max_x, 0, 0);
 	input_set_abs_params(input, ABS_MT_POSITION_Y, 0, ts->max_y, 0, 0);
@@ -413,6 +688,8 @@ static int hyn_probe(struct i2c_client *client, const struct i2c_device_id *id)
 
 	ts->client = client;
 	mutex_init(&ts->lock);
+	mutex_init(&ts->state_lock);
+	ts->wake_gesture = true;
 	i2c_set_clientdata(client, ts);
 
 	ret = hyn_parse_dt(ts);
@@ -462,10 +739,51 @@ static int hyn_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	ret = devm_request_threaded_irq(dev, ts->irq, NULL, hyn_irq_thread,
 					IRQF_TRIGGER_RISING | IRQF_ONESHOT |
 					IRQF_NO_SUSPEND, HYN_NAME, ts);
-	if (ret)
+	if (ret) {
 		dev_err(dev, "failed to request irq %d: %d\n", ts->irq, ret);
+		return ret;
+	}
+	ret = devm_add_action(dev, hyn_release_irq_wake, ts);
+	if (ret)
+		return ret;
+
+	/* the attribute and the notifier use the interrupt: after the request */
+	ret = sysfs_create_group(&ts->input->dev.kobj, &hyn_attr_group);
+	if (ret) {
+		dev_err(dev, "failed to create sysfs group: %d\n", ret);
+		return ret;
+	}
+	ret = devm_add_action(dev, hyn_remove_attrs, ts);
+	if (ret) {
+		hyn_remove_attrs(ts);
+		return ret;
+	}
+
+#if IS_ENABLED(CONFIG_DRM_SPRD)
+	/*
+	 * Last step of probe: the callback runs once during registration with
+	 * the current screen state, so the irq, the input device and the
+	 * attribute must be ready. No driver lock is held here. The devm
+	 * action is the last one added: on remove the notifier goes first,
+	 * then the attribute, the irq wake references and the irq.
+	 */
+	ts->panel_nb.notifier_call = hyn_panel_notify;
+	ts->panel_nb.priority = 1000;
+	ret = sprd_panel_notifier_register(&ts->panel_nb);
+	if (ret) {
+		/* touch keeps working, the screen is taken as on */
+		dev_warn(dev, "failed to register the panel notifier: %d\n",
+			 ret);
+		return 0;
+	}
+	ret = devm_add_action(dev, hyn_unregister_panel, ts);
+	if (ret)
+		hyn_unregister_panel(ts);
 
 	return ret;
+#else
+	return 0;
+#endif
 }
 
 static const struct of_device_id hyn_of_match[] = {
