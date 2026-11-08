@@ -11,7 +11,8 @@
  * The heart-rate / SpO2 algorithms of the stock driver are closed vendor
  * code and are not part of this tree.  This driver handles probing,
  * power sequencing and the userspace ABI; measurements come from the stock
- * code only with CONFIG_HRS3XXX_TYHX_BLOB (see hrs3xxx_blob.c).  Without
+ * code only with CONFIG_HRS3XXX_TYHX_BLOB, and only for the chip ID that
+ * blob was built for (see hrs3xxx_blob.c).  Without
  * it the driver reports "no valid measurement" (all values 0,
  * REL_HWHEEL/REL_MISC = -1) once per second while enabled.
  *
@@ -41,9 +42,6 @@
 
 #define HRS3XXX_REG_ID		0x00
 #define HRS3XXX_REG_ENABLE	0x01
-
-#define HRS3XXX_ID_HRS3300	0x21
-#define HRS3XXX_ID_HRS3918	0x27
 
 #define HRS3XXX_MODE_MAX	3	/* accepted values of "enable": 0..3 */
 
@@ -282,7 +280,7 @@ static const char *hrs3xxx_chip_name(u8 id)
 	/*
 	 * HRS3300: ENABLE (0x01) is the same register and 0 is also its
 	 * disabled state, so the power sequencing here is shared. Only the
-	 * ID is checked; no measurement path exists for either chip yet.
+	 * ID is checked; measurement exists only with the matching stock blob.
 	 */
 	if (IS_ENABLED(CONFIG_HEARTRATE_HRS3300) && id == HRS3XXX_ID_HRS3300)
 		return "hrs3300";
@@ -397,14 +395,21 @@ static int hrs3xxx_probe(struct i2c_client *client,
 	i2c_set_clientdata(client, data);
 
 	if (IS_ENABLED(CONFIG_HRS3XXX_TYHX_BLOB)) {
-		/* Starts "not live": nothing can start before probe is done. */
-		data->blob = hrsb_create(client, input);
-		if (IS_ERR(data->blob)) {
-			ret = PTR_ERR(data->blob);
-			data->blob = NULL;
-			dev_err(dev, "cannot set up measurement code: %d\n", ret);
-			input_free_device(input);
-			goto err_off;
+		if (!hrsb_chip_matches(chip_id)) {
+			/* One kernel carries one blob: stay ID-only. */
+			dev_warn(dev,
+				 "stock measurement code is for the %s, chip id 0x%02x does not match: not using it\n",
+				 hrsb_variant_name(), chip_id);
+		} else {
+			/* Starts "not live": nothing starts before probe is done. */
+			data->blob = hrsb_create(client, input, chip_id);
+			if (IS_ERR(data->blob)) {
+				ret = PTR_ERR(data->blob);
+				data->blob = NULL;
+				dev_err(dev, "cannot set up measurement code: %d\n", ret);
+				input_free_device(input);
+				goto err_off;
+			}
 		}
 	}
 
