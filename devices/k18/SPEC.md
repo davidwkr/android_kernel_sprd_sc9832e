@@ -13,11 +13,11 @@ Specs derived only from the stock boot image of one unit (header and DT-table in
 | Header cmdline | `console=ttyS1,115200n8 buildvariant=user` (U-Boot appends `lcd_id`, ...) |
 | DT bootargs | `earlycon=sprd_serial,0x70100000,115200n8 console=ttyS1,115200n8 loglevel=1 init=/init root=/dev/ram0 rw androidboot.hardware=sl8541e_1h10` |
 
-Files: `stock.config` (IKCONFIG from the Image, 4045 lines, 1237 options enabled), `stock.dts` (the single DTB, `dtc -I dtb -O dts`, 5433 lines).
+Files: `stock.config` (IKCONFIG from the Image, 4263 lines, 1237 options enabled), `stock.dts` (the single DTB, `dtc -I dtb -O dts`, 5433 lines).
 
 **Redaction:** nothing needed redacting. The DT, the config and the boot info contain no serial numbers, IMEIs, MAC / BT addresses or keys (pattern check: MAC-like, 15-digit, `serial`, `imei`, `bdaddr`, `uuid`; the only `serial` hits are Kconfig option names). The header SHA-1 id field was not copied. The ramdisk was listed from a gzip cpio extracted (module directory only) into a temporary directory with `--no-absolute-filenames`, then deleted; no file from it was executed.
 
-Single DTB, same 1H10 board compatible as the other devices. The panel is selected at run time by `lcd_id` (U-Boot); the unit's `lcd_id` is **unknown**.
+Single DTB, same 1H10 board compatible as the other devices. The panel is selected at run time by `lcd_id` (U-Boot). The unit's U-Boot log (`uboot_log` partition, 6 boots) shows `icna3311_mipi_init` and `icna3311_readid` = `0x33 0x11` every time: the panel controller is the **ICNA3311**. The log does not print the `lcd_id` itself; U-Boot has a single ICNA3311 driver, so it is one of the two ICNA3311 nodes (`3311148` or `3311214`).
 
 ## Ramdisk `/lib/modules` (names and sizes)
 
@@ -34,7 +34,7 @@ Same four modules as the other watches; rebuild them for the new kernel (`../REA
 
 DT `lcds { }` holds **23 panel nodes** (22 panels plus the dummy HD one; the node unit address is the `lcd_id`). `sprd-panel-if` `panel-drivers` lists 24 phandles: the CO5300 213 node (`0xda`) is listed twice in the stock DT (harmless duplicate, left as is). All DSI, 1 data lane except the dummy.
 
-Touch config (`TP_MAX_X/Y` 480x480, `hynitron,display-coords` 480 480) points to a **480x480** panel, i.e. one of the two ICNA3311 nodes (`3311148`, `3311214`); not verified. The MT107's 412x502 touch size does not apply.
+Touch config (`TP_MAX_X/Y` 480x480, `hynitron,display-coords` 480 480) points to a **480x480** panel, i.e. one of the two ICNA3311 nodes (`3311148`, `3311214`), consistent with the ICNA3311 seen in the U-Boot log. The MT107's 412x502 touch size does not apply.
 
 | lcd_id (unit address) | panel-name | active | pixel clk (kHz) | fps | AOD cmds |
 |---|---|---|---|---|---|
@@ -165,7 +165,7 @@ Against the MT107 `stock.config` the enabled options differ only by `CONFIG_INPU
 
 1. **Touch:** `cst0xx_ts` and `hyn_ts` are in the tree; `btl_ts` is not. Find which one answers (i2c-3 bind) before porting anything.
 2. **Heart rate:** `bd1xxx_hr` has no driver (stock `HEARTRATE_BD1820` / `INPUT_SENSORS_BD1XXX` not in source); `hrs3xxx` covers the other node. Which chip is fitted is unknown.
-3. **Panel:** need the real `lcd_id` (cmdline or U-Boot log). `SPRD_AOD_IDLE` is **not** enabled in `k18.fragment` until it is known (DT candidates include non-CO5300 controllers); enable it for the ICNA3311 / CO5300 / SH8601 nodes with `aod-in` once confirmed.
+3. **Panel:** controller confirmed as ICNA3311 from the U-Boot log (148 or 214 node; the exact `lcd_id` is not logged). `SPRD_AOD_IDLE` is **not** enabled in `k18.fragment` until it is known (DT candidates include non-CO5300 controllers); enable it for the ICNA3311 / CO5300 / SH8601 nodes with `aod-in` once confirmed.
 4. **Modules:** rebuild the four ramdisk modules for the new kernel.
 5. **Unverified:** everything above is from the dump (no unit): touch, heart-rate chip, accelerometer, panel and the NV-derived modem profile.
 
