@@ -27,7 +27,7 @@ the accelerometer) [D]; that code is not reimplemented.
 1. `i2c_check_functionality` style check on the adapter (the code calls the adapter's functionality
    op and returns -ENODEV if bit 0 (I2C_FUNC_I2C) is missing).
 2. Allocate driver data (968 bytes). Parse DT (`of_node` of the client):
-   - `vdd_name` read as string; if present: `regulator_get(dev, "power supply" ... vdd_name)` is
+   - `vdd_name` read as string; if present: `regulator_get(&client->dev, <vdd_name>)` is
      used (log `User %s power supply`), `regulator_set_voltage(2800000, 2800000)` (0x2ab980 uV),
      `regulator_enable`. If the property is absent: log `Default power supply`, no regulator.
      If `regulator_get` returns an error the stock code executes a `brk` (bug); a replacement
@@ -111,13 +111,12 @@ the main open item for a working measurement.
 - `write(fd, buf, 20)` [H, D]: HAL sends a 20-byte buffer, byte 0 = test mode, byte 1 = enable (0/1).
   Kernel copies up to the user count into a stack buffer, stores `buf[0]` as the mode and then starts
   (`buf[1] != 0`) or stops (`buf[1] == 0`) the sensor, logging `test_mode:0x%x enable:%s`.
-  The return value is the number of bytes **not** copied (copy_from_user result cast) i.e. 0 on
-  success [D: `sxtw x0, w19` of the copy_from_user return] ; HAL logs it.
+  The stock write handler returns the copy_from_user remainder (0 on success), not the byte count
+  [D]; the HAL only logs the value. If `access_ok` fails the buffer is zeroed (mode 0, disable).
   HAL mode comes from `persist.sys.heartrate_test_mode` (default string `0`): values 1..12 map to
   themselves, 15 -> 15 (finger), anything else (0, 13, 14, >15) logs "not support, default user BD_SBPM
   mode" and uses 1 [H].
-- `read(fd, buf, 200)` [H, D]: returns (copy_to_user of `count` bytes, return value is the same
-  convention) the first `count` bytes of the 400-byte raw buffer saved by the work function
+- `read(fd, buf, 200)` [H, D]: copies the first `count` bytes (returns `count`, -EFAULT on failure) of the 400-byte raw buffer saved by the work function
   (200 bytes = 100 u16 little endian samples, which the HAL passes to `BD_health_pro`). Kernel
   also `printk`s the first 40 u16 words. The HAL calls read once per SYN event.
 
@@ -125,8 +124,8 @@ the main open item for a working measurement.
 
 | Attribute | Mode | Format |
 |---|---|---|
-| `enable` | 0664 (0x1a4) | store: decimal `kstrtol`-style (`simple_strtol`, base 10); 0 stops, nonzero starts using the stored mode. show: `%d\n` of a state field that the stock driver never updates (always 0) |
-| `chipinfo` | 0444 [I: mode 0x124 inferred] | `bd1820` (or `bd1662`), 6 bytes, **no newline**; selected by the chip model decided at probe |
+| `enable` | 0664 (0x1a4) | store: decimal `kstrtol`-style (`kstrtol`-like helper, base 10); 0 stops, nonzero starts using the stored mode. show: `%d\n` of a state field that the stock driver never updates (always 0) |
+| `chipinfo` | 0664 (0x1a4, show only so not writable in practice) | `bd1820` (or `bd1662`), 6 bytes, **no newline**; selected by the chip model decided at probe |
 
 The HAL reads `chipinfo` from `/sys/class/input/inputN/chipinfo` and picks its sensor name from it [H];
 it does **not** use the sysfs `enable` (HAL start/stop goes through the misc device write) [H].
