@@ -454,6 +454,12 @@ static struct i2c_driver bd1xxx_driver = {
 		.owner = THIS_MODULE,
 		.of_match_table = bd1xxx_of_match,
 		.pm = &bd1xxx_pm_ops,
+		/*
+		 * Open /dev/bd1662rate descriptors outlive misc_deregister() but
+		 * not the devm data: no sysfs unbind. rmmod is blocked by the
+		 * fops owner while a descriptor is open.
+		 */
+		.suppress_bind_attrs = true,
 	},
 	.probe = bd1xxx_probe,
 	.remove = bd1xxx_remove,
