@@ -92,6 +92,7 @@ struct och1970_data {
 	struct kref ref;		/* probe + one per open misc descriptor */
 	struct mutex ctl;		/* whole enable transitions, incl. cancel */
 	bool removed;			/* under lock: client gone, no I/O */
+	bool polling;			/* under lock: enable 2/3 started the poll work */
 	struct delayed_work poll_work;
 	struct delayed_work irq_work;
 	enum och1970_gen gen;
@@ -464,6 +465,7 @@ static ssize_t enable_store(struct device *dev, struct device_attribute *attr,
 	case 3:
 		if (val == 3)
 			och1970_axis_enable(data, 1, data->open_axis, true);
+		data->polling = true;
 		schedule_delayed_work(&data->poll_work,
 				      msecs_to_jiffies(OCH1970_POLL_MS));
 		break;
@@ -483,6 +485,7 @@ static ssize_t enable_store(struct device *dev, struct device_attribute *attr,
 		device_init_wakeup(cdev, false);
 		och1970_axis_enable(data, 1, data->open_axis, false);
 		och1970_powerdown_mode(data);
+		data->polling = false;
 		stop_poll = true;
 		break;
 	}
@@ -1100,10 +1103,13 @@ static void och1970_shutdown(struct i2c_client *client)
 }
 
 #ifdef CONFIG_PM_SLEEP
-/* polling mode (enable = 2 or 3) is stopped across suspend */
+/*
+ * Polling (started by enable 2/3, kept by 1/4/5 as in stock) is stopped
+ * across suspend.
+ */
 static void och1970_restart_poll(struct och1970_data *data)
 {
-	if (data->enable_val == 2 || data->enable_val == 3)
+	if (data->polling)
 		schedule_delayed_work(&data->poll_work,
 				      msecs_to_jiffies(OCH1970_POLL_MS));
 }
@@ -1130,7 +1136,9 @@ static int och1970_suspend(struct device *dev)
 
 	/* a pending evaluation still has the line masked: finish it first */
 	flush_delayed_work(&data->irq_work);
-	och1970_measurement_mode(data, OCH1970_MODE_KEEP);
+	ret = och1970_measurement_mode(data, OCH1970_MODE_KEEP);
+	if (ret)
+		goto err_poll;
 	if (data->gen == OCH1970_GEN1_DM82)
 		irq_set_irq_type(data->irq, IRQ_TYPE_LEVEL_LOW);
 	ret = irq_set_irq_wake(data->irq, 1);
