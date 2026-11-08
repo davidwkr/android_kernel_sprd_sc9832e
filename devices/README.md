@@ -10,6 +10,7 @@ Specs for porting this kernel to three UNISOC SL8541E smartwatches. One folder p
 | `mt107/` | MT107 (from the stock boot dump only, no unit examined) | [SPEC.md](mt107/SPEC.md) |
 | `mt108/` | MT108 (from the stock boot dump only, no unit examined) | [SPEC.md](mt108/SPEC.md) |
 | `dm82/` | DM82 (from the stock boot dump only, no unit examined) | [SPEC.md](dm82/SPEC.md) |
+| `k18/` | K18, build `K18_V10A_HM_H20_EN_ZX_HSC_FC4.4V_20260115` (from the stock boot dump only, no unit examined; separate model, closest to the MT107 but with its own DT: never use the MT107 DT) | [SPEC.md](k18/SPEC.md) |
 
 Each folder has:
 - `stock.config`: the stock kernel's `/proc/config.gz` (or the IKCONFIG embedded in the stock boot image), Linux 4.4.83.
@@ -19,7 +20,7 @@ Use `stock.dts` as the device tree for the first boots. It's the vendor's, and i
 
 ### In-tree device trees
 
-`arch/arm64/boot/dts/sprd/sp9832e-1h10-<folder>.dts` exists for all six folders (`dm63`, `dw100u-silver`, `dw100u-v13m`, `mt107`, `mt108`, `dm82`) and is built by `make dtbs`. Each file is a self-contained, readable copy of that device's `stock.dts` (no dtsi split): raw phandle numbers in well known properties whose target is a valid provider for them (checked per binding, e.g. `gpio-controller` for `*-gpios`, `#clock-cells` for `clocks`, a regulator for `*-supply`; anything uncertain stays a raw number) (`clocks`, `interrupt-parent`, `*-supply`, `pinctrl-N`, `*-gpios`, `dmas`, `sprd,syscon-*`, ...) became `&label` references, everything else is unchanged. The explicit `phandle` / `linux,phandle` properties are kept on purpose, so the compiled DTB reproduces the stock phandle numbers (cells that were not converted still hold the raw number). With the in-tree `scripts/dtc`, each file compiles to a DTB that is byte-identical to the stock DTB (the kernel build adds a `/__symbols__` node because of `-@`).
+`arch/arm64/boot/dts/sprd/sp9832e-1h10-<folder>.dts` exists for all seven folders (`dm63`, `dw100u-silver`, `dw100u-v13m`, `mt107`, `mt108`, `dm82`, `k18`) and is built by `make dtbs`. Each file is a self-contained, readable copy of that device's `stock.dts` (no dtsi split): raw phandle numbers in well known properties whose target is a valid provider for them (checked per binding, e.g. `gpio-controller` for `*-gpios`, `#clock-cells` for `clocks`, a regulator for `*-supply`; anything uncertain stays a raw number) (`clocks`, `interrupt-parent`, `*-supply`, `pinctrl-N`, `*-gpios`, `dmas`, `sprd,syscon-*`, ...) became `&label` references, everything else is unchanged. The explicit `phandle` / `linux,phandle` properties are kept on purpose, so the compiled DTB reproduces the stock phandle numbers (cells that were not converted still hold the raw number). With the in-tree `scripts/dtc`, each file compiles to a DTB that is byte-identical to the stock DTB (the kernel build adds a `/__symbols__` node because of `-@`).
 
 - The first boot still uses the stock DT table that is already in the boot image (`sprd_bootimg.py pack` without `--dt`). The in-tree DTS are for review, for later edits, and for a `--dt` image once a change is wanted; they are not a boot requirement.
 - Regenerate with `python3 -I tools/dts_label.py devices/<dev>/stock.dts OUT.dts`.
