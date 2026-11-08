@@ -1253,10 +1253,15 @@ config TOUCHSCREEN_CST9217
 	depends on I2C
 	depends on INPUT
 	depends on OF && GPIOLIB
+	depends on DRM_SPRD || !DRM_SPRD
 	help
 	  Say Y here if you have a Hynitron CST9217 touch panel described
 	  by a "hynitron,hyn_ts" device tree node, as found on the DW100U
-	  smartwatch. The input device is named "hyn_ts".
+	  smartwatch. The input device is named "hyn_ts". The controller
+	  is put to sleep while the screen is off (sprd panel notifier) and
+	  the input device has a wake_gesture attribute to wake the device
+	  with a gesture report. Without the sprd DRM driver the screen is
+	  taken as on.
 
 	  If unsure, say N.
 
@@ -1267,10 +1272,13 @@ config TOUCHSCREEN_CST0XX
 	tristate "Hynitron CST0xx touchscreen controllers"
 	depends on I2C && OF
 	depends on GPIOLIB
+	depends on DRM_SPRD || !DRM_SPRD
 	help
 	  Say Y here if you have a Hynitron CST0xx (CST816 style) touch
 	  panel, as found on the DM63 smartwatch. The input device is
-	  named "cst0xx_ts".
+	  named "cst0xx_ts". The controller is put to sleep while the
+	  screen is off (sprd panel notifier); without the sprd DRM driver
+	  the screen is taken as on.
 
 	  If unsure, say N.
 
@@ -1281,13 +1289,16 @@ config TOUCHSCREEN_BTL
 	tristate "Betterlife BL6133/BL6138 touchscreen controllers"
 	depends on I2C && OF
 	depends on GPIOLIB
+	depends on DRM_SPRD || !DRM_SPRD
 	help
 	  Say Y here if you have a Betterlife BL6133 or BL6138 touch panel
 	  described by a "btl,btl_ts" device tree node, as found on some
 	  UNISOC SC9832E smartwatches (K18, MT107, MT108, DM82). The chip is
 	  identified in probe, so it can be enabled next to the other touch
 	  drivers that share its GPIOs. The input device is named
-	  "Betterlife_ts". Firmware update is not supported.
+	  "Betterlife_ts". The controller sleeps while the screen is off
+	  (sprd panel notifier; without the sprd DRM driver the screen is
+	  taken as on). Firmware update is not supported.
 
 	  If unsure, say N.
 
