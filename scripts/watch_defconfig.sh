@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Generate or check the standalone arch/arm64/configs/<device>_defconfig files.
 # Usage: scripts/watch_defconfig.sh [--check] DEVICE|all
-#   DEVICE: dm63 | dw100u | mt107 | mt108 | dm82  (dw100u-silver, dw100u-v13m: alias of dw100u)
+#   DEVICE: dm63 | dw100u | mt107 | mt108 | dm82 | k18  (dw100u-silver, dw100u-v13m: alias of dw100u)
 #   (default)  assemble exactly as watch_build.sh (watch_lib.sh), make savedefconfig
 #              in a temporary O= outside the repo, write the defconfig
 #   --check    regenerate and diff against the committed file; exit 1 on drift
 # The fragments stay the source of truth: edit them, then rerun this script.
 set -euo pipefail
 
-usage() { echo "usage: $0 [--check] DEVICE|all  (dm63|dw100u|mt107|mt108|dm82)" >&2; exit 2; }
+usage() { echo "usage: $0 [--check] DEVICE|all  (dm63|dw100u|mt107|mt108|dm82|k18)" >&2; exit 2; }
 CHECK=0
 args=()
 for a in "$@"; do if [ "$a" = "--check" ]; then CHECK=1; else args+=("$a"); fi; done
@@ -50,7 +50,7 @@ one() {
 if [ "$1" = all ]; then
   rc=0
   # one process per device so errexit stays active inside each run
-  for d in dm63 dw100u mt107 mt108 dm82; do
+  for d in dm63 dw100u mt107 mt108 dm82 k18; do
     "$SRC/scripts/watch_defconfig.sh" $([ "$CHECK" -eq 1 ] && echo --check) "$d" || rc=1
   done
   exit $rc

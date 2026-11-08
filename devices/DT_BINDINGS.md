@@ -75,7 +75,7 @@ Unexpected (worth a look, none breaks boot):
 
 ## Per-watch deltas
 
-Common rows above apply to all. Differences between the six DTs:
+Common rows above apply to all. Differences between the six DTs (the K18 DT was added afterwards, last row):
 
 | Watch | Delta | Severity | Driver code | Minimal DTS fix |
 |---|---|---|---|---|
@@ -84,6 +84,7 @@ Common rows above apply to all. Differences between the six DTs:
 | MT107 | `heartrate,bd1xxx`, `pressure,msp891`, `compass,af6837` closed drivers | cosmetic | n/a | none |
 | MT108 | `sprd,v1-keypad` not built; `bd1xxx` closed; `sprd,cable-detection-method = "gpios"` instead of `"typec"` | cosmetic | `musb_sprd.c:1485-1531` | none: the "gpios" path also needs `sprd,vbus-gpios`, present |
 | DM82 | same as MT108 (keypad, `gpios` cable detection, `bd1xxx`); `cst0xx_ts`+`hyn_ts` both built by `dm82.fragment`, one fails probe by design | cosmetic | as above | none |
+| K18 (`sp9832e-1h10-k18.dts`, copy of its stock DT, not part of the six-DT scan above) | like the MT107 (`bd1xxx` closed, `btl_ts` no driver) but no `rotary@0`, no `msp891` / `af6837` node; `qmax981` + `sc7a22` on i2c-1; `och1970` has extra open / rotate properties the driver does not read; battery values are its own (1069 mAh, 1050 mA, JEITA table in `devices/k18/SPEC.md`) | cosmetic | `och1970.c` | none |
 
 ## Watch the following (not mismatches, but what to verify on hardware)
 

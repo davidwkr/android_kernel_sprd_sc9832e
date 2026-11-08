@@ -13,6 +13,7 @@ watch_select() {
     mt107)                     DEVFRAGS="mt107" ;;
     mt108)                     DEVFRAGS="mt108" ;;
     dm82)                      DEVFRAGS="dm82" ;;
+    k18)                       DEVFRAGS="k18" ;;
     *) usage ;;
   esac
   # parity before hardening: hardening wins on any overlap

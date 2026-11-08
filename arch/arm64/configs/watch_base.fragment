@@ -1,4 +1,4 @@
-# Base for all UNISOC SL8541E watches (DM63, DW100Ultra, MT107, MT108, DM82).
+# Base for all UNISOC SL8541E watches (DM63, DW100Ultra, MT107, MT108, DM82, K18).
 # Order: sprd_sharkle_defconfig, this file, watch_stock_parity, watch_hardening, then device fragments.
 # Use scripts/watch_build.sh, which does this and verifies the result.
 # Only options that sprd_sharkle_defconfig lacks and every device needs belong here.

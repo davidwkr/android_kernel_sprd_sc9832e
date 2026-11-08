@@ -2,7 +2,7 @@
 
 What `devices/<dev>/stock.config` (4.4.83) enables (`=y` or `=m`) that our per-watch builds
 (`scripts/watch_build.sh`, before `watch_stock_parity.fragment`) did not, checked for DM63,
-DW100U silver, MT107, MT108 and DM82. Evidence: the stock DTs (`devices/*/stock.dts`), the stock
+DW100U silver, MT107, MT108 and DM82 (K18: its stock config is the MT107's plus `HEARTRATE_BD1820` and `INPUT_SENSORS_BD1XXX`, both without source here, so the same classes apply; its `INPUT_GPIO_ROTARY_ENCODER` is inert, the DT has no rotary node). Evidence: the stock DTs (`devices/*/stock.dts`), the stock
 boot images (ramdisk unpacked from read-only copies with `sprd_bootimg.py`), the driver sources
 and Kconfig of this tree, `kernel/configs/android-*.config`, and `arch/arm64/configs/lineageos_dw99_defconfig`
 (a sibling arm64 config of this tree that uses the same WCN stack). Nothing here was run on a watch.

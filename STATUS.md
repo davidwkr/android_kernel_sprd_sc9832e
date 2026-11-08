@@ -28,6 +28,7 @@ All finished work is merged into **`security-backports`** (head `fcca2e634ce6`).
 | `tweaks/charge-cv` | DM63 `batt_idle` CV override in the SC2721 charger driver | yes |
 | `drivers/otg-role` | `USB_MUSB_SPRD_ROLE_SYSFS` (`watch_otg.fragment`): host/device switch, replaces `otg_role.ko` | yes |
 | `devices/mt107-mt108-dm82`, `devices/new-board-support` | MT107, MT108, DM82 specs, fragments, HRS3300 ID, `qma6981` fixes | yes |
+| `devices/k18` | K18 spec, fragment, defconfig, labelled DT (not merged, not pushed) | no |
 | `tools/bootimg`, `tools/ramdisk-modules`, `tools/watch-build` | `tools/sprd_bootimg.py`, `tools/sprd_ramdisk.py`, `scripts/watch_build.sh` | yes |
 | `fixes/gnss-failpaths` | GNSS failed-start unwind, retry rate limit, state guards | yes |
 | `fixes/gnss-ctl-races` | GNSS control transaction mutex, atomic state transitions (ASSERT never overwritten) | yes |
@@ -96,18 +97,19 @@ Each work item went through: implementation, a first code review, fixes, then an
 Cross compiler `aarch64-linux-gnu-` (GCC 16). Output goes outside the repo (default `../watch_out/DEVICE/`).
 
 ```sh
-scripts/watch_build.sh DEVICE [OUTDIR]   # DEVICE: dm63 dw100u-silver dw100u-v13m mt107 mt108 dm82
+scripts/watch_build.sh DEVICE [OUTDIR]   # DEVICE: dm63 dw100u-silver dw100u-v13m mt107 mt108 dm82 k18
 ```
 
-The script runs `sprd_sharkle_defconfig`, merges `watch_base`, `watch_stock_parity` (stock-config options we were missing, see [`devices/CONFIG_PARITY.md`](devices/CONFIG_PARITY.md)), `watch_hardening` and the device fragments (dm63: `dm63_touch watch_hrs watch_sc7a22 dm63_aod`; dw100u-*: `dw100u_touch watch_hrs watch_sc7a22 dw100u_aod`; mt107, mt108, dm82: their own fragment), runs `olddefconfig`, checks that every fragment line took effect (fails listing mismatches), builds `Image` and modules, then builds the ramdisk modules `mali`, `sprdbt_tty`, `sprd_fm` against the same `O=` (`sprdwl_ng` is in-tree `=m`; never mix configs), cleans the module source dirs and copies `Image` + the four `.ko` + `sha256sum.txt` to `OUTDIR/DEVICE/`. `ARCH`, `CROSS_COMPILE`, `JOBS` are overridable by environment. `watch_release` (not ready) and `watch_otg` (off by default) are never merged.
+The script runs `sprd_sharkle_defconfig`, merges `watch_base`, `watch_stock_parity` (stock-config options we were missing, see [`devices/CONFIG_PARITY.md`](devices/CONFIG_PARITY.md)), `watch_hardening` and the device fragments (dm63: `dm63_touch watch_hrs watch_sc7a22 dm63_aod`; dw100u-*: `dw100u_touch watch_hrs watch_sc7a22 dw100u_aod`; mt107, mt108, dm82, k18: their own fragment), runs `olddefconfig`, checks that every fragment line took effect (fails listing mismatches), builds `Image` and modules, then builds the ramdisk modules `mali`, `sprdbt_tty`, `sprd_fm` against the same `O=` (`sprdwl_ng` is in-tree `=m`; never mix configs), cleans the module source dirs and copies `Image` + the four `.ko` + `sha256sum.txt` to `OUTDIR/DEVICE/`. `ARCH`, `CROSS_COMPILE`, `JOBS` are overridable by environment. `watch_release` (not ready) and `watch_otg` (off by default) are never merged.
 
-Standalone defconfigs: `arch/arm64/configs/{dm63,dw100u,mt107,mt108,dm82}_defconfig` (`dw100u` covers silver and V13M) are generated from the same fragments by `scripts/watch_defconfig.sh DEVICE|all`; `scripts/watch_defconfig.sh --check all` fails if one drifted from the fragments. The assembly and fragment verification live in `scripts/watch_lib.sh`, shared with `watch_build.sh`.
+Standalone defconfigs: `arch/arm64/configs/{dm63,dw100u,mt107,mt108,dm82,k18}_defconfig` (`dw100u` covers silver and V13M) are generated from the same fragments by `scripts/watch_defconfig.sh DEVICE|all`; `scripts/watch_defconfig.sh --check all` fails if one drifted from the fragments. The assembly and fragment verification live in `scripts/watch_lib.sh`, shared with `watch_build.sh`.
 
 Last full build of `security-backports` (head `fcca2e634ce6`, 2026-10-31): all six devices rc=0, every ramdisk module symbol resolves against `Module.symvers`, no implicit declarations; the four modules are stripped with `--strip-debug`.
 
 ## Open
 
 - **MT107, MT108, DM82:** specs added from the stock boot dumps (TODO section 8b); per-device fragments `mt107/mt108/dm82.fragment` added (build-checked); `hrs3xxx` accepts the HRS3300 ID (probe and standby only, no measurement, as for the HRS3918); the vendor `qma6981` driver's probe stack overflow is fixed; Betterlife touch, BD1xxx, OCH1970 and MSP891 drivers are open (no GPL source found).
+- **K18:** spec, `k18.fragment`, `k18_defconfig` and labelled DT added from the stock boot dump (branch `devices/k18`, build-checked only); BD1xxx / BD1820 heart rate has no driver; panel (`lcd_id`) and touch chip unknown, so `SPRD_AOD_IDLE` is off.
 - **First boot** (TODO 7): needs the owner's choice of watch and OK for backup and the recovery flash. `scripts/first_boot.sh` (branch `tools/first-boot`) is not merged: its latest review fixes are uncommitted because the fake-adb test suite run was blocked by a local tool hook; it has to be run first.
 - **Hardware tests** for every change above (steps in KERNEL_TWEAKS.md and SECURITY_BACKPORTS.md section 6). Most important: GNSS fixes continuous at 1 Hz with the CPU suspending; charge override on a supervised DM63; AOD idle shows power mode `0xdc`.
 - **Security, not fixed:** Mali CVE-2021-28663, CVE-2021-28664, CVE-2022-36449 (need Arm's fixes); UNISOC camera, WCN and WLAN CVEs not located; dcam_r6p0 passes a kernel `sg_table` pointer to user space and back (not built in our configs; needs a uapi change); the iommuex out-of-range bypass and stale IOVA reuse after a failed unmap (vendor design); unlocked `s_isp_pipeline[id]` in `sprd_isp_path_set` (unbuilt ISP variants). For the security team, see SECURITY_BACKPORTS.md.
