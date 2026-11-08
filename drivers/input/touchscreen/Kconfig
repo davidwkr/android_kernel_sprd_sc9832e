@@ -1277,4 +1277,21 @@ config TOUCHSCREEN_CST0XX
 	  To compile this driver as a module, choose M here: the
 	  module will be called cst0xx_ts.
 
+config TOUCHSCREEN_BTL
+	tristate "Betterlife BL6133/BL6138 touchscreen controllers"
+	depends on I2C && OF
+	depends on GPIOLIB
+	help
+	  Say Y here if you have a Betterlife BL6133 or BL6138 touch panel
+	  described by a "btl,btl_ts" device tree node, as found on some
+	  UNISOC SC9832E smartwatches (K18, MT107, MT108, DM82). The chip is
+	  identified in probe, so it can be enabled next to the other touch
+	  drivers that share its GPIOs. The input device is named
+	  "Betterlife_ts". Firmware update is not supported.
+
+	  If unsure, say N.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called btl_ts.
+
 endif
