@@ -1267,10 +1267,13 @@ config TOUCHSCREEN_CST0XX
 	tristate "Hynitron CST0xx touchscreen controllers"
 	depends on I2C && OF
 	depends on GPIOLIB
+	depends on DRM_SPRD || !DRM_SPRD
 	help
 	  Say Y here if you have a Hynitron CST0xx (CST816 style) touch
 	  panel, as found on the DM63 smartwatch. The input device is
-	  named "cst0xx_ts".
+	  named "cst0xx_ts". The controller is put to sleep while the
+	  screen is off (sprd panel notifier); without the sprd DRM driver
+	  the screen is taken as on.
 
 	  If unsure, say N.
 
