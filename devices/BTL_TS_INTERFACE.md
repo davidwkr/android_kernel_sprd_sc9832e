@@ -124,10 +124,49 @@ Registered on the UNISOC ADF display notifier (`adf_register_client`), not on PM
   steps), `enable_irq`, release `KEY_BACK` and every slot (`ABS_MT_SLOT`, `ABS_MT_TRACKING_ID` -1), `SYN_REPORT`.
 - Related register, sysfs only: `bl_send_power_state` writes `8B <state>`.
 
-The in-tree driver does **not** sleep the controller (like `cst0xx_ts` and `hyn_ts`): it uses late
-system PM, keeps touch as a wake source with `IRQF_NO_SUSPEND` and reads a pending report on resume.
-This is a deliberate deviation: touch keeps working in AOD. Open item: whether the stock
-sleep (0xA5 = 3) plus the reset on wake saves measurable power.
+Details [D] (K18 Image, `function+offset`):
+
+- Notifier filter: event 0x10 (`ADF_EVENT_BLANK`), `*(int *)ev->data` 0 = unblank, 3 = blank
+  (`adf_notifier_callback`+0x24..0x34, +0xec).
+- `bl_chip_switch_mode(mode)` writes the two bytes `A5 <mode>` at the client address with one
+  `bl_i2c_transfer` (`bl_chip_switch_mode`+0x30..0x50). Its only caller passes 3
+  (`adf_notifier_callback`+0x11c). No other mode value is ever written.
+- Blank order: suspended flag (`+168`) = 1, `disable_irq`, I2C mutex, `A5 03` (`adf_notifier_callback`+0x108..0x11c).
+  The report path skips its read while the flag is set (`bl_ts_handler`+0x618, flag test), so nothing
+  is reported while asleep.
+- Unblank order: flag = 0, dummy `bl_read_reg(0xA5)` (result unused), `bl_ts_wakeup`, `enable_irq`,
+  release of the key held in the struct (`input_event(EV_KEY, code, 0)`, +0x90) and of every
+  slot (`ABS_MT_SLOT` n, `ABS_MT_TRACKING_ID` -1), `SYN_REPORT` (`adf_notifier_callback`+0x50..0xe0).
+- Both branches are guarded by a "chip initialised" byte (`+205`); a second byte (`+281`) is set on blank
+  and cleared on unblank and is never read in the driver.
+- `bl_send_power_state(state)` (writes `8B <state>`) has no caller; `bl_store_powerstate` only stores
+  the parsed hex value in a global. Not used for suspend.
+
+### Gesture / double-tap-to-wake: no evidence of a gesture mode [D]
+
+- Gesture ID 0x17 (report byte 0) is the only one handled, as `KEY_F4` (0x3e) press/release with
+  `msleep(500)` (`bl_ts_handler`+0x62c..0x684). The other `KEY_*` codes declared for the input device
+  (U, UP, DOWN, LEFT, RIGHT, O, E, M, W, S, V, C, Z) are never reported.
+- There is no register write or command that enables gestures: the only mode-register write is
+  `A5 03`, the only other register write in the runtime paths is the sysfs `reg` file (arbitrary
+  user value) and `8B` (dead code). No sysfs or proc switch exists for gestures
+  (attribute names: `reg fwupdate argchecksum powerstate apkdebug kernelversion irqstatus chipinfo`).
+- The stock blank path disables the irq and sets the suspended flag, so the stock driver cannot
+  wake from the sleeping controller. Gesture 0x17 only appears in the normal running mode,
+  with the firmware's own meaning [I: unknown; not known whether it is a double tap].
+- Userspace: the stock system image has no `Betterlife_ts.kl`, so `Generic.kl` applies, where
+  `key 62 F4` has no `WAKE` flag. No stock system or vendor file mentions a Betterlife gesture path.
+  So KEY_F4 does not wake an Android 8.1 device from the stock userspace.
+- Result: DT2W cannot be implemented with evidence. The in-tree driver reports it as unsupported.
+
+### In-tree driver
+
+`btl_ts.c` follows the stock blank/unblank sequence on the ADF notifier (the `A5 03` write, `disable_irq`
+and the not-a-wake-source state while the screen is off; dummy read, reset pulse, `enable_irq` and
+finger release on unblank). The key release is not reproduced because the key is not declared. System
+suspend keeps the late PM ops: with the screen on touch is still a wake source and a report that arrives with the
+bus down is read on resume; a screen change that arrives with the bus down is applied on resume.
+The `wake_gesture` attribute is on the input device, see `TOUCH_WAKE.md`.
 
 ## Sysfs and proc [D]
 
@@ -154,4 +193,8 @@ other candidates also do in their own probes.
   but touch will not work.
 - Probe order against the other candidates is untested: a chip that answers at 0x38 or 0x5a
   gets one extra reset pulse and an irq-pin wiggle from this probe if it runs first.
-- The 500 ms sleep after gesture 0x17 and the ADF-driven sleep are not reproduced.
+- The 500 ms sleep after gesture 0x17 is not reproduced.
+- The sleep and wake sequences are copied from the stock disassembly and not run on a unit with this chip.
+  The wake timing (reset pulse of 50 ms steps) is the stock one; whether the chip needs the dummy read is unknown.
+- `A5 03` is called deep sleep here by inference from the name of the function; no datasheet.
+- No gesture mode is known. Finding one needs the vendor firmware documentation or a unit to probe.
