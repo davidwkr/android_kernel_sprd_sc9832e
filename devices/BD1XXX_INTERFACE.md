@@ -156,3 +156,16 @@ PM ops only log `bd1xxx_i2c_suspend` / `bd1xxx_i2c_resume` and return 0: the sen
   an interleaved layout; only the first 200 bytes of the buffer are read).
 - Accelerometer coupling (`gensor_*_lpf`, `Wear_judge`) is in the kernel path; the HAL gets its
   accelerometer through a separate sensor (`heartrate_acc_enable`, `setAccel`).
+
+## Implemented by `drivers/input/misc/bd1xxx.c`
+
+Probe (regulator `vdd_name` at 2.8 V, power GPIO, read-only ID check reg 0xBD == 0x70 and reg 0xBC ==
+0x11, then power off; the stock write/readback of reg 0x03 is skipped because its meaning is unknown),
+input device `heartrate` (EV_KEY 63, EV_REL X/Y/Z), `enable` and `chipinfo` (`bd1820`, no newline),
+misc device `/dev/bd1662rate` (write: byte 0 mode, byte 1 enable, up to 20 bytes; read: up to 400 bytes,
+always zero), power on/off on enable, power off while suspended. Differences from stock: write returns the
+byte count, `enable` show always prints 0, suspend powers the chip off.
+
+Not implemented (TODO in the source): all chip programming (init blocks, data read, close sequence), the
+50/200 ms polling, input events. Enabling powers the chip but produces no samples, so HR/SpO2 stay at the
+HAL's "no data" values until the open items above are resolved on a unit.
