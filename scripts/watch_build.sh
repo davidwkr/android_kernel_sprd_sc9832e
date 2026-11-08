@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Build kernel Image + ramdisk modules for one watch.
 # Usage: scripts/watch_build.sh DEVICE [OUTDIR]
-#   DEVICE: dm63 | dw100u-silver | dw100u-v13m | mt107 | mt108 | dm82
+#   DEVICE: dm63 | dw100u-silver | dw100u-v13m | mt107 | mt108 | dm82 | k18
 #   OUTDIR: default ../watch_out (outside the repo); results in OUTDIR/DEVICE/
 # Env: ARCH (arm64), CROSS_COMPILE (aarch64-linux-gnu-), JOBS (nproc)
 set -euo pipefail
 
-usage() { echo "usage: $0 DEVICE [OUTDIR]  (dm63|dw100u-silver|dw100u-v13m|mt107|mt108|dm82)" >&2; exit 2; }
+usage() { echo "usage: $0 DEVICE [OUTDIR]  (dm63|dw100u-silver|dw100u-v13m|mt107|mt108|dm82|k18)" >&2; exit 2; }
 [ $# -ge 1 ] && [ $# -le 2 ] || usage
 
 DEVICE=$1

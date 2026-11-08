@@ -1,0 +1,20 @@
+# K18 (ICNA3311 / CO5300 class OLED, 480x480 touch): see devices/k18/SPEC.md.
+# Merge on top of the device config. The DT lists three touch candidates, two
+# with drivers here (cst0xx_ts 0x38, hyn_ts 0x5a, sharing the reset/irq GPIOs);
+# the one that answers probes, the other fails probe and releases its GPIOs.
+# Not needed: btl_ts (no driver in tree). Missing: bd1xxx_hr (stock
+# INPUT_SENSORS_BD1XXX / HEARTRATE_BD1820, no driver in tree). No rotary
+# encoder node (decorative crown): the parity-enabled rotary driver stays inert.
+# The panel is not known (no lcd_id) and the DT has non-CO5300 candidates, so
+# SPRD_AOD_IDLE stays off until the panel is identified.
+# watch_otg.fragment is deliberately not enabled.
+CONFIG_TOUCHSCREEN_CST0XX=y
+CONFIG_TOUCHSCREEN_CST9217=y
+# CONFIG_SPRD_AOD_IDLE is not set
+CONFIG_INPUT_SENSORS_HRS3XXX=y
+CONFIG_HEARTRATE_HRS3918=y
+CONFIG_SENSORS_SC7A22=y
+# "QST,qmax981" matches qma6981.c
+CONFIG_INPUT_QMA6981_I2C=y
+# "magnetic,och1970" (hall sensor, polled, power-down unless enabled)
+CONFIG_SENSORS_OCH1970=y
