@@ -9,6 +9,7 @@
 #include <linux/i2c.h>
 #include <linux/input.h>
 #include <linux/interrupt.h>
+#include <linux/kref.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -88,6 +89,8 @@ struct sc7a22_data {
 	struct miscdevice miscdev;
 	struct delayed_work work;
 	struct mutex lock; /* Serializes enable, delay, and work transitions. */
+	struct kref ref; /* probe + one per open misc descriptor */
+	bool removed; /* under lock: no enabling after teardown started */
 	atomic_t enabled;
 	unsigned int delay_ms;
 	unsigned int layout;
@@ -608,6 +611,10 @@ static int sc7a22_set_enabled(struct sc7a22_data *data, bool enabled)
 	int ret = 0;
 
 	mutex_lock(&data->lock);
+	if (enabled && data->removed) {
+		ret = -ENODEV;
+		goto out;
+	}
 	if (enabled == !!atomic_read(&data->enabled))
 		goto out;
 
@@ -647,14 +654,33 @@ static void sc7a22_set_delay(struct sc7a22_data *data, unsigned int delay_ms)
 	mutex_unlock(&data->lock);
 }
 
+static void sc7a22_free(struct kref *ref)
+{
+	kfree(container_of(ref, struct sc7a22_data, ref));
+}
+
+/*
+ * Descriptors can outlive the client (adapter unbind): each one holds a
+ * reference, and enabling after remove fails with -ENODEV.
+ */
 static int sc7a22_misc_open(struct inode *inode, struct file *file)
 {
 	struct miscdevice *miscdev = file->private_data;
 	struct sc7a22_data *data;
 
 	data = container_of(miscdev, struct sc7a22_data, miscdev);
+	/* misc_open() holds misc_mtx: remove has not deregistered us yet. */
+	kref_get(&data->ref);
 	file->private_data = data;
 	return nonseekable_open(inode, file);
+}
+
+static int sc7a22_misc_release(struct inode *inode, struct file *file)
+{
+	struct sc7a22_data *data = file->private_data;
+
+	kref_put(&data->ref, sc7a22_free);
+	return 0;
 }
 
 static long sc7a22_misc_ioctl(struct file *file, unsigned int cmd,
@@ -702,6 +728,7 @@ static long sc7a22_misc_ioctl(struct file *file, unsigned int cmd,
 static const struct file_operations sc7a22_misc_fops = {
 	.owner = THIS_MODULE,
 	.open = sc7a22_misc_open,
+	.release = sc7a22_misc_release,
 	.unlocked_ioctl = sc7a22_misc_ioctl,
 	.llseek = no_llseek,
 };
@@ -1007,21 +1034,34 @@ static int sc7a22_input_step_init(struct sc7a22_data *data)
 
 static void sc7a22_cleanup(struct sc7a22_data *data)
 {
-	if (data->irq_requested)
-		free_irq(data->irq, data);
-	if (data->gpio_owned)
-		gpio_free(data->irq_gpio);
-	cancel_work_sync(&data->irq_work);
-	sc7a22_set_enabled(data, false);
-	device_init_wakeup(&data->client->dev, false);
+	mutex_lock(&data->lock);
+	data->removed = true;
+	mutex_unlock(&data->lock);
+
+	/* Remove every way to enable polling first: sysfs, ioctl, notifier. */
 	sc7a22_remove_control_files(data);
-	if (data->adf_registered)
-		adf_unregister_client(&data->adf_nb);
 	if (data->sysfs_group)
 		sysfs_remove_group(&data->input->dev.kobj,
 				   &sc7a22_attribute_group);
 	if (data->misc_registered)
 		misc_deregister(&data->miscdev);
+	if (data->adf_registered)
+		adf_unregister_client(&data->adf_nb);
+
+	/*
+	 * Mask the line and wait for the handler, drain the work (its
+	 * enable_irq() only undoes the handler's disable), then free.
+	 */
+	if (data->irq_requested)
+		disable_irq(data->irq);
+	cancel_work_sync(&data->irq_work);
+	if (data->irq_requested)
+		free_irq(data->irq, data);
+	if (data->gpio_owned)
+		gpio_free(data->irq_gpio);
+
+	sc7a22_set_enabled(data, false);
+	device_init_wakeup(&data->client->dev, false);
 	if (data->step_input)
 		input_unregister_device(data->step_input);
 	if (data->key_input)
@@ -1030,7 +1070,7 @@ static void sc7a22_cleanup(struct sc7a22_data *data)
 		input_unregister_device(data->input);
 }
 
-static void sc7a22_parse_dt(struct sc7a22_data *data)
+static int sc7a22_parse_dt(struct sc7a22_data *data)
 {
 	struct device_node *np = data->client->dev.of_node;
 	u32 value;
@@ -1039,7 +1079,7 @@ static void sc7a22_parse_dt(struct sc7a22_data *data)
 	data->handup_ctrl = SC7A22_DEFAULT_HANDUP_CTRL;
 	data->irq_gpio = -1;
 	if (!np)
-		return;
+		return 0;
 
 	if (!of_property_read_u32(np, "layout", &value) &&
 	    value < ARRAY_SIZE(sc7a22_axis_maps))
@@ -1049,6 +1089,11 @@ static void sc7a22_parse_dt(struct sc7a22_data *data)
 	if (!of_property_read_u32(np, "hand-up-ctrl", &value))
 		data->handup_ctrl = value;
 	data->irq_gpio = of_get_named_gpio(np, "irq-gpio", 0);
+	/* optional, but a controller that is not there yet must defer */
+	if (data->irq_gpio == -EPROBE_DEFER)
+		return -EPROBE_DEFER;
+
+	return 0;
 }
 
 static int sc7a22_setup_irq(struct sc7a22_data *data)
@@ -1100,6 +1145,7 @@ static int sc7a22_probe(struct i2c_client *client,
 	data->client = client;
 	data->delay_ms = SC7A22_DEFAULT_DELAY_MS;
 	mutex_init(&data->lock);
+	kref_init(&data->ref);
 	mutex_init(&data->op_lock);
 	mutex_init(&data->irq_lock);
 	atomic_set(&data->enabled, 0);
@@ -1111,7 +1157,9 @@ static int sc7a22_probe(struct i2c_client *client,
 	data->screen_on = true;
 	i2c_set_clientdata(client, data);
 
-	sc7a22_parse_dt(data);
+	ret = sc7a22_parse_dt(data);
+	if (ret < 0)
+		goto err_free;
 	data->map_layout = data->layout;
 
 	ret = sc7a22_detect(data);
@@ -1161,6 +1209,8 @@ static int sc7a22_probe(struct i2c_client *client,
 	sc7a22_create_control_files(data);
 
 	ret = sc7a22_setup_irq(data);
+	if (ret == -EPROBE_DEFER)
+		goto err_cleanup;
 	if (ret < 0)
 		dev_warn(&client->dev, "no hand-up interrupt: %d\n", ret);
 
@@ -1172,7 +1222,7 @@ err_cleanup:
 	sc7a22_cleanup(data);
 err_free:
 	i2c_set_clientdata(client, NULL);
-	kfree(data);
+	kref_put(&data->ref, sc7a22_free);
 	return ret;
 }
 
@@ -1182,7 +1232,7 @@ static int sc7a22_remove(struct i2c_client *client)
 
 	sc7a22_cleanup(data);
 	i2c_set_clientdata(client, NULL);
-	kfree(data);
+	kref_put(&data->ref, sc7a22_free);
 	return 0;
 }
 
