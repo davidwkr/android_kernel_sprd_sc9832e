@@ -107,3 +107,4 @@ obj-$(CONFIG_TOUCHSCREEN_ROHM_BU21023)	+= rohm_bu21023.o
 obj-$(CONFIG_TOUCHSCREEN_ADAPTIVE)      += adaptive-ts/
 obj-$(CONFIG_TOUCHSCREEN_CST9217)	+= hynitron_cst9217.o
 obj-$(CONFIG_TOUCHSCREEN_CST0XX)	+= cst0xx_ts.o
+obj-$(CONFIG_TOUCHSCREEN_BTL)	+= btl_ts.o
