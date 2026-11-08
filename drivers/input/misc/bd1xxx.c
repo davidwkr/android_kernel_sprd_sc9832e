@@ -984,6 +984,14 @@ static int bd1xxx_probe(struct i2c_client *client,
 	ret = misc_register(&data->misc);
 	if (ret) {
 		dev_err(dev, "cannot register misc device: %d\n", ret);
+		/* sysfs enable may already have started the poller */
+		mutex_lock(&data->ctl);
+		mutex_lock(&data->lock);
+		data->removed = true;
+		data->enabled = false;
+		mutex_unlock(&data->lock);
+		bd1xxx_stop(data);
+		mutex_unlock(&data->ctl);
 		input_unregister_device(input);
 		goto err_off;
 	}
