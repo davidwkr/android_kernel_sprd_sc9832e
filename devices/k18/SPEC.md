@@ -93,7 +93,15 @@ Two buses, unlike the MT107 (all on i2c-2):
 | 0x44 | `hrs3xxx`, `tyhx,hrs3xxx` | heart rate (TYHX HRS3918 / HRS3300 family) | power 55 |
 | 0x38 | `bd1xxx_hr`, `heartrate,bd1xxx` | heart rate (BD1xxx / BD1820), `vdd_name = "vddcammot"` | power 55 (same pin as `hrs3xxx`) |
 
-The two heart-rate nodes share GPIO 55: alternatives or variants, not both fitted. Not in this DT (present on the MT107): `msp891_gas` (pressure) and `af6837_mag`. **No `rotary@0` node.**
+The two heart-rate nodes share GPIO 55: alternatives or variants, not both fitted. **The fitted chip is the Rohm BD1820** (from the stock system and vendor images, see below), so `hrs3xxx` is the unused alternative on this unit. Not in this DT (present on the MT107): `msp891_gas` (pressure) and `af6837_mag`. **No `rotary@0` node.**
+
+### From the stock system and vendor images
+
+Read with `debugfs` from the `system` and `vendor` dumps (no mount):
+
+- `system/build.prop`: `ro.product.model=M99`, `ro.product.brand=hesc`, `ro.product.name=sl8541e_1h10_oversea`, `ro.build.display.id=K18_V10A_HM_H20_EN_ZX_HSC_FC4.4V_20260115`, and **`heartrate.spo2=true`** (the stock heart-rate service reports SpO2). `vendor/build.prop`: `jx.heartrate=false`.
+- `vendor/lib/hw/sensors.sp9832e.so` supports only **`bd1820 HeartrateSensor`**, with the BD1820 SpO2 code in the HAL (`BD_Spo2_math`, `spo2_fifo_result`, `in_spo2_adcdata`). It has no TYHX HRS support; the MT107 HAL is the opposite (`hrs3300/3602/3605/3918` only). The SpO2 math runs in the HAL, so a kernel driver only has to deliver the raw PPG data in the stock interface.
+- The accelerometer is reported under a generic name (`ST Xr 3-axis Accelerometer`), so SC7A22 vs QMA981 stays open. The HAL's light/proximity classes (EPL2182, TMD2771, AL3006, LTR558) are generic UNISOC leftovers with no DT node: none fitted.
 
 ## Charger, PMIC, fuel gauge
 
@@ -142,7 +150,7 @@ Same as the MT107 table except:
 
 | Compatible | Driver in tree | Status |
 |---|---|---|
-| `heartrate,bd1xxx` | none (stock `INPUT_SENSORS_BD1XXX`, `HEARTRATE_BD1820` enabled in the stock config, not in source) | **missing**: port only if the unit has that chip; `hrs3xxx` is the covered alternative |
+| `heartrate,bd1xxx` | none (stock `INPUT_SENSORS_BD1XXX`, `HEARTRATE_BD1820` enabled in the stock config, not in source) | **missing, and it is the fitted chip**: heart rate and SpO2 do not work on this kernel until a BD1xxx driver exists (port planned, interface to be recovered from the stock kernel and HAL) |
 | `btl,btl_ts` | none | missing, only needed if fitted |
 | `magnetic,och1970` | `drivers/input/misc/och1970.c` (`SENSORS_OCH1970`) | yes (polled; the stock HAL's thresholds and open / rotate logic are not implemented) |
 | `pressure,msp891`, `compass,af6837` | none | no node in this DT: not needed |
@@ -164,10 +172,10 @@ Against the MT107 `stock.config` the enabled options differ only by `CONFIG_INPU
 ## Gap list
 
 1. **Touch:** `cst0xx_ts` and `hyn_ts` are in the tree; `btl_ts` is not. Find which one answers (i2c-3 bind) before porting anything.
-2. **Heart rate:** `bd1xxx_hr` has no driver (stock `HEARTRATE_BD1820` / `INPUT_SENSORS_BD1XXX` not in source); `hrs3xxx` covers the other node. Which chip is fitted is unknown.
+2. **Heart rate:** `bd1xxx_hr` has no driver (stock `HEARTRATE_BD1820` / `INPUT_SENSORS_BD1XXX` not in source); the stock vendor HAL shows the fitted chip is the BD1820, so heart rate and SpO2 need this driver; `hrs3xxx` covers only the unused node.
 3. **Panel:** controller confirmed as ICNA3311 from the U-Boot log (148 or 214 node; the exact `lcd_id` is not logged). `SPRD_AOD_IDLE` is **not** enabled in `k18.fragment` until it is known (DT candidates include non-CO5300 controllers); enable it for the ICNA3311 / CO5300 / SH8601 nodes with `aod-in` once confirmed.
 4. **Modules:** rebuild the four ramdisk modules for the new kernel.
-5. **Unverified:** everything above is from the dump (no unit): touch, heart-rate chip, accelerometer, panel and the NV-derived modem profile.
+5. **Unverified:** everything above is from the dumps (no running unit): touch, accelerometer and the NV-derived modem profile. Heart-rate chip (BD1820) from the vendor HAL and panel controller (ICNA3311) from the U-Boot log.
 
 ## Config fragment
 
