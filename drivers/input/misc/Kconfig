@@ -886,7 +886,13 @@ config SENSORS_SC7A22
 	help
 	  Say Y here if you have an SC7A22 or SC7A20 accelerometer on an
 	  I2C bus. The driver exposes the legacy qmax981 userspace ABI used
-	  by the Spreadtrum sensor HAL.
+	  by the Spreadtrum sensor HAL, the in-chip step counter and the
+	  raise-to-wake key of the stock kernel (step_value, step_clean,
+	  hand_start, motion_state, sc7a22_input_key).
+
+	  The raise-to-wake key is only sent while the screen is off. The
+	  4.14 sprd DRM driver has no screen state notifier, so the screen
+	  is taken as on unless an fb blank event says otherwise.
 
 	  To compile this driver as a module, choose M here.
 
