@@ -743,12 +743,11 @@
  * Panel selection, as stock: the bootloader's lcd_id=ID<hex> picks the /lcds
  * node whose sprd,lcd-id matches (ID5300178, ID53001952, ID5300204,
  * ID5300206, ID5300213, ID7801206, ID13613206, ID3311148, ID3311214). lcd_name= still
- * wins. There is NO sprd,default-panel: the unit's id is unknown and none
- * may be invented, so a command line without lcd_id leaves the display
- * blank (probe -ENODEV).
- * TODO: set sprd,default-panel to the id read from the U-Boot log of the
- * unit. A wrong variant gives a blank or shifted picture (column window and
- * timing differ), the init commands do not stress the panel supplies.
+ * wins. The unit's U-Boot log shows icna3311_mipi_init and readid 0x33 0x11
+ * on every boot, so the panel is an ICNA3311 (148 or 214 node; the exact
+ * lcd_id is not logged). Both nodes carry identical commands and timings;
+ * sprd,default-panel is the 148 node (480x480, matching the touch) for a
+ * command line without lcd_id.
  *
  * Stock power-on-sequence (gpio level delay-ms) 33 1 20, 50 1 20, 50 0 20,
  * 50 1 50: gpio 33 is avdd-gpio, gpio 50 is reset-gpio, the levels and
@@ -793,6 +792,7 @@
 		reg = <0>;
 
 		power-supply = <&lcd_nosupply>;
+		sprd,default-panel = "lcd_icna3311_oled148_mipi";
 		avdd-gpio = <&ap_gpio 33 GPIO_ACTIVE_HIGH>;
 		/*
 		 * Stock power-on-sequence 33 1 20 (avdd, 20 ms) before the reset
