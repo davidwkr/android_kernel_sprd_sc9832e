@@ -54,4 +54,6 @@
 	sprd,dfs-scene-low = <0>;
 	sprd,dfs-range-max = <3>;
 	sprd,dfs-range-min = <0>;
+	/* sharkle.dtsi has "disable"; the stock node has no status (enabled) */
+	status = "okay";
 };
