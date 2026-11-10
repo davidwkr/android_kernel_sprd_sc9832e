@@ -3456,6 +3456,12 @@ static int sprd_img_set_frame_addr(struct camera_file *camerafile,
 		goto exit;
 	}
 
+	if (p->buffer_count > IMG_PATH_BUFFER_COUNT) {
+		ret = -EINVAL;
+		pr_err("fail to get valid buffer_count %d\n", p->buffer_count);
+		goto exit;
+	}
+
 	group = camerafile->grp;
 	idx = camerafile->idx;
 	if (unlikely(idx < 0 || idx >= DCAM_ID_MAX)) {
@@ -3837,7 +3843,7 @@ static long sprd_img_k_ioctl(struct file *file, unsigned int cmd,
 			 _IOC_NR(cmd));
 	}
 exit:
-	return 0;
+	return ret;
 }
 
 #ifdef CONFIG_COMPAT
@@ -4210,7 +4216,8 @@ static ssize_t sprd_img_write(struct file *file, const char __user *u_data,
 		return -EIO;
 	}
 
-	if (copy_from_user(&write_op, (void __user *)u_data, cnt)) {
+	if (copy_from_user(&write_op, (void __user *)u_data,
+			    sizeof(struct sprd_img_write_op))) {
 		pr_err("fail to get user info\n");
 		return -EFAULT;
 	}

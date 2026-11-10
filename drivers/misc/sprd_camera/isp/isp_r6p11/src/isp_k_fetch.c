@@ -233,6 +233,10 @@ static int isp_k_fetch_transaddr(struct isp_io_param *param,
 	memset(&fetch_remap_buf, 0x00, sizeof(struct isp_statis_buf));
 	ret = copy_from_user(&fetch_buf, param->property_param,
 				sizeof(fetch_buf));
+	if (ret) {
+		pr_err("fail to copy from user, ret = %d\n", ret);
+		return -EFAULT;
+	}
 
 	fetch_remap_buf.pfinfo.dev = &s_isp_pdev->dev;
 	fetch_remap_buf.pfinfo.mfd[0] = fetch_buf.img_fd;
@@ -244,11 +248,20 @@ static int isp_k_fetch_transaddr(struct isp_io_param *param,
 		return ret;
 	}
 
+	/* before mapping, so a rejected offset leaves no iova behind */
+	if (fetch_buf.img_offset.chn0 >= fetch_remap_buf.pfinfo.size[0]) {
+		pr_err("fail to get valid img_offset chn0:0x%lx, buf size:0x%zx\n",
+				fetch_buf.img_offset.chn0,
+				fetch_remap_buf.pfinfo.size[0]);
+		return -EINVAL;
+	}
+
 	ret = pfiommu_get_addr(&fetch_remap_buf.pfinfo);
 	if (ret) {
 		pr_err("fail to get fetch remap buf!\n");
 		return ret;
 	}
+
 	isp_k_param->fetch_pfinfo.iova[0] =
 		fetch_remap_buf.pfinfo.iova[0];
 	isp_k_param->fetch_raw_phys_addr = fetch_remap_buf.pfinfo.iova[0]

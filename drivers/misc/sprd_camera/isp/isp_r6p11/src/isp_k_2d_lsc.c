@@ -28,6 +28,7 @@
 #define ISP_LSC_TIME_OUT_US	500
 #define ISP_LSC_BUF0		0
 #define ISP_LSC_BUF1		1
+#define ISP_LENS_WEIGHT_BUF_SIZE	0x800
 #define ISP_BYPASS_EB		1
 #define ISP_INT_EVT_LSC_LOAD    (1 << 7)
 
@@ -142,6 +143,14 @@ static int isp_k_2d_lsc_load_weight(struct isp_k_block *isp_k_param,
 		}
 
 		weight_num = lens_info->grid_width / 2 + 1;
+
+		if (weight_num > lens_info->weight_num / 6 ||
+			weight_num > ISP_LENS_WEIGHT_BUF_SIZE / 8) {
+			pr_err("fail to get valid grid_width:0x%x for weight_num:0x%x.\n",
+					lens_info->grid_width,
+					lens_info->weight_num);
+			return -EINVAL;
+		}
 
 		for (i = 0; i < weight_num ; i++) {
 			*((unsigned int *)dst_addr + i*2) =

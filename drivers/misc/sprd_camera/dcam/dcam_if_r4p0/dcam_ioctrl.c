@@ -832,6 +832,12 @@ static int dcamio_set_path_frame_deci(struct camera_file *camerafile,
 		ret = -EFAULT;
 		goto exit;
 	}
+	if (parm.channel_id >= CAMERA_MAX_PATH) {
+		pr_err("fail to get valid channel id, PATH_FRM_DECI %d\n",
+		       parm.channel_id);
+		ret = -EINVAL;
+		goto exit;
+	}
 	DCAM_TRACE("isp path channel id: %d frame deci: %d\n",
 		   parm.channel_id, parm.deci);
 	path = &info->dcam_path[parm.channel_id];
@@ -1057,6 +1063,12 @@ static int dcamio_set_shrink(struct camera_file *camerafile,
 	if (unlikely(ret)) {
 		pr_err("fail to get user info, SET_SHRINK\n");
 		ret = -EFAULT;
+		goto exit;
+	}
+	if (parm.channel_id >= CAMERA_MAX_PATH) {
+		pr_err("fail to get valid channel id, SET_SHRINK %d\n",
+		       parm.channel_id);
+		ret = -EINVAL;
 		goto exit;
 	}
 	path = &info->dcam_path[parm.channel_id];

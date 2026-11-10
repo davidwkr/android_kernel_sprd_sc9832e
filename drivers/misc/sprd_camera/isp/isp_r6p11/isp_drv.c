@@ -3910,7 +3910,7 @@ static int isp_block_buf_alloc(struct isp_pipe_dev *dev)
 			pr_err("can't alloc lsc buf, ret %d\n", ret);
 			return -EPERM;
 		}
-		isp_gen_buf_hw_map(&isp_k_param->lsc_buf_info);
+		ret = isp_gen_buf_hw_map(&isp_k_param->lsc_buf_info);
 		if (ret) {
 			pr_err("iid%d can't map lsc buf, ret %d\n",
 			       iid, ret);
@@ -4060,6 +4060,7 @@ int sprd_isp_module_en(void *isp_handle, enum isp_id iid)
 			pr_err("fail to alloc block buf iid%d %d\n",
 			       iid, ret);
 			isp_block_buf_free(dev);
+			goto exit;
 		}
 
 		ret = isp_irq_request(&s_isp_pdev->dev, &s_isp_irq[iid], dev);
