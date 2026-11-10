@@ -12,3 +12,7 @@
 CONFIG_ADF=y
 CONFIG_ADF_SPRD=y
 CONFIG_DISP_LITE_R2P0=y
+
+# Panel idle mode (AOD) and double-tap wake (DM63 cst0xx_ts, DW100U hyn_ts); inert until
+# /sys/kernel/aod_idle/idle is written
+CONFIG_SPRD_AOD_IDLE=y
