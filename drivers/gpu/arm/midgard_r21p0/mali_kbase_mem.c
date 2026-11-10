@@ -2270,6 +2270,10 @@ struct kbase_va_region *kbase_jit_allocate(struct kbase_context *kctx,
 		mutex_unlock(&kctx->jit_evict_lock);
 	}
 
+	kbase_gpu_vm_lock(kctx);
+	reg->flags |= KBASE_REG_ACTIVE_JIT_ALLOC;
+	kbase_gpu_vm_unlock(kctx);
+
 	return reg;
 
 update_failed:
@@ -2290,6 +2294,7 @@ void kbase_jit_free(struct kbase_context *kctx, struct kbase_va_region *reg)
 {
 	/* The physical backing of memory in the pool is always reclaimable */
 	kbase_gpu_vm_lock(kctx);
+	reg->flags &= ~KBASE_REG_ACTIVE_JIT_ALLOC;
 	kbase_mem_evictable_make(reg->gpu_alloc);
 	kbase_gpu_vm_unlock(kctx);
 

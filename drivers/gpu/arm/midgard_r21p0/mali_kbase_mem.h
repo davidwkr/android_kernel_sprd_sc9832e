@@ -286,6 +286,16 @@ struct kbase_va_region {
  * Do not remove, use the next unreserved bit for new flags */
 #define KBASE_REG_RESERVED_BIT_22   (1ul << 22)
 
+/* Region is a JIT allocation currently owned by the JIT allocator
+ * (kctx->jit_alloc[]), i.e. it is on kctx->jit_active_head and has not
+ * yet been handed back via kbase_jit_free(). MEM_FLAGS_CHANGE must not
+ * be allowed to mark such a region DONT_NEED/evictable itself, since
+ * that bypasses the jit_active_head -> jit_pool_head bookkeeping and
+ * can race the shrinker against a later JIT_FREE soft job still
+ * holding a pointer to the region.
+ */
+#define KBASE_REG_ACTIVE_JIT_ALLOC  (1ul << 23)
+
 #define KBASE_REG_ZONE_SAME_VA      KBASE_REG_ZONE(0)
 
 /* only used with 32-bit clients */

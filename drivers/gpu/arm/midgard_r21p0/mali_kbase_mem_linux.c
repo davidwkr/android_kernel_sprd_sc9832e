@@ -768,6 +768,18 @@ int kbase_mem_flags_change(struct kbase_context *kctx, u64 gpu_addr, unsigned in
 			goto out_unlock;
 
 		if (new_needed) {
+			/* Active JIT allocations are owned by the JIT
+			 * allocator and must only become evictable through
+			 * kbase_jit_free(); otherwise the shrinker can reclaim
+			 * the backing while kctx->jit_alloc[] still points at
+			 * this region, and a later JIT_FREE soft job will
+			 * dereference the now-destroyed region
+			 * (CVE-2022-38181).
+			 */
+			if (reg->flags & KBASE_REG_ACTIVE_JIT_ALLOC) {
+				ret = -EINVAL;
+				goto out_unlock;
+			}
 			/* Only native allocations can be marked not needed */
 			if (reg->cpu_alloc->type != KBASE_MEM_TYPE_NATIVE) {
 				ret = -EINVAL;
