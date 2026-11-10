@@ -50,7 +50,8 @@ struct dib_header {
 	u32 unused[12];
 } __attribute__((__packed__));
 
-int str_to_u32_array(const char *p, u32 base, u32 array[])
+int str_to_u32_array(const char *p, u32 base, u32 array[],
+		      size_t size)
 {
 	const char *start = p;
 	char str[12];
@@ -59,7 +60,7 @@ int str_to_u32_array(const char *p, u32 base, u32 array[])
 
 	pr_info("input: %s", p);
 
-	for (i = 0 ; i < 255; i++) {
+	for (i = 0 ; i < 255 && i < size; i++) {
 		while (*p == ' ')
 			p++;
 		if (*p == '\0')
@@ -127,7 +128,8 @@ int load_dtb_to_mem(const char *name, void **blob)
 }
 EXPORT_SYMBOL_GPL(load_dtb_to_mem);
 
-int str_to_u8_array(const char *p, u32 base, u8 array[])
+int str_to_u8_array(const char *p, u32 base, u8 array[],
+		      size_t size)
 {
 	const char *start = p;
 	char str[12];
@@ -136,7 +138,7 @@ int str_to_u8_array(const char *p, u32 base, u8 array[])
 
 	pr_info("input: %s", p);
 
-	for (i = 0 ; i < 255; i++) {
+	for (i = 0 ; i < 255 && i < size; i++) {
 		while (*p == ' ')
 			p++;
 		if (*p == '\0')

@@ -24,8 +24,10 @@
 static int hop_freq;
 static int ssc_en;
 static int ulps_en;
-static u32 input_param[64];
 static u32 read_buf[64];
+/* the last accepted reg_read request, as validated by reg_read_store() */
+static u32 read_base;
+static u32 read_cnt = 1;
 
 static ssize_t reg_read_store(struct device *dev,
 				struct device_attribute *attr,
@@ -33,6 +35,7 @@ static ssize_t reg_read_store(struct device *dev,
 {
 	int i;
 	u32 reg;
+	u32 param[2] = {};
 	u8 reg_stride;
 	struct sprd_dphy *dphy = dev_get_drvdata(dev);
 	struct dphy_context *ctx = &dphy->ctx;
@@ -48,12 +51,19 @@ static ssize_t reg_read_store(struct device *dev,
 		return -ENXIO;
 	}
 
-	str_to_u32_array(buf, 0, input_param);
+	str_to_u32_array(buf, 0, param, ARRAY_SIZE(param));
+	/* one read_buf entry per register read */
+	if (param[1] > ARRAY_SIZE(read_buf)) {
+		mutex_unlock(&dphy->ctx.lock);
+		return -EINVAL;
+	}
 
 	reg_stride = regmap_get_reg_stride(regmap);
 
-	for (i = 0; i < (input_param[1] ? : 1); i++) {
-		reg = input_param[0] + i * reg_stride;
+	read_base = param[0];
+	read_cnt = param[1] ? : 1;
+	for (i = 0; i < read_cnt; i++) {
+		reg = read_base + i * reg_stride;
 		regmap_read(regmap, reg, &read_buf[i]);
 	}
 	mutex_unlock(&dphy->ctx.lock);
@@ -81,23 +91,23 @@ static ssize_t reg_read_show(struct device *dev,
 	reg_stride = regmap_get_reg_stride(regmap);
 
 	if (val_width == 1) {
-		ret += snprintf(buf + ret, PAGE_SIZE,
+		ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 				" ADDR | VALUE\n");
-		ret += snprintf(buf + ret, PAGE_SIZE,
+		ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 				"------+------\n");
 		fmt = " 0x%02x | 0x%02x\n";
 	} else if (val_width == 4) {
-		ret += snprintf(buf + ret, PAGE_SIZE,
+		ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 				"  ADDRESS  |   VALUE\n");
-		ret += snprintf(buf + ret, PAGE_SIZE,
+		ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 				"-----------+-----------\n");
 		fmt = "0x%08x | 0x%08x\n";
 	} else
 		return -ENODEV;
 
-	for (i = 0; i < (input_param[1] ? : 1); i++)
-		ret += snprintf(buf + ret, PAGE_SIZE, fmt,
-				input_param[0] + i * reg_stride,
+	for (i = 0; i < read_cnt && i < ARRAY_SIZE(read_buf); i++)
+		ret += scnprintf(buf + ret, PAGE_SIZE - ret, fmt,
+				read_base + i * reg_stride,
 				read_buf[i]);
 
 	return ret;
@@ -111,6 +121,7 @@ static ssize_t reg_write_store(struct device *dev,
 	int i, len;
 	u8 reg_stride;
 	u32 reg, val;
+	u32 wparam[64] = {};
 	struct sprd_dphy *dphy = dev_get_drvdata(dev);
 	struct dphy_context *ctx = &dphy->ctx;
 	struct regmap *regmap = ctx->regmap;
@@ -125,13 +136,13 @@ static ssize_t reg_write_store(struct device *dev,
 		return -ENXIO;
 	}
 
-	len = str_to_u32_array(buf, 16, input_param);
+	len = str_to_u32_array(buf, 16, wparam, ARRAY_SIZE(wparam));
 
 	reg_stride = regmap_get_reg_stride(regmap);
 
 	for (i = 0; i < len - 1; i++) {
-		reg = input_param[0] + i * reg_stride;
-		val = input_param[1 + i];
+		reg = wparam[0] + i * reg_stride;
+		val = wparam[1 + i];
 		regmap_write(regmap, reg, val);
 	}
 	mutex_unlock(&dphy->ctx.lock);

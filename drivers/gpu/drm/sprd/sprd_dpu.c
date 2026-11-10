@@ -1156,6 +1156,7 @@ static int sprd_dpu_context_init(struct sprd_dpu *dpu,
 		DRM_ERROR("ioremap base address failed\n");
 		return -EFAULT;
 	}
+	ctx->base_size = resource_size(&r);
 
 	of_get_logo_memory_info(dpu, np);
 

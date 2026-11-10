@@ -13,6 +13,7 @@
 
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/sysfs.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -26,6 +27,10 @@
 static uint8_t input_param[255];
 static uint8_t input_len;
 static uint8_t read_buf[64];
+/* reply length of the last accepted gen/dcs read, <= ARRAY_SIZE(read_buf) */
+static uint8_t read_len;
+/* serializes input_param/input_len and read_buf/read_len across attributes */
+static DEFINE_MUTEX(dsi_sysfs_lock);
 static uint8_t lp_cmd_en = true;
 
 static ssize_t phy_freq_store(struct device *dev,
@@ -35,6 +40,10 @@ static ssize_t phy_freq_store(struct device *dev,
 	int ret;
 	int freq;
 	struct sprd_dsi *dsi = dev_get_drvdata(dev);
+
+	/* set by sprd_dsi_host_attach(), after sysfs is published */
+	if (!dsi->phy)
+		return -ENODEV;
 
 	ret = kstrtoint(buf, 10, &freq);
 	if (ret) {
@@ -60,6 +69,10 @@ static ssize_t phy_freq_show(struct device *dev,
 {
 	int ret;
 	struct sprd_dsi *dsi = dev_get_drvdata(dev);
+
+	/* set by sprd_dsi_host_attach(), after sysfs is published */
+	if (!dsi->phy)
+		return -ENODEV;
 
 	ret = snprintf(buf, PAGE_SIZE, "%u Kbps\n", dsi->phy->ctx.freq);
 
@@ -134,6 +147,7 @@ static ssize_t gen_read_store(struct device *dev,
 				const char *buf, size_t count)
 {
 	struct sprd_dsi *dsi = dev_get_drvdata(dev);
+	uint8_t param[2];
 	int len;
 
 	if (pm_runtime_suspended(dev->parent)) {
@@ -141,13 +155,23 @@ static ssize_t gen_read_store(struct device *dev,
 		return -ENXIO;
 	}
 
-	len = str_to_u8_array(buf, 16, input_param);
+	/* reg and count, parsed locally: other attributes share input_param */
+	len = str_to_u8_array(buf, 16, param, ARRAY_SIZE(param));
+	if (len < 1)
+		return -EINVAL;
 	if (len == 1)
-		input_param[1] = 1;
+		param[1] = 1;
 
-	mipi_dsi_set_maximum_return_packet_size(dsi->slave, input_param[1]);
-	mipi_dsi_generic_read(dsi->slave, &input_param[0], 1,
-			read_buf, input_param[1]);
+	/* the reply lands in read_buf */
+	if (param[1] > ARRAY_SIZE(read_buf))
+		return -EINVAL;
+
+	mutex_lock(&dsi_sysfs_lock);
+	mipi_dsi_set_maximum_return_packet_size(dsi->slave, param[1]);
+	mipi_dsi_generic_read(dsi->slave, &param[0], 1,
+			read_buf, param[1]);
+	read_len = param[1];
+	mutex_unlock(&dsi_sysfs_lock);
 
 	return count;
 }
@@ -159,10 +183,12 @@ static ssize_t gen_read_show(struct device *dev,
 	int i;
 	int ret = 0;
 
-	for (i = 0; i < input_param[1]; i++)
-		ret += snprintf(buf + ret, PAGE_SIZE,
+	mutex_lock(&dsi_sysfs_lock);
+	for (i = 0; i < read_len; i++)
+		ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 				"data[%d] = 0x%02x\n",
 				i, read_buf[i]);
+	mutex_unlock(&dsi_sysfs_lock);
 
 	return ret;
 }
@@ -189,12 +215,15 @@ static ssize_t gen_write_store(struct device *dev,
 		return -ENXIO;
 	}
 
-	input_len = str_to_u8_array(buf, 16, input_param);
+	mutex_lock(&dsi_sysfs_lock);
+	input_len = str_to_u8_array(buf, 16, input_param,
+				    ARRAY_SIZE(input_param));
 
 	for (i = 0; i < input_len; i++)
 		pr_info("param[%d] = 0x%x\n", i, input_param[i]);
 
 	mipi_dsi_generic_write(dsi->slave, input_param, input_len);
+	mutex_unlock(&dsi_sysfs_lock);
 
 	return count;
 }
@@ -206,10 +235,12 @@ static ssize_t gen_write_show(struct device *dev,
 	int i;
 	int ret = 0;
 
+	mutex_lock(&dsi_sysfs_lock);
 	for (i = 0; i < input_len; i++)
-		ret += snprintf(buf + ret, PAGE_SIZE,
+		ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 				"param[%d] = 0x%02x\n",
 				i, input_param[i]);
+	mutex_unlock(&dsi_sysfs_lock);
 
 	return ret;
 }
@@ -232,6 +263,7 @@ static ssize_t dcs_read_store(struct device *dev,
 				const char *buf, size_t count)
 {
 	struct sprd_dsi *dsi = dev_get_drvdata(dev);
+	uint8_t param[2];
 	int len;
 
 	if (pm_runtime_suspended(dev->parent)) {
@@ -239,13 +271,23 @@ static ssize_t dcs_read_store(struct device *dev,
 		return -ENXIO;
 	}
 
-	len = str_to_u8_array(buf, 16, input_param);
+	/* reg and count, parsed locally: other attributes share input_param */
+	len = str_to_u8_array(buf, 16, param, ARRAY_SIZE(param));
+	if (len < 1)
+		return -EINVAL;
 	if (len == 1)
-		input_param[1] = 1;
+		param[1] = 1;
 
-	mipi_dsi_set_maximum_return_packet_size(dsi->slave, input_param[1]);
-	mipi_dsi_dcs_read(dsi->slave, input_param[0],
-			  read_buf, input_param[1]);
+	/* the reply lands in read_buf */
+	if (param[1] > ARRAY_SIZE(read_buf))
+		return -EINVAL;
+
+	mutex_lock(&dsi_sysfs_lock);
+	mipi_dsi_set_maximum_return_packet_size(dsi->slave, param[1]);
+	mipi_dsi_dcs_read(dsi->slave, param[0],
+			  read_buf, param[1]);
+	read_len = param[1];
+	mutex_unlock(&dsi_sysfs_lock);
 
 	return count;
 }
@@ -257,10 +299,12 @@ static ssize_t dcs_read_show(struct device *dev,
 	int i;
 	int ret = 0;
 
-	for (i = 0; i < input_param[1]; i++)
-		ret += snprintf(buf + ret, PAGE_SIZE,
+	mutex_lock(&dsi_sysfs_lock);
+	for (i = 0; i < read_len; i++)
+		ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 				"data[%d] = 0x%02x\n",
 				i, read_buf[i]);
+	mutex_unlock(&dsi_sysfs_lock);
 
 	return ret;
 }
@@ -287,12 +331,15 @@ static ssize_t dcs_write_store(struct device *dev,
 		return -ENXIO;
 	}
 
-	input_len = str_to_u8_array(buf, 16, input_param);
+	mutex_lock(&dsi_sysfs_lock);
+	input_len = str_to_u8_array(buf, 16, input_param,
+				    ARRAY_SIZE(input_param));
 
 	for (i = 0; i < input_len; i++)
 		pr_info("param[%d] = 0x%x\n", i, input_param[i]);
 
 	mipi_dsi_dcs_write_buffer(dsi->slave, input_param, input_len);
+	mutex_unlock(&dsi_sysfs_lock);
 
 	return count;
 }
@@ -304,10 +351,12 @@ static ssize_t dcs_write_show(struct device *dev,
 	int i;
 	int ret = 0;
 
+	mutex_lock(&dsi_sysfs_lock);
 	for (i = 0; i < input_len; i++)
-		ret += snprintf(buf + ret, PAGE_SIZE,
+		ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 				"param[%d] = 0x%02x\n",
 				i, input_param[i]);
+	mutex_unlock(&dsi_sysfs_lock);
 
 	return ret;
 }
@@ -340,10 +389,9 @@ static ssize_t work_mode_show(struct device *dev,
 	int ret = 0;
 	int mode;
 
-	if (pm_runtime_suspended(dev->parent))
+	mode = sprd_dsi_get_work_mode_locked(dsi);
+	if (mode < 0)
 		return snprintf(buf, PAGE_SIZE, "dsi was closed\n");
-
-	mode = sprd_dsi_get_work_mode(dsi);
 
 	if (mode == DSI_MODE_CMD)
 		ret = snprintf(buf, PAGE_SIZE, "cmd\n");

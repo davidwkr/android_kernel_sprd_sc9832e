@@ -197,6 +197,22 @@ static void sprd_dsi_encoder_disable(struct drm_encoder *encoder)
 	sprd_panel_notify(SPRD_PANEL_EVENT_OFF);
 }
 
+/*
+ * Work mode for sysfs: read under dsi_lock, which encoder enable/disable
+ * hold while they power the controller up or down.
+ */
+int sprd_dsi_get_work_mode_locked(struct sprd_dsi *dsi)
+{
+	int mode = -ENXIO;
+
+	mutex_lock(&dsi_lock);
+	if (dsi->ctx.is_inited)
+		mode = sprd_dsi_get_work_mode(dsi);
+	mutex_unlock(&dsi_lock);
+
+	return mode;
+}
+
 static void sprd_dsi_encoder_mode_set(struct drm_encoder *encoder,
 				 struct drm_display_mode *mode,
 				 struct drm_display_mode *adj_mode)
