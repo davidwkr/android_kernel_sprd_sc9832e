@@ -2571,6 +2571,19 @@ static const struct vm_operations_struct kbase_vm_special_ops = {
 
 static int kbase_tracking_page_setup(struct kbase_context *kctx, struct vm_area_struct *vma)
 {
+	/* this vma is tracked by a single kctx->process_mm reference, which
+	 * a single kbase_special_vm_close() call clears; a multi-page mapping
+	 * can later be split (e.g. by mprotect() on a sub-range), giving each
+	 * remaining piece its own, separately-closed vma while VM_DONTEXPAND
+	 * only blocks growth, not splitting. A later close on a stale piece
+	 * would then drain whatever mm_struct happens to be tracked at that
+	 * point, which may belong to a different, possibly already-exited,
+	 * process (CVE-2023-4211). Restrict the tracking page to the single
+	 * page it is documented to be, so it can't be split.
+	 */
+	if ((vma->vm_end - vma->vm_start) != PAGE_SIZE)
+		return -EINVAL;
+
 	/* check that this is the only tracking page */
 	spin_lock(&kctx->mm_update_lock);
 	if (rcu_dereference_protected(kctx->process_mm, lockdep_is_held(&kctx->mm_update_lock))) {
