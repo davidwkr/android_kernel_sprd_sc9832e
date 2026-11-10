@@ -148,6 +148,85 @@ int sprd_ion_get_buffer(int fd, struct dma_buf *dmabuf,
 }
 EXPORT_SYMBOL(sprd_ion_get_buffer);
 
+/*
+ * Like sprd_ion_get_buffer(), but a buffer looked up by fd keeps its dma_buf
+ * reference in *held until sprd_ion_put(), so it cannot be freed while in use.
+ * Rejects dma_bufs not exported by ION.
+ */
+int sprd_ion_get_buffer_ref(int fd, struct dma_buf *dmabuf,
+			    void **buf, size_t *size,
+			    struct dma_buf **held)
+{
+	struct ion_buffer *buffer;
+
+	*held = NULL;
+
+	if (fd < 0 && !dmabuf) {
+		pr_err("%s, input fd: %d, dmabuf: %p error\n", __func__, fd,
+		       dmabuf);
+		return -EINVAL;
+	}
+
+	if (fd >= 0) {
+		dmabuf = dma_buf_get(fd);
+		if (IS_ERR_OR_NULL(dmabuf)) {
+			pr_err("%s, dmabuf=%p dma_buf_get error!\n", __func__,
+			       dmabuf);
+			return -EBADF;
+		}
+		*held = dmabuf;
+	}
+
+	if (!ion_dma_buf_is_ion(dmabuf)) {
+		if (*held) {
+			dma_buf_put(*held);
+			*held = NULL;
+		}
+		return -EINVAL;
+	}
+
+	buffer = dmabuf->priv;
+	*buf = (void *)buffer;
+	*size = buffer->size;
+
+	return 0;
+}
+EXPORT_SYMBOL(sprd_ion_get_buffer_ref);
+
+void sprd_ion_put(struct dma_buf *held)
+{
+	if (held)
+		dma_buf_put(held);
+}
+EXPORT_SYMBOL(sprd_ion_put);
+
+int sprd_ion_check_phys_addr(struct dma_buf *dmabuf)
+{
+	struct ion_buffer *buffer;
+
+	if (!dmabuf || !ion_dma_buf_is_ion(dmabuf)) {
+		pr_err("invalid dmabuf\n");
+		return -EINVAL;
+	}
+
+	buffer = dmabuf->priv;
+	if (!buffer || !buffer->sg_table || !buffer->sg_table->sgl) {
+		pr_err("invalid sg table\n");
+		return -EINVAL;
+	}
+
+#ifdef CONFIG_DEBUG_SG
+	if (buffer->sg_table->sgl->sg_magic != SG_MAGIC) {
+		pr_err("the sg_magic isn't right, 0x%lx!\n",
+		       buffer->sg_table->sgl->sg_magic);
+		return -EINVAL;
+	}
+#endif
+
+	return 0;
+}
+EXPORT_SYMBOL(sprd_ion_check_phys_addr);
+
 int sprd_ion_get_sg(void *buf, struct sg_table **table)
 {
 	struct ion_buffer *buffer;

@@ -16,3 +16,12 @@ CONFIG_DISP_LITE_R2P0=y
 # Panel idle mode (AOD) and double-tap wake (DM63 cst0xx_ts, DW100U hyn_ts); inert until
 # /sys/kernel/aod_idle/idle is written
 CONFIG_SPRD_AOD_IDLE=y
+
+# Camera (the 4.4 driver ported to 4.14, for the stock camera HAL; nodes in
+# sp9832e-watch-camera.dtsi). Power domain: sprd_sharkle_defconfig's
+# CONFIG_SPRD_CAM_PW_DOMAIN_R5P1.
+CONFIG_SPRD_CAMERA=y
+CONFIG_SPRD_CAMERA_DCAM_IF_R4P0=y
+CONFIG_SPRD_CAMERA_ISP_R6P11=y
+CONFIG_SPRD_CAMERA_CPP_LITE_R3P0=y
+CONFIG_SPRD_CAMERA_CSI_R2P0V2=y

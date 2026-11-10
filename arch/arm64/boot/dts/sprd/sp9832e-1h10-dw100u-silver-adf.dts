@@ -11,10 +11,14 @@
  * devices/stock_lcds_to_dtsi.py (lcd/dw100u_stock_lcds_adf.dtsi). The
  * bootloader's lcd_id=ID<hex> selects the node named lcd<hex>; the silver
  * unit reports ID5300204 (lcd5300204, CO5300 2.04 inch).
+ *
+ * Camera: sp9832e-watch-camera.dtsi; the stock DW100U has only the main
+ * sensor.
  */
 
 #include "sp9832e-1h10-dw100u-silver.dts"
 #include "sp9832e-watch-adf.dtsi"
+#include "sp9832e-watch-camera.dtsi"
 
 / {
 	lcds {

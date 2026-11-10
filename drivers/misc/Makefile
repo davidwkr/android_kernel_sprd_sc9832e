@@ -79,6 +79,7 @@ CFLAGS_lkdtm_rodata.o		+= $(DISABLE_LTO)
 OBJCOPYFLAGS :=
 OBJCOPYFLAGS_lkdtm_rodata_objcopy.o := \
 	--rename-section .text=.rodata,alloc,readonly,load,contents
+obj-$(CONFIG_SPRD_CAMERA)	+= sprd_camera/
 targets += lkdtm_rodata.o lkdtm_rodata_objcopy.o
 $(obj)/lkdtm_rodata_objcopy.o: $(obj)/lkdtm_rodata.o FORCE
 	$(call if_changed,objcopy)
