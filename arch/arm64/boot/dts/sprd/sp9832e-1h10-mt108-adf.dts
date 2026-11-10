@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * MT108 with the ADF display stack (CONFIG_ADF_SPRD, watch_414_adf.fragment),
+ * for the stock Android 8.1 vendor hwcomposer/gralloc, which use ADF.
+ *
+ * Everything but the display is sp9832e-1h10-mt108.dts; the ADF nodes are
+ * sp9832e-watch-adf.dtsi. The MT108 dts keeps the whole DRM display path
+ * disabled (the stock 18 bit DSI/DPI bus width needs a driver change in the
+ * DRM dpu); the ADF dpu_lite_r1p0.c derives the bus width from the DSI format
+ * as stock does, so here only iommu_dispc (stock iova 0x70000000 + 0x9600000,
+ * as on the K18) and the RGB LED backlight are enabled.
+ *
+ * Backlight: the ST77916 panels are TFTs without an oled-backlight child. The
+ * stock backlight is the SC2721 RGB LED (bltc-rgb@180, sc2721_rgbled_bl.c,
+ * which registers sprd_backlight), okay only in the MT108 stock DT. The
+ * pwm-backlight node of the MT108 dts never binds on stock (BACKLIGHT_PWM is
+ * off there), so it stays as the board dts has it.
+ *
+ * Panels: all 19 stock /lcds nodes, generated from the stock DT by
+ * devices/stock_lcds_to_dtsi.py (lcd/mt108_stock_lcds_adf.dtsi). The
+ * bootloader's lcd_id=ID<hex> selects the node named lcd<hex>; the unit's
+ * lcd_id is not known (SPEC.md), so there is no default panel.
+ */
+
+#include "sp9832e-1h10-mt108.dts"
+#include "sp9832e-watch-adf.dtsi"
+
+&iommu_dispc {
+	iova-size = <0x09600000>;
+	status = "okay";
+};
+
+/*
+ * Stock bltc-rgb@180 ("sprd,sc2721-bltc-rgb", okay) is the LCD backlight, served
+ * by sc2721_rgbled_bl.c. It replaces the led-controller@180 of sc2721.dtsi (same
+ * register, "sprd,sc27xx-bltc" would bind leds-sc27xx-bltc instead).
+ */
+&sc2721_pmic {
+	/delete-node/ led-controller@180;
+
+	bltc-rgb@180 {
+		compatible = "sprd,sc2721-bltc-rgb";
+		reg = <0x180>;
+		status = "okay";
+	};
+};
+
+/ {
+	lcds {
+		#include "lcd/mt108_stock_lcds_adf.dtsi"
+	};
+
+	sprd-panel-if {
+		panel-drivers = <&mt108_lcd7797 &mt108_lcd9b71
+				 &mt108_lcd3310143 &mt108_lcd3312148 &mt108_lcd5300175 &mt108_lcd5300143
+				 &mt108_lcd13613143 &mt108_lcd13613150 &mt108_lcd13613154
+				 &mt108_lcd8021504 &mt108_lcd8601143 &mt108_lcd86011508 &mt108_lcd77916150
+				 &mt108_lcd77916185 &mt108_lcd9855180 &mt108_lcd9855 &mt108_lcd985522
+				 &mt108_lcd7802148 &mt108_lcdffff>;
+	};
+};

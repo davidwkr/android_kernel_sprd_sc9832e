@@ -58,4 +58,5 @@ obj-$(CONFIG_BACKLIGHT_TOSA)		+= tosa_bl.o
 obj-$(CONFIG_BACKLIGHT_TPS65217)	+= tps65217_bl.o
 obj-$(CONFIG_BACKLIGHT_WM831X)		+= wm831x_bl.o
 obj-$(CONFIG_BACKLIGHT_ARCXCNN) 	+= arcxcnn_bl.o
+obj-$(CONFIG_BACKLIGHT_SC2721_RGBLED)	+= sc2721_rgbled_bl.o
 obj-$(CONFIG_BACKLIGHT_SC2703)		+= sc2703_bl.o

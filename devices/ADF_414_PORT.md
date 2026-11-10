@@ -206,8 +206,8 @@ byte from the stock node.
 
 ## Board variants
 
-The stock dispc, dsi, dphy, sprd-panel-if and sprd-adf nodes are identical on the K18, DM63 and DW100U silver stock
-DTs apart from phandles. They live in `sp9832e-watch-adf.dtsi`: the DRM display nodes disabled and the stock ADF
+The stock dispc, dsi, dphy, sprd-panel-if and sprd-adf nodes are identical on the K18, DM63, DW100U silver, MT107,
+MT108 and DM82 stock DTs apart from phandles. They live in `sp9832e-watch-adf.dtsi`: the DRM display nodes disabled and the stock ADF
 nodes added, clock phandles translated to the 4.14 providers (the mapping is in the file header). Each ADF board file
 includes its board dts and that dtsi, adds its panel nodes under `/lcds` and sets `panel-drivers`:
 
@@ -216,13 +216,29 @@ includes its board dts and that dtsi, adds its panel nodes under `/lcds` and set
 | `sp9832e-1h10-k18-adf.dts` | `lcd/lcd_icna3311_oled148_adf.dtsi` (the unit's panel) | 0x9600000 |
 | `sp9832e-1h10-dm63-adf.dts` | `lcd/dm63_stock_lcds_adf.dtsi`, all 14 stock nodes | 0x8000000 (sharkle default) |
 | `sp9832e-1h10-dw100u-silver-adf.dts` | `lcd/dw100u_stock_lcds_adf.dtsi`, all 23 stock nodes | 0x9600000 |
+| `sp9832e-1h10-mt107-adf.dts` | `lcd/mt107_stock_lcds_adf.dtsi`, all 20 stock nodes | 0x9600000 |
+| `sp9832e-1h10-mt108-adf.dts` | `lcd/mt108_stock_lcds_adf.dtsi`, all 19 stock nodes | 0x9600000 |
+| `sp9832e-1h10-dm82-adf.dts` | `lcd/dm82_stock_lcds_adf.dtsi`, all 9 stock nodes | 0x8000000 (sharkle default) |
 
-The DM63 and DW100U panel files are generated from the decompiled stock DTB by `devices/stock_lcds_to_dtsi.py`
+The DM63, DW100U, MT107, MT108 and DM82 panel files are generated from the decompiled stock DTB by `devices/stock_lcds_to_dtsi.py`
 (drops the phandle lines, labels each node `<board>_lcd<id>`, prints the `panel-drivers` line). The stock nodes are
 already in the binding the ported `sprd_panel.c` parses and use raw GPIO numbers, so nothing else needs
 translating. Panels with the same ID differ between boards (init and sleep sequences), so each board keeps its own
 file. Checked: every generated node matches its stock node property for property (phandles aside), and the K18 ADF
 dtb is unchanged by the move into the shared dtsi.
+
+MT107, MT108 and DM82 have no default panel (their lcd_id is not known); the DRM dts files have none either. The
+MT108 DRM dts keeps the display disabled because of the stock 18 bit DSI/DPI bus width; the ADF `dpu_lite_r1p0.c`
+derives the bus width from the DSI format as stock does, so `sp9832e-1h10-mt108-adf.dts` enables `iommu_dispc`
+(iova size 0x9600000, stock) itself. The MT108 TFT panels (ST77916, JD9855, ...) have no `oled-backlight` child; their
+backlight is the SC2721 RGB LED (stock `bltc-rgb@180`, `sprd,sc2721-bltc-rgb`, okay only in the MT108 stock DT; every
+stock config has `CONFIG_BACKLIGHT_PWM` off, so the `sprd_backlight` pwm-backlight node never binds there). The ADF
+panel driver does not touch it. `drivers/video/backlight/sc2721_rgbled_bl.c` (`CONFIG_BACKLIGHT_SC2721_RGBLED`, in
+`watch_414_adf.fragment`; 4.4 driver ported, regmap from the PMIC parent, registers `sprd_backlight`) drives it.
+`sp9832e-1h10-mt108-adf.dts` deletes the `led-controller@180` of `sc2721.dtsi` (`sprd,sc27xx-bltc`, which
+`LEDS_SC27XX_BLTC` would bind) and adds the stock `bltc-rgb@180` node, so only the backlight driver binds it; the
+pwms/pwm_backlight nodes stay as in the MT108 dts. `CONFIG_BACKLIGHT_PWM=y` still comes from `sprd_sharkle_defconfig`
+(inert while the node is disabled). The camera dtsi is not included on these three.
 
 A K18 boot image candidate is described in `k18/BOOT_414.md`. DM63 and DW100U silver images need the Mali port merged
 first (see `KERNEL_4.14_PLAN.md`).
@@ -309,7 +325,7 @@ TE-wait mode that reads no register. Revisit both if a panel enables ESD.
 - Debug sysfs (`sysfs_stubs.c`), AOD, write-back, RGB/SPI panel interfaces,
   the DesignWare DSI core, the other seven SoC directories: not ported, as
   detailed above.
-- ADF board variants exist for the K18, DM63 and DW100U silver; MT107, MT108, DM82 and the DW100U V13M use DRM
+- ADF board variants exist for the K18, DM63, DW100U silver, MT107, MT108 and DM82; the DW100U V13M uses DRM
   only (the V13M stock image is not available).
 - 138 pre-existing W=1 warnings in vendor code, not cleaned up (see "sprd
   driver skeleton" above).
