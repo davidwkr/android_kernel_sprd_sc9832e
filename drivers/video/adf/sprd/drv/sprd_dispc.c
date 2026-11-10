@@ -468,10 +468,10 @@ static int32_t sprd_dispc_uninit(struct sprd_dispc *dispc)
 	return 0;
 }
 
-void sprd_dispc_iommu_map(struct sprd_dispc *dispc,
+int sprd_dispc_iommu_map(struct sprd_dispc *dispc,
 			  struct sprd_adf_hwlayer *layer)
 {
-	int i;
+	int i, j;
 	bool fb_reserved;
 	unsigned long phys_addr;
 	size_t size;
@@ -481,15 +481,18 @@ void sprd_dispc_iommu_map(struct sprd_dispc *dispc,
 
 	for (i = 0; i < layer->n_planes; i++) {
 		dmabuf = layer->base.dma_bufs[i];
-		sprd_ion_is_reserved(-1, dmabuf, &fb_reserved);
+		fb_reserved = false;
+		if (ion_dma_buf_is_ion(dmabuf))
+			sprd_ion_is_reserved(-1, dmabuf, &fb_reserved);
 		if (fb_reserved) {
 			ret = sprd_ion_get_phys_addr(-1, dmabuf,
 						&phys_addr, &size);
-			if (ret)
+			if (ret) {
 				pr_err("get physical address error\n");
-			else
-				layer->iova_plane[i] =
-					layer->iova_plane[i] + phys_addr;
+				goto map_fail;
+			}
+			layer->iova_plane[i] =
+				layer->iova_plane[i] + phys_addr;
 		} else {
 			iommu_data.iova_size = dmabuf->size;
 			iommu_data.table = layer->mapping.sg_tables[i];
@@ -501,7 +504,7 @@ void sprd_dispc_iommu_map(struct sprd_dispc *dispc,
 				goto map_fail;
 			}
 			if (iommu_data.iova_addr == 0) {
-				ret = -1;
+				ret = -EINVAL;
 				pr_err("iommu iova_addr is 0\n");
 				goto map_fail;
 			}
@@ -515,10 +518,19 @@ void sprd_dispc_iommu_map(struct sprd_dispc *dispc,
 		}
 	}
 
-	return;
+	return 0;
 
 map_fail:
 	pr_err("iommu map failed\n");
+	/* unwind planes already mapped into the IOMMU for this layer */
+	for (j = 0; j < i; j++) {
+		if (layer->iova_space[j].iova_addr) {
+			sprd_iommu_unmap(&dispc->dev, &layer->iova_space[j]);
+			memset(&layer->iova_space[j], 0,
+			       sizeof(layer->iova_space[j]));
+		}
+	}
+	return ret;
 }
 
 void sprd_dispc_iommu_unmap(struct sprd_dispc *dispc,
@@ -531,17 +543,19 @@ void sprd_dispc_iommu_unmap(struct sprd_dispc *dispc,
 
 	down(&ctx->refresh_lock);
 
-	if (!ctx->is_inited) {
-		pr_err("dispc is not initialized from unmap!\n");
-		up(&ctx->refresh_lock);
-		return;
-	}
-
+	/*
+	 * IOMMU teardown must happen even while the display controller
+	 * itself is suspended/uninitialized, otherwise the mapping record
+	 * in hwlayer is freed by the caller while the IOMMU entry survives,
+	 * outliving the backing buffer.
+	 */
 	pr_debug("iommu unmap\n");
 	for (i = 0; i < hwlayer->n_planes; i++) {
 		dmabuf = hwlayer->base.dma_bufs[i];
-		sprd_ion_is_reserved(-1, dmabuf, &fb_reserved);
-		if (!fb_reserved)
+		fb_reserved = false;
+		if (ion_dma_buf_is_ion(dmabuf))
+			sprd_ion_is_reserved(-1, dmabuf, &fb_reserved);
+		if (!fb_reserved && hwlayer->iova_space[i].iova_addr)
 			sprd_iommu_unmap(&dispc->dev,
 					      &hwlayer->iova_space[i]);
 	}
