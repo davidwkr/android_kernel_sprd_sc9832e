@@ -4,12 +4,12 @@
 committed); it is kept in `~/.cache/dm63-414-candidate/dm63_414_adf_candidate.img`. This is a bring-up image, built the same way as the K18 one: see
 `../k18/BOOT_414.md` for the commands, the contents and what to expect, which apply here except as noted.
 
-Built from `kernel-4.14` commit `cef531856863`, kernel release 4.14.336+, config `sprd_sharkle_defconfig` +
+Built from `kernel-4.14` commit `c20b4a84c1d7`, kernel release 4.14.336+, config `sprd_sharkle_defconfig` +
 `watch_414.fragment` + `watch_414_adf.fragment`, DTB `sp9832e-1h10-dm63-adf.dtb` in a new SPRD DT table with the stock header and entry
 fields (board id `0x2668`, rev 1), on a copy of the stock DM63 boot image; in its ramdisk the 4.14 builds of sprdwl_ng.ko, sprdbt_tty.ko and sprd_fm.ko
 (`devices/WCN_414_PORT.md`, debug info stripped) replace the 4.4.83 ones.
 
-sha256 `7761f79c3c47b9ea18274d163ac1aaf8602ea91569337c2fcf6ff5543094b2d1`
+sha256 `327de3326a48e0fe3e6f40f972762ee0999d0963c1f45e43563a712e8b5d635a`
 
 Differences from the K18 notes:
 - GPU: the r21p0 Mali driver is built in (`sp9832e-watch-gpu.dtsi`, stock DVFS points with vddcore scaling). The
