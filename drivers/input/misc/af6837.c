@@ -345,8 +345,11 @@ static int af6837_probe(struct i2c_client *client,
 		return ret;
 
 	ret = sysfs_create_group(&input->dev.kobj, &af6837_attr_group);
-	if (ret)
+	if (ret) {
+		/* a partly created group may have enabled polling meanwhile */
+		af6837_set_enabled(data, false);
 		return ret;
+	}
 
 	dev_info(dev, "AF6837 magnetometer probed\n");
 

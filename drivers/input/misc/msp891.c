@@ -350,8 +350,11 @@ static int msp891_probe(struct i2c_client *client,
 		return ret;
 
 	ret = sysfs_create_group(&data->pres_input->dev.kobj, &msp891_attr_group);
-	if (ret)
+	if (ret) {
+		/* a partly created group may have enabled polling meanwhile */
+		msp891_set_enabled(data, false);
 		return ret;
+	}
 	ret = sysfs_create_group(&data->temp_input->dev.kobj, &msp891_attr_group);
 	if (ret)
 		goto err_pres_group;
