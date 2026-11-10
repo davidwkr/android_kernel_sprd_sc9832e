@@ -204,9 +204,28 @@ table — same panel, same facts). Nothing was invented: every property value,
 including the full 256-entry identity brightness table, is copied byte-for-
 byte from the stock node.
 
-Wired into `sp9832e-1h10-k18-adf.dts`: the K18 dts with the DRM display nodes disabled and the stock ADF
-dispc/dsi/dphy/sprd-panel-if/sprd-adf nodes added, clock phandles translated to the 4.14 providers (the mapping is
-in the file header). A boot image candidate built from it is described in `k18/BOOT_414.md`.
+## Board variants
+
+The stock dispc, dsi, dphy, sprd-panel-if and sprd-adf nodes are identical on the K18, DM63 and DW100U silver stock
+DTs apart from phandles. They live in `sp9832e-watch-adf.dtsi`: the DRM display nodes disabled and the stock ADF
+nodes added, clock phandles translated to the 4.14 providers (the mapping is in the file header). Each ADF board file
+includes its board dts and that dtsi, adds its panel nodes under `/lcds` and sets `panel-drivers`:
+
+| Board file | Panels | iommu_dispc iova size (stock) |
+|---|---|---|
+| `sp9832e-1h10-k18-adf.dts` | `lcd/lcd_icna3311_oled148_adf.dtsi` (the unit's panel) | 0x9600000 |
+| `sp9832e-1h10-dm63-adf.dts` | `lcd/dm63_stock_lcds_adf.dtsi`, all 14 stock nodes | 0x8000000 (sharkle default) |
+| `sp9832e-1h10-dw100u-silver-adf.dts` | `lcd/dw100u_stock_lcds_adf.dtsi`, all 23 stock nodes | 0x9600000 |
+
+The DM63 and DW100U panel files are generated from the decompiled stock DTB by `devices/stock_lcds_to_dtsi.py`
+(drops the phandle lines, labels each node `<board>_lcd<id>`, prints the `panel-drivers` line). The stock nodes are
+already in the binding the ported `sprd_panel.c` parses and use raw GPIO numbers, so nothing else needs
+translating. Panels with the same ID differ between boards (init and sleep sequences), so each board keeps its own
+file. Checked: every generated node matches its stock node property for property (phandles aside), and the K18 ADF
+dtb is unchanged by the move into the shared dtsi.
+
+A K18 boot image candidate is described in `k18/BOOT_414.md`. DM63 and DW100U silver images need the Mali port merged
+first (see `KERNEL_4.14_PLAN.md`).
 
 ## Build results
 
@@ -281,7 +300,8 @@ Accepted on purpose:
 - Debug sysfs (`sysfs_stubs.c`), AOD, write-back, RGB/SPI panel interfaces,
   the DesignWare DSI core, the other seven SoC directories: not ported, as
   detailed above.
-- Only the K18 has an ADF board variant; the other boards use DRM.
+- ADF board variants exist for the K18, DM63 and DW100U silver; MT107, MT108, DM82 and the DW100U V13M use DRM
+  only (the V13M stock image is not available).
 - 138 pre-existing W=1 warnings in vendor code, not cleaned up (see "sprd
   driver skeleton" above).
 - The 4.4 `adf_sysfs.c`/`adf_fops.c` prototypes flagged `-Wmissing-prototypes`

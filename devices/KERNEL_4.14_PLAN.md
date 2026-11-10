@@ -163,12 +163,14 @@ Next:
 1. First boot of the DM63 on 4.14 (needs the user's OK to flash): console, USB, eMMC, then display. The first
    charge must be attended (see `dm63/DTS_414.md`).
 2. Userspace: the Android 8.1 vendor hwcomposer/gralloc use ADF. The ADF port now exists (`ADF_414_PORT.md`), so
-   the stock vendor image can in principle run on 4.14: the K18 has an ADF board variant
-   (`sp9832e-1h10-k18-adf.dts`) and a bring-up boot image candidate (`k18/BOOT_414.md`). The DRM path
-   still needs a DRM-capable composer (a newer Android build).
-3. Mali kbase: r21p0 for the stock blob, on 4.4 first (see the 4.4 tree's `devices/MALI_R21P0.md`), then 4.14.
+   the stock vendor image can in principle run on 4.14: the K18, DM63 and DW100U silver have ADF board
+   variants (`ADF_414_PORT.md`, "Board variants"), and the K18 has a bring-up boot image candidate
+   (`k18/BOOT_414.md`). The DRM path still needs a DRM-capable composer (a newer Android build).
+3. Mali kbase: r21p0 for the stock blob, done on 4.4 (see the 4.4 tree's `devices/MALI_R21P0.md`); the 4.14 port
+   (branch `drivers/mali-r21p0-414`, `sp9832e-watch-gpu.dtsi`) is in review, then DM63/DW100U ADF images.
 4. Missing on 4.14: Wi-Fi/BT netdev drivers, deep sleep, camera (needs ION, now present).
-5. The DRM sprd sysfs parser overflow (see `ADF_414_PORT.md`, open items).
+5. The DRM sprd sysfs parser overflow and the rest of its debug sysfs bounds: fixed on branch
+   `security/drm-sysfs-414`, in review.
 6. AOD on DRM, WCN/GNSS tweaks, SIPC hardening, the remaining stock panels, ports for the parts without a
    4.14 driver (BetterLife touch, bd1xxx heart rate, msp891, af6837).
 
