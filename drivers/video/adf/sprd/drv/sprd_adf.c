@@ -271,19 +271,24 @@ static void dump_config_info(struct sprd_restruct_config *config)
 	}
 }
 
-void sprd_adf_device_flip(struct sprd_adf_interface *adf_intf,
+int sprd_adf_device_flip(struct sprd_adf_interface *adf_intf,
 			  struct sprd_restruct_config *config)
 {
 	struct sprd_dispc *dispc;
 	struct pipe *pipe = (struct pipe *)(adf_intf->data);
 	int index;
 	int num_dev = pipe->n_sdev;
+	int ret;
 
 	dump_config_info(config);
 	for (index = 0; index < num_dev; index++) {
 		dispc = pipe->sdev[index];
-		dispc->ctrl->flip(dispc, config);
+		ret = dispc->ctrl->flip(dispc, config);
+		if (ret)
+			return ret;
 	}
+
+	return 0;
 }
 
 int sprd_adf_get_screen_size(struct sprd_adf_interface *intf,

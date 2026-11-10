@@ -25,7 +25,7 @@ struct sprd_restruct_config *
 		sprd_adf_restruct_post_config(struct adf_post *post);
 void sprd_adf_free_restruct_config(struct sprd_adf_interface *adf_intf,
 				   struct sprd_restruct_config *config);
-void sprd_adf_device_flip(struct sprd_adf_interface *adf_intf,
+int sprd_adf_device_flip(struct sprd_adf_interface *adf_intf,
 			  struct sprd_restruct_config *config);
 void sprd_adf_wait_flip_done(struct sprd_adf_interface *adf_intf);
 

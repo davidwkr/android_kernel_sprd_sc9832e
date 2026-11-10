@@ -380,7 +380,7 @@ struct sprd_adf_device_ops {
 	void (*free_restruct_config)(struct sprd_adf_interface *intf,
 				     struct sprd_restruct_config *config);
 
-	void (*flip)(struct sprd_adf_interface *intf,
+	int (*flip)(struct sprd_adf_interface *intf,
 		     struct sprd_restruct_config *config);
 
 	void (*wait_flip_done)(struct sprd_adf_interface *intf);

@@ -179,23 +179,23 @@ err_out:
  *
  * sprd_adf_flip_plane() flip all interfaces' post cmd.
  */
-static void sprd_adf_flip_plane(struct sprd_adf_device *dev,
+static int sprd_adf_flip_plane(struct sprd_adf_device *dev,
 		struct sprd_restruct_config *config)
 {
 	size_t i, j;
 
 	if (!dev) {
 		ADF_DEBUG_WARN("parameter dev is ilegal\n");
-		goto err_out;
+		return -EINVAL;
 	}
 
 	if (!config) {
 		ADF_DEBUG_WARN("parameter config is ilegal\n");
-		goto err_out;
+		return -EINVAL;
 	}
 
 	if (dev->ops && dev->ops->flip) {
-		dev->ops->flip(dev->intfs, config);
+		return dev->ops->flip(dev->intfs, config);
 	} else {
 		ADF_DEBUG_WARN("ops or ops->flip is illegal\n");
 
@@ -236,8 +236,7 @@ static void sprd_adf_flip_plane(struct sprd_adf_device *dev,
 		}
 	}
 
-err_out:
-	return;
+	return -ENODEV;
 }
 
 /**
@@ -333,6 +332,7 @@ static int sprd_adf_device_post(struct adf_device *dev, struct adf_post *post,
 	static u8 flip_count = 1;
 	u64 elapse_time;
 	u64 temp_data;
+	int ret;
 
 	if (!dev) {
 		ADF_DEBUG_WARN("parameter dev is ilegal\n");
@@ -355,7 +355,9 @@ static int sprd_adf_device_post(struct adf_device *dev, struct adf_post *post,
 		ADF_DEBUG_WARN("config state data error\n");
 		return -EINVAL;
 	}
-	sprd_adf_flip_plane(sprd_adf_dev, config);
+	ret = sprd_adf_flip_plane(sprd_adf_dev, config);
+	if (ret)
+		return ret;
 	sprd_adf_wait_flip_done(sprd_adf_dev);
 
 	flip_count++;

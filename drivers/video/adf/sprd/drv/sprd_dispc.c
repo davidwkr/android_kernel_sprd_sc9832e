@@ -639,7 +639,7 @@ static int32_t sprd_dispc_init(struct sprd_dispc *dispc)
 static int32_t sprd_dispc_flip(struct sprd_dispc *dispc,
 		struct sprd_restruct_config *config)
 {
-	int i;
+	int i, ret;
 	static bool logo2animation = true;
 	struct dispc_context *ctx = &dispc->ctx;
 
@@ -649,17 +649,26 @@ static int32_t sprd_dispc_flip(struct sprd_dispc *dispc,
 	if (!ctx->is_inited) {
 		pr_err("dispc is not initialized!\n");
 		up(&ctx->refresh_lock);
-		return -1;
+		return -ENODEV;
 	}
 
-	/*do iommu map when buffer is not reserved memory*/
-	for (i = 0; i < config->number_hwlayer; i++)
-		sprd_dispc_iommu_map(dispc, &config->hwlayers[i]);
+	/*
+	 * do iommu map when buffer is not reserved memory. On failure the
+	 * layers mapped so far are unmapped when ADF frees this failed post
+	 * (sprd_dispc_iommu_unmap skips planes with no iova).
+	 */
+	for (i = 0; i < config->number_hwlayer; i++) {
+		ret = sprd_dispc_iommu_map(dispc, &config->hwlayers[i]);
+		if (ret) {
+			up(&ctx->refresh_lock);
+			return ret;
+		}
+	}
 
 	if (ctx->disable_flip) {
 		pr_debug("dispc flip was disabled\n");
 		up(&ctx->refresh_lock);
-		return -1;
+		return -EBUSY;
 	}
 
 	dispc->core->flip(ctx, config);
