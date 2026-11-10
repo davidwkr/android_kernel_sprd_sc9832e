@@ -27,6 +27,10 @@ CONFIG_REGULATOR_FIXED_VOLTAGE=y
 # devices/THERMAL_414.md.
 CONFIG_SPRD_THERMAL=y
 
+# Crown: stock rotary-encoder node already in the DM63/DM82/MT107/MT108 4.14
+# DTS (K18 and the DW100U variants have no crown and no node).
+CONFIG_INPUT_GPIO_ROTARY_ENCODER=y
+
 # AP watchdog, sharkle-wdt node already unconditional in sharkle.dtsi. The
 # driver does not auto-start the countdown at probe (userspace must open
 # /dev/watchdog0 and start it); see devices/THERMAL_414.md for why this is
