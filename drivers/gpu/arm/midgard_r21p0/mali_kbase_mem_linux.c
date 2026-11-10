@@ -1167,7 +1167,17 @@ static struct kbase_va_region *kbase_mem_from_user_buffer(
 	user_buf->size = size;
 	user_buf->address = address;
 	user_buf->nr_pages = *va_pages;
+	/*
+	 * Take the mm_count reference at the same time user_buf->mm is
+	 * assigned, so the two are always balanced: kbase_mem_kref_free()
+	 * unconditionally calls mmdrop() whenever user_buf->mm is non-NULL,
+	 * including on this function's failure paths below, so a reference
+	 * taken only after a successful get_user_pages() would otherwise be
+	 * dropped without ever having been held.
+	 */
 	user_buf->mm = current->mm;
+	atomic_inc(&current->mm->mm_count);
+
 	user_buf->pages = kmalloc_array(*va_pages, sizeof(struct page *),
 			GFP_KERNEL);
 
@@ -1212,8 +1222,6 @@ static struct kbase_va_region *kbase_mem_from_user_buffer(
 
 	if (faulted_pages != *va_pages)
 		goto fault_mismatch;
-
-	atomic_inc(&current->mm->mm_count);
 
 	reg->gpu_alloc->nents = 0;
 	reg->extent = 0;
@@ -1261,7 +1269,12 @@ fault_mismatch:
 		for (i = 0; i < faulted_pages; i++)
 			put_page(pages[i]);
 	}
-	kfree(user_buf->pages);
+	/*
+	 * user_buf->pages has exactly one owner: the
+	 * KBASE_MEM_TYPE_IMPORTED_USER_BUF case in kbase_mem_kref_free(),
+	 * reached via the kbase_mem_phy_alloc_put() calls below. Freeing it
+	 * here too would double-free it once that final put runs.
+	 */
 no_page_array:
 invalid_flags:
 	kbase_mem_phy_alloc_put(reg->cpu_alloc);
