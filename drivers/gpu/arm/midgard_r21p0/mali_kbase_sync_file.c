@@ -68,15 +68,21 @@ int kbase_sync_fence_out_create(struct kbase_jd_atom *katom, int stream_fd)
 	if (!fence)
 		return -ENOMEM;
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 9, 0))
 	/* Take an extra reference to the fence on behalf of the katom.
 	 * This is needed because sync_file_create() will take ownership of
 	 * one of these refs */
 	dma_fence_get(fence);
+#endif
+	/* Since 4.9 sync_file_create() takes its own reference; the katom
+	 * keeps the one from kbase_fence_out_new(). */
 
 	/* create a sync_file fd representing the fence */
 	sync_file = sync_file_create(fence);
 	if (!sync_file) {
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 9, 0))
 		dma_fence_put(fence);
+#endif
 		kbase_fence_out_remove(katom);
 		return -ENOMEM;
 	}

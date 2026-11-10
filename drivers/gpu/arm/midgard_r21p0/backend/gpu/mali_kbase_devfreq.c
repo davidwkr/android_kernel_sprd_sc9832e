@@ -87,14 +87,27 @@ kbase_devfreq_target(struct device *dev, unsigned long *target_freq, u32 flags)
 
 	freq = *target_freq;
 
+	/*
+	 * Since 4.11 the OPP core takes its own locks and returns a referenced
+	 * OPP; the caller must not hold rcu_read_lock and must put the OPP.
+	 */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
 	rcu_read_lock();
+#endif
 	opp = devfreq_recommended_opp(dev, &freq, flags);
-	voltage = dev_pm_opp_get_voltage(opp);
-	rcu_read_unlock();
 	if (IS_ERR_OR_NULL(opp)) {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
+		rcu_read_unlock();
+#endif
 		dev_err(dev, "Failed to get opp (%ld)\n", PTR_ERR(opp));
-		return PTR_ERR(opp);
+		return opp ? PTR_ERR(opp) : -ENODEV;
 	}
+	voltage = dev_pm_opp_get_voltage(opp);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
+	rcu_read_unlock();
+#else
+	dev_pm_opp_put(opp);
+#endif
 
 	nominal_freq = freq;
 
@@ -190,28 +203,37 @@ static int kbase_devfreq_init_freq_table(struct kbase_device *kbdev,
 	unsigned long freq;
 	struct dev_pm_opp *opp;
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
 	rcu_read_lock();
+#endif
 	count = dev_pm_opp_get_opp_count(kbdev->dev);
-	if (count < 0) {
-		rcu_read_unlock();
-		return count;
-	}
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
 	rcu_read_unlock();
+#endif
+	if (count < 0)
+		return count;
 
 	dp->freq_table = kmalloc_array(count, sizeof(dp->freq_table[0]),
 				GFP_KERNEL);
 	if (!dp->freq_table)
 		return -ENOMEM;
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
 	rcu_read_lock();
+#endif
 	for (i = 0, freq = ULONG_MAX; i < count; i++, freq--) {
 		opp = dev_pm_opp_find_freq_floor(kbdev->dev, &freq);
 		if (IS_ERR(opp))
 			break;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
+		dev_pm_opp_put(opp);
+#endif
 
 		dp->freq_table[i] = freq;
 	}
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
 	rcu_read_unlock();
+#endif
 
 	if (count != i)
 		dev_warn(kbdev->dev, "Unable to enumerate all OPPs (%d!=%d\n",
