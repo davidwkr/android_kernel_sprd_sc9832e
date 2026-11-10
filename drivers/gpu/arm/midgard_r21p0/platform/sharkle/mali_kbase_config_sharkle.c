@@ -545,15 +545,22 @@ static int mali_platform_init(struct kbase_device *kbdev)
 #ifdef CONFIG_ADJUST_VOLTAGE
 	/*
 	 * cur_voltage was the default OPP's voltage, assumed. Use the rail's
-	 * real voltage, and raise it if it is below the default OPP's; an
-	 * unknown voltage (0) makes the next transition set it.
+	 * real voltage, and raise it if it is below the default OPP's (or
+	 * unreadable); the GPU clock already runs at the default OPP, so a
+	 * failed raise fails the probe.
 	 */
 	err = regulator_get_voltage(gpu_reg);
 	gpu_dfs_ctx.cur_voltage = err > 0 ? err : 0;
-	if (gpu_dfs_ctx.cur_voltage < gpu_dfs_ctx.freq_cur->volt &&
-	    !regulator_set_voltage(gpu_reg, gpu_dfs_ctx.freq_cur->volt,
-				   gpu_dfs_ctx.freq_cur->volt))
+	if (gpu_dfs_ctx.cur_voltage < gpu_dfs_ctx.freq_cur->volt) {
+		err = regulator_set_voltage(gpu_reg, gpu_dfs_ctx.freq_cur->volt,
+					    gpu_dfs_ctx.freq_cur->volt);
+		if (err) {
+			pr_err("mali: cannot set gpu voltage %d uV (%d)\n",
+			       gpu_dfs_ctx.freq_cur->volt, err);
+			goto err_freq_list;
+		}
 		gpu_dfs_ctx.cur_voltage = gpu_dfs_ctx.freq_cur->volt;
+	}
 	gpu_voltage_cur = gpu_dfs_ctx.cur_voltage;
 	err = 0;
 #endif
