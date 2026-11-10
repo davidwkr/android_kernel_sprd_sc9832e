@@ -163,8 +163,8 @@ Next:
 1. First boot of the DM63 on 4.14 (needs the user's OK to flash): console, USB, eMMC, then display. The first
    charge must be attended (see `dm63/DTS_414.md`).
 2. Userspace: the Android 8.1 vendor hwcomposer/gralloc use ADF. The ADF port now exists (`ADF_414_PORT.md`), so
-   the stock vendor image can in principle run on 4.14 once a board is wired for it: the K18 ADF board DTS
-   (dispc/dsi/dphy in the ADF binding, the `lcd_icna3311_oled148_adf.dtsi` panel) is not done yet. The DRM path
+   the stock vendor image can in principle run on 4.14: the K18 has an ADF board variant
+   (`sp9832e-1h10-k18-adf.dts`) and a bring-up boot image candidate (`k18/BOOT_414.md`). The DRM path
    still needs a DRM-capable composer (a newer Android build).
 3. Mali kbase: r21p0 for the stock blob, on 4.4 first (see the 4.4 tree's `devices/MALI_R21P0.md`), then 4.14.
 4. Missing on 4.14: Wi-Fi/BT netdev drivers, deep sleep, camera (needs ION, now present).

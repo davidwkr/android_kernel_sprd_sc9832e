@@ -204,12 +204,9 @@ table — same panel, same facts). Nothing was invented: every property value,
 including the full 256-entry identity brightness table, is copied byte-for-
 byte from the stock node.
 
-**Not done**: wiring this `.dtsi` into a live board `.dts`. That needs a K18
-ADF board variant with the dispc/dsi/dphy nodes expressed in `sprd_adf`'s
-binding (`sprd,ip`/`clock-names` as in the 4.4 ground truth) instead of the
-DRM generic-panel one already in `sp9832e-1h10-k18.dts`, which is a
-materially separate DTS exercise from the kernel driver port. The `.dtsi` is
-reference data, not yet `#include`d anywhere.
+Wired into `sp9832e-1h10-k18-adf.dts`: the K18 dts with the DRM display nodes disabled and the stock ADF
+dispc/dsi/dphy/sprd-panel-if/sprd-adf nodes added, clock phandles translated to the 4.14 providers (the mapping is
+in the file header). A boot image candidate built from it is described in `k18/BOOT_414.md`.
 
 ## Build results
 
@@ -284,8 +281,7 @@ Accepted on purpose:
 - Debug sysfs (`sysfs_stubs.c`), AOD, write-back, RGB/SPI panel interfaces,
   the DesignWare DSI core, the other seven SoC directories: not ported, as
   detailed above.
-- DTS wiring for a live K18 ADF board variant: not done (see "K18 panel
-  data" above).
+- Only the K18 has an ADF board variant; the other boards use DRM.
 - 138 pre-existing W=1 warnings in vendor code, not cleaned up (see "sprd
   driver skeleton" above).
 - The 4.4 `adf_sysfs.c`/`adf_fops.c` prototypes flagged `-Wmissing-prototypes`
