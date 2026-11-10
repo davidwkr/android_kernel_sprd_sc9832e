@@ -110,11 +110,11 @@ void sprd_adf_fence_signal(struct device *dev)
 }
 
 /**
- * sprd_adf_scanout_stopped - tell ADF the display controller stopped
+ * sprd_adf_scanout_restarted - tell ADF the display controller restarted
  *
  * @dev: the adf device ptr
  */
-void sprd_adf_scanout_stopped(struct device *dev)
+void sprd_adf_scanout_restarted(struct device *dev)
 {
 	struct sprd_adf_context *ctx;
 
@@ -123,7 +123,7 @@ void sprd_adf_scanout_stopped(struct device *dev)
 		ADF_DEBUG_WARN("Get sprd_adf_context fail\n");
 		return;
 	}
-	adf_device_scanout_stopped(&ctx->devices[0].base);
+	adf_device_scanout_restarted(&ctx->devices[0].base);
 }
 
 /**

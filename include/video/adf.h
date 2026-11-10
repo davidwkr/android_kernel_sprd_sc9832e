@@ -320,6 +320,7 @@ struct adf_device {
 	/* posts the hw may still scan after a post op timed out */
 	struct list_head stale_posts;
 	unsigned int n_stale;
+	bool stale_probe;
 	struct kthread_work stale_work;
 
 	/*
@@ -539,6 +540,6 @@ void adf_hotplug_notify_disconnected(struct adf_interface *intf);
 void adf_modeinfo_set_name(struct drm_mode_modeinfo *mode);
 void adf_modeinfo_set_vrefresh(struct drm_mode_modeinfo *mode);
 void adf_post_timeline_signaled(struct adf_device *dev);
-void adf_device_scanout_stopped(struct adf_device *dev);
+void adf_device_scanout_restarted(struct adf_device *dev);
 
 #endif /* _VIDEO_ADF_H */

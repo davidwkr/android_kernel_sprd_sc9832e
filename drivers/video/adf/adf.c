@@ -128,8 +128,10 @@ EXPORT_SYMBOL(adf_post_timeline_signaled);
 
 /*
  * Beyond this many posts kept alive by timed-out updates, the hardware is
- * treated as wedged: new posts fail without being flipped until a post
- * succeeds or the driver reports scanout stopped.
+ * treated as wedged: new posts fail without being flipped, until the
+ * driver reports scanout restarted, which allows one probe flip. Stale
+ * posts are only ever released after a flip succeeds, i.e. with the
+ * hardware (and its IOMMU) known to be running and past them.
  */
 #define ADF_MAX_STALE_POSTS 4
 
@@ -149,23 +151,25 @@ static void adf_stale_work_func(struct kthread_work *work)
 	struct adf_device *dev =
 			container_of(work, struct adf_device, stale_work);
 
-	adf_post_retire_stale(dev);
+	dev->stale_probe = true;
 }
 
 /**
- * adf_device_scanout_stopped - the hardware no longer reads any buffer
+ * adf_device_scanout_restarted - the display controller was reinitialized
  *
  * @dev: the device
  *
- * For drivers whose post op can return -ETIMEDOUT: call once the display
- * controller is stopped or powered down, so the posts kept alive by timed
- * out updates can be released. Runs the release on the post worker.
+ * For drivers whose post op can return -ETIMEDOUT: call after the display
+ * controller was reset or powered back up. If posting was blocked by too
+ * many timed-out updates, the next post is flipped again as a probe; it
+ * releases the kept posts if it succeeds. Nothing is freed here, and the
+ * flag is set on the post worker so it is ordered with the posts.
  */
-void adf_device_scanout_stopped(struct adf_device *dev)
+void adf_device_scanout_restarted(struct adf_device *dev)
 {
 	kthread_queue_work(&dev->post_worker, &dev->stale_work);
 }
-EXPORT_SYMBOL(adf_device_scanout_stopped);
+EXPORT_SYMBOL(adf_device_scanout_restarted);
 
 static void adf_post_work_func(struct kthread_work *work)
 {
@@ -195,10 +199,12 @@ static void adf_post_work_func(struct kthread_work *work)
 		dev->post_gen++;
 		spin_unlock_irqrestore(&dev->signal_lock, flags);
 
-		if (dev->n_stale >= ADF_MAX_STALE_POSTS)
+		if (dev->n_stale >= ADF_MAX_STALE_POSTS && !dev->stale_probe) {
 			err = -EBUSY;
-		else
+		} else {
+			dev->stale_probe = false;
 			err = dev->ops->post(dev, &post->config, post->state);
+		}
 
 		/*
 		 * Advanced even if the flip failed, so this post's own fences

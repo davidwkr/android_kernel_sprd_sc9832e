@@ -778,8 +778,6 @@ static int32_t sprd_dispc_suspend(struct sprd_dispc *dispc)
 
 	sprd_adf_fence_signal(dispc->adf);
 	sprd_dispc_uninit(dispc);
-	/* nothing is scanned out anymore: release timed-out posts */
-	sprd_adf_scanout_stopped(dispc->adf);
 
 	up(&ctx->refresh_lock);
 
@@ -870,6 +868,9 @@ static int32_t sprd_dispc_resume(struct sprd_dispc *dispc)
 
 	ctx->is_inited = true;
 	up(&ctx->refresh_lock);
+
+	/* let ADF probe the hw again if timed-out updates had blocked posting */
+	sprd_adf_scanout_restarted(dispc->adf);
 
 	pr_info("dispc resume OK (Final Fix V2)\n");
 	return 0;
