@@ -2703,11 +2703,26 @@ void kbase_unmap_external_resource(struct kbase_context *kctx,
 		if (0 == alloc->imported.user_buf.current_mapping_usage_count) {
 			bool writeable = true;
 
-			if (reg && reg->gpu_alloc == alloc)
+			if (reg && reg->gpu_alloc == alloc) {
 				kbase_mmu_teardown_pages(
 						kctx,
 						reg->start_pfn,
 						kbase_reg_current_backed_size(reg));
+
+				/* Userspace can CPU-mmap this region's GPU VA
+				 * directly (it is not rejected by kbase_mmap()),
+				 * which hands out PFNs pointing at these pinned
+				 * pages. Zap any such mappings before the pages
+				 * are unpinned below, so they cannot be left
+				 * referencing memory the kernel has released
+				 * back to the general page allocator
+				 * (CVE-2022-36449).
+				 */
+				unmap_mapping_range(kctx->filp->f_inode->i_mapping,
+						reg->start_pfn << PAGE_SHIFT,
+						kbase_reg_current_backed_size(reg) << PAGE_SHIFT,
+						1);
+			}
 
 			if (reg && ((reg->flags & (KBASE_REG_CPU_WR |
 					KBASE_REG_GPU_WR)) == 0))
