@@ -411,6 +411,8 @@ struct dma_fence *adf_device_post(struct adf_device *dev,
 		size_t j;
 		for (j = 0; j < bufs[i].n_planes; j++)
 			get_dma_buf(bufs[i].dma_bufs[j]);
+		if (bufs[i].acquire_fence)
+			dma_fence_get(bufs[i].acquire_fence);
 	}
 
 	memcpy(intfs_copy, intfs, sizeof(intfs_copy[0]) * n_intfs);
@@ -430,6 +432,8 @@ err_post:
 		size_t j;
 		for (j = 0; j < bufs[i].n_planes; j++)
 			dma_buf_put(bufs[i].dma_bufs[j]);
+		if (bufs[i].acquire_fence)
+			dma_fence_put(bufs[i].acquire_fence);
 	}
 err_alloc:
 	kfree(custom_data_copy);

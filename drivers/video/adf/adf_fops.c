@@ -451,8 +451,14 @@ static int adf_intf_simple_post_config(struct adf_interface *intf,
 		goto err_put_user;
 	}
 
-	/* buf's resources now belong to the post, win or lose; only the fd
-	 * still needs handling, which adf_install_complete_fence() owns. */
+	/*
+	 * adf_interface_simple_post() calls adf_device_post(), which has
+	 * copying semantics: it takes its own references on buf's dma_bufs
+	 * and acquire_fence rather than consuming buf's. buf's own imported
+	 * references must still be released here, win or lose, or they leak
+	 * every time this ioctl is used.
+	 */
+	adf_buffer_cleanup(&buf);
 	return adf_install_complete_fence(complete_fence, complete_fence_fd);
 
 err_put_user:
