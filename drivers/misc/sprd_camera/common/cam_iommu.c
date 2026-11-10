@@ -31,11 +31,11 @@ static unsigned int dma_buffer_count;
  * Every imported buffer is referenced until the module is released and the
  * frames keep raw dma_buf pointers that depend on that reference, so an entry
  * cannot be dropped when one mapping is freed (the same buffer is queued
- * again and again). Stock never bounded the list; this only stops runaway
- * pinning, well above the buffers one session uses (the list is cleared
- * when the camera closes).
+ * again and again). The list is cleared when the camera closes. Entries of
+ * replaced buffers stay until then, so a cap would eventually refuse a long
+ * session's legitimate imports (stock has none): only warn once past this.
  */
-#define DMA_BUFFER_LIST_MAX	1024
+#define DMA_BUFFER_LIST_WARN	1024
 
 /*
  * Add the imported planes of pfinfo, or none of them: a partial import must
@@ -83,13 +83,9 @@ static int dma_buffer_list_add(struct pfiommu_info *pfinfo,
 			need++;
 	}
 
-	if (dma_buffer_count + need > DMA_BUFFER_LIST_MAX) {
-		spin_unlock_irqrestore(&dma_buffer_lock, flags);
-		pr_err("%s, too many imported buffers (%u)\n", __func__,
-		       dma_buffer_count);
-		ret = -ENOSPC;
-		goto free_nodes;
-	}
+	if (dma_buffer_count + need > DMA_BUFFER_LIST_WARN)
+		pr_warn_once("%s, %u imported buffers held until close\n",
+			     __func__, dma_buffer_count + need);
 
 	for (i = 0; i < 2; i++) {
 		if (!fd_dma[i] || found[i])
