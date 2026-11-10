@@ -4,12 +4,12 @@
 committed); it is kept in `~/.cache/dw100u-silver-414-candidate/dw100u-silver_414_adf_candidate.img`. This is a bring-up image, built the same way as the K18 one: see
 `../k18/BOOT_414.md` for the commands, the contents and what to expect, which apply here except as noted.
 
-Built from `kernel-4.14` commit `c20b4a84c1d7`, kernel release 4.14.336+, config `sprd_sharkle_defconfig` +
+Built from `kernel-4.14` commit `2119c17fb98a`, kernel release 4.14.336+, config `sprd_sharkle_defconfig` +
 `watch_414.fragment` + `watch_414_adf.fragment`, DTB `sp9832e-1h10-dw100u-silver-adf.dtb` in a new SPRD DT table with the stock header and entry
 fields (board id `0x2668`, rev 1), on a copy of the stock DW100U silver boot image; in its ramdisk the 4.14 builds of sprdwl_ng.ko, sprdbt_tty.ko and sprd_fm.ko
 (`devices/WCN_414_PORT.md`, debug info stripped) replace the 4.4.83 ones.
 
-sha256 `d4ea38881ba91ba66c7c534f3dd54df220660b1700bfea2b2a7e0f9b4a9cc543`
+sha256 `69140070bb7f81926b3508dfd958ee0a9baf7931280399e90b430e58fe4e0000`
 
 Differences from the K18 notes:
 - GPU: the r21p0 Mali driver is built in (`sp9832e-watch-gpu.dtsi`, stock DVFS points with vddcore scaling). The
