@@ -795,6 +795,10 @@ int kbase_mem_flags_change(struct kbase_context *kctx, u64 gpu_addr, unsigned in
 	if (reg->flags & KBASE_REG_JIT_OWNED)
 		goto out_unlock;
 
+	/* no eviction under a kernel mapping (kbase_vmap_prot) */
+	if (atomic_read(&reg->gpu_alloc->kernel_mappings) > 0)
+		goto out_unlock;
+
 	/* Is the region being transitioning between not needed and needed? */
 	prev_needed = (KBASE_REG_DONT_NEED & reg->flags) == KBASE_REG_DONT_NEED;
 	new_needed = (BASE_MEM_DONT_NEED & flags) == BASE_MEM_DONT_NEED;
@@ -1752,6 +1756,9 @@ int kbase_mem_commit(struct kbase_context *kctx, u64 gpu_addr, u64 new_pages)
 	/* can't be mapped more than once on the GPU */
 	if (atomic_read(&reg->gpu_alloc->gpu_mappings) > 1)
 		goto out_unlock;
+	/* can't change the backing under a kernel mapping (kbase_vmap_prot) */
+	if (atomic_read(&reg->gpu_alloc->kernel_mappings) > 0)
+		goto out_unlock;
 	/* can't grow regions which are ephemeral */
 	if (reg->flags & KBASE_REG_DONT_NEED)
 		goto out_unlock;
@@ -1898,7 +1905,7 @@ static int kbase_cpu_vm_fault(struct vm_fault *vmf)
 	KBASE_DEBUG_ASSERT(map->kctx);
 	KBASE_DEBUG_ASSERT(map->alloc);
 
-	rel_pgoff = vmf->pgoff - map->region->start_pfn;
+	rel_pgoff = vmf->pgoff - map->start_pfn;
 
 	kbase_gpu_vm_lock(map->kctx);
 	if (rel_pgoff >= map->alloc->nents)
@@ -2035,6 +2042,7 @@ static int kbase_cpu_mmap(struct kbase_va_region *reg, struct vm_area_struct *vm
 	}
 
 	map->region = reg;
+	map->start_pfn = reg->start_pfn;
 	map->free_on_close = free_on_close;
 	map->kctx = reg->kctx;
 	map->alloc = kbase_mem_phy_alloc_get(reg->cpu_alloc);
@@ -2536,7 +2544,11 @@ void *kbase_vmap_prot(struct kbase_context *kctx, u64 gpu_addr, size_t size,
 	if (page_index + page_count > kbase_reg_current_backed_size(reg))
 		goto out_unlock;
 
-	if (reg->flags & KBASE_REG_DONT_NEED)
+	/*
+	 * Nothing the shrinker can reclaim: an evictable region, or a JIT
+	 * region, which JIT_FREE makes evictable while the mapping lives.
+	 */
+	if (reg->flags & (KBASE_REG_DONT_NEED | KBASE_REG_JIT_OWNED))
 		goto out_unlock;
 
 	/* check access permissions can be satisfied
@@ -2584,6 +2596,12 @@ void *kbase_vmap_prot(struct kbase_context *kctx, u64 gpu_addr, size_t size,
 
 	if (map->sync_needed)
 		kbasep_sync_mem_regions(kctx, map, KBASE_SYNC_TO_CPU);
+	/*
+	 * Counted under reg_lock: while it is non-zero MEM_FLAGS_CHANGE will
+	 * not make the region evictable and MEM_COMMIT will not shrink it,
+	 * so the mapped pages stay until kbase_vunmap().
+	 */
+	atomic_inc(&map->gpu_alloc->kernel_mappings);
 	kbase_gpu_vm_unlock(kctx);
 
 	return map->addr;
@@ -2612,6 +2630,8 @@ void kbase_vunmap(struct kbase_context *kctx, struct kbase_vmap_struct *map)
 
 	if (map->sync_needed)
 		kbasep_sync_mem_regions(kctx, map, KBASE_SYNC_TO_DEVICE);
+	/* only now may the backing be evicted or shrunk again */
+	atomic_dec(&map->gpu_alloc->kernel_mappings);
 	map->gpu_addr = 0;
 	map->cpu_alloc = kbase_mem_phy_alloc_put(map->cpu_alloc);
 	map->gpu_alloc = kbase_mem_phy_alloc_put(map->gpu_alloc);
