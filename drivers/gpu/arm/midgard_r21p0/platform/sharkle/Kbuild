@@ -19,3 +19,9 @@
 # silently drops the object - platform_sharkle_funcs/pm_sharkle_callbacks
 # would be undefined in the final mali.ko.
 mali-y += $(MALI_PLATFORM_DIR)/mali_kbase_config_sharkle.o
+
+# Tell backend/gpu/mali_kbase_devfreq.c it can use this platform's
+# kbase_platform_get_init_freq()/kbase_platform_set_freq() instead of the
+# generic kbdev->clock ("clk_mali") path. Only defined when this Kbuild is
+# included, i.e. only when CONFIG_MALI_PLATFORM_NAME="sharkle".
+ccflags-y += -DMALI_PLATFORM_SHARKLE

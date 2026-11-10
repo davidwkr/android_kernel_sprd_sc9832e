@@ -242,6 +242,21 @@ Owned-file findings from the review are all accounted for above. The
 devfreq/power-domain findings (platform/sharkle glue) are out of scope for
 this set of commits.
 
+## Platform fixes
+
+Review findings against `backend/gpu/mali_kbase_devfreq.c` and
+`platform/sharkle/` from the same pass that produced the security-backports
+table above. Scope here is devfreq/platform glue; the kbase-core memory/MMU
+findings from the same review are tracked separately (above).
+
+| Finding | Fix |
+|---|---|
+| Sharkle devfreq integration broke other selectable platforms: the common backend unconditionally called `kbase_platform_get_init_freq()`/`kbase_platform_set_freq()`, which only `platform/sharkle/` implements, so `CONFIG_MALI_PLATFORM_NAME="devicetree"` (the Kconfig default) with `CONFIG_MALI_DEVFREQ=y` failed to link. | `backend/gpu/mali_kbase_devfreq.c` now falls back to the generic `kbdev->clock` (`clk_get_rate()`/`clk_set_rate()`) path, same as upstream. The sharkle-only calls are gated behind a new `MALI_PLATFORM_SHARKLE` macro, defined only by `platform/sharkle/Kbuild` (`ccflags-y += -DMALI_PLATFORM_SHARKLE`) so it's only visible when `CONFIG_MALI_PLATFORM_NAME="sharkle"` is actually the platform being built - k18 and dm63 are unaffected. Verified both ways: `k18_defconfig`/`dm63_defconfig` (sharkle path) and a throwaway `CONFIG_MALI_PLATFORM_NAME="devicetree"` + `CONFIG_MALI_DEVFREQ=y` config (generic path, not committed) both build `mali.ko` cleanly with `W=1`. |
+| `mali_platform_term()` freed `gpu_dfs_ctx.gpu_clk_src` with `vfree()` directly, without `clk_put()` on its entries or on `gpu_clock`/`gpu_clock_i`: every unbind/rebind of the platform device leaked those clock references. | Teardown now calls `mali_freq_term()` (already used on the `mali_platform_init()` error path) instead of hand-rolling the free, so the clocks are `clk_put()` before the array is freed. No change to the power-off/clock-off sequencing or to any regulator/vddcore handling. |
+
+Both fixes keep the stock `libGLES_mali.so` (r21p0, UK 11.0) ABI: neither
+touches an ioctl or a userspace-visible struct layout.
+
 ## Open items
 
 - **Hardware bring-up is untested** (offline-only task: no device access).
