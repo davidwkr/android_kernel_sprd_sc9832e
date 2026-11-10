@@ -234,7 +234,8 @@
 		cm-battery-stat = <2>;			/* [base] fuel gauge PRESENT (always 1 here) */
 
 		cm-fullbatt-vchkdrop-ms = <30000>;	/* [base] */
-		cm-fullbatt-vchkdrop-volt = <60000>;	/* [base] */
+		/* [stock] recharge: chg-end-vol-check - rechg-vol = 4450 - 4415 mV */
+		cm-fullbatt-vchkdrop-volt = <35000>;
 		cm-fullbatt-voltage = <4450000>;	/* [stock] chg-end-vol-check */
 		cm-fullbatt-current = <60000>;		/* [stock] chg-end-cur */
 		cm-fullbatt-capacity = <100>;		/* [base] */
@@ -542,10 +543,19 @@
 	 * sprd,ovp-microvolt: stock battery ovp-stop 0x1964 = 6500 mV, written
 	 * to the input OVP field (code 9).
 	 *
-	 * TODO (not implemented in the 4.14 driver, stock values): chg-cv-gpios
-	 * = PMIC EIC 4, chg-ovi-gpios = PMIC EIC 6, ovp-restart 5800 mV,
-	 * chg-timer@0 (irq 7), fast-charger@900 (disabled in stock), chg-wdt@80
-	 * (disabled in stock), ITERM and recharge bits.
+	 * chg-ovi-gpios / chg-cv-gpios: stock PMIC EIC 6 / 4, both GPIO_ACTIVE_HIGH
+	 * (stock flag 0x00). The driver requests both as optional interrupts;
+	 * OVP latches POWER_SUPPLY_HEALTH_OVERVOLTAGE and stops charging until
+	 * the comparator clears (devices/SC2721_CHARGER_MAP.md). CV is
+	 * diagnostic only, see the driver comment.
+	 *
+	 * TODO (not implemented in the 4.14 driver, stock values): ovp-restart
+	 * 5800 mV (the hardware OVP hysteresis is fixed, nothing to program),
+	 * chg-timer@0 (irq 7, superseded by cm-charging-max below),
+	 * fast-charger@900 (disabled in stock, stays disabled), chg-wdt@80
+	 * (disabled in stock), ITERM level (software equivalent is
+	 * cm-fullbatt-current above; the 4.4 driver itself only ever writes a
+	 * fixed level 0, the mA policy is not board data we can prove).
 	 */
 	pmic_charger: charger@ec0 {
 		compatible = "sprd,sc27xx-charger", "sprd,sc2721-charger";
@@ -553,6 +563,8 @@
 		phys = <&hsphy>;
 		monitored-battery = <&bat>;
 		sprd,ovp-microvolt = <6500000>;
+		chg-ovi-gpios = <&pmic_eic 6 GPIO_ACTIVE_HIGH>;
+		chg-cv-gpios = <&pmic_eic 4 GPIO_ACTIVE_HIGH>;
 		nvmem-cells = <&cccv_calib_data>, <&cccv_calib_valid>;
 		nvmem-cell-names = "cccv_calib", "cccv_calib_valid";
 	};

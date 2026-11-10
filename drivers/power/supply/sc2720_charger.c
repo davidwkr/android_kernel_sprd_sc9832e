@@ -15,6 +15,8 @@
 #include <linux/slab.h>
 #include <linux/moduleparam.h>
 #include <linux/mutex.h>
+#include <linux/gpio/consumer.h>
+#include <linux/interrupt.h>
 
 #define SC2720_BATTERY_NAME			"sc27xx-fgu"
 
@@ -75,6 +77,8 @@
 #define SC2721_OVP_MIN_MV			5600
 #define SC2721_OVP_MAX_MV			9000
 #define SC2721_OVP_STEP_MV			100
+/* hardware auto-recharge enable, CHGR_CTRL0 bit 11, set with PD, cleared with it */
+#define SC2721_CHG_RECHG_EN			BIT(11)
 
 struct sc2720_charger_data {
 	const struct power_supply_desc *desc;
@@ -103,6 +107,13 @@ struct sc2720_charger_info {
 	u32 cur_req_ua;
 	/* SC2721 only: "sprd,ovp-microvolt", 0 = not set */
 	u32 ovp_uv;
+	/* SC2721 only: VCHG over-voltage and CV-state PMIC EIC lines, both optional */
+	struct gpio_desc *ovp_gpiod;
+	struct gpio_desc *cv_gpiod;
+	/* protected by info->lock: input OVP comparator currently tripped */
+	bool ovp_fault;
+	/* protected by info->lock: PMIC CHGR_STATUS CV bit, last read from the irq */
+	bool cv_reached;
 };
 
 /* SC2721 CV override ("battery hold"), 0 = off, see sc2721_cv_override_ops */
@@ -702,8 +713,24 @@ static int sc2720_charger_start_charge(struct sc2720_charger_info *info)
 	ret = regmap_update_bits(info->regmap,
 				 info->base + SC2720_CHG_CFG0,
 				 SC2720_CHG_PD, 0);
-	if (ret)
+	if (ret) {
 		dev_err(info->dev, "failed to satrt charge\n");
+		return ret;
+	}
+
+	/*
+	 * SC2721: enable the hardware auto-recharge comparator while
+	 * charging, as the 4.4 sprdchg_start_charge() does. The recharge
+	 * level itself is a fixed hardware hysteresis, nothing to program.
+	 */
+	if (info->data->is_sc2721) {
+		ret = regmap_update_bits(info->regmap,
+					 info->base + SC2720_CHG_CFG0,
+					 SC2721_CHG_RECHG_EN,
+					 SC2721_CHG_RECHG_EN);
+		if (ret)
+			dev_err(info->dev, "failed to enable recharge\n");
+	}
 
 	return ret;
 }
@@ -716,8 +743,18 @@ static int sc2720_charger_stop_charge(struct sc2720_charger_info *info)
 				 info->base + SC2720_CHG_CFG0,
 				 SC2720_CHG_PD,
 				 SC2720_CHG_PD);
-	if (ret)
+	if (ret) {
 		dev_err(info->dev, "failed to stop charge\n");
+		return ret;
+	}
+
+	if (info->data->is_sc2721) {
+		ret = regmap_update_bits(info->regmap,
+					 info->base + SC2720_CHG_CFG0,
+					 SC2721_CHG_RECHG_EN, 0);
+		if (ret)
+			dev_err(info->dev, "failed to disable recharge\n");
+	}
 
 	return ret;
 }
@@ -837,7 +874,10 @@ static int sc2720_charger_get_current(struct sc2720_charger_info *info,
 static int sc2720_charger_get_health(struct sc2720_charger_info *info,
 				     u32 *health)
 {
-	*health = POWER_SUPPLY_HEALTH_GOOD;
+	if (info->data->is_sc2721 && info->ovp_fault)
+		*health = POWER_SUPPLY_HEALTH_OVERVOLTAGE;
+	else
+		*health = POWER_SUPPLY_HEALTH_GOOD;
 
 	return 0;
 }
@@ -870,6 +910,11 @@ static int sc2720_charger_set_status(struct sc2720_charger_info *info,
 		sc2720_charger_stop_charge(info);
 		info->charging = false;
 	} else if (val && !info->charging) {
+		if (info->data->is_sc2721 && info->ovp_fault) {
+			dev_warn(info->dev,
+				 "refusing to start charge, input OVP fault latched\n");
+			return -EBUSY;
+		}
 		ret = sc2720_charger_start_charge(info);
 		if (ret)
 			dev_err(info->dev, "start charge failed\n");
@@ -1215,6 +1260,122 @@ static void sc2721_cv_release(struct sc2720_charger_info *info)
 	mutex_unlock(&sc2721_cv_lock);
 }
 
+/*
+ * SC2721 input over-voltage notification (stock chg-ovi-gpios, PMIC EIC 6,
+ * 4.4 sprd_2721_charge.c:960-995). The analog OVP comparator already gates
+ * the charge path in hardware at the level programmed by sc2721_set_ovp();
+ * this interrupt only gives software visibility and a defence-in-depth stop
+ * so the state the driver believes in does not drift from the hardware.
+ * Latches info->ovp_fault, which POWER_SUPPLY_PROP_HEALTH reports and which
+ * sc2720_charger_set_status() refuses to charge through until it clears.
+ */
+static irqreturn_t sc2721_ovp_irq_handler(int irq, void *data)
+{
+	struct sc2720_charger_info *info = data;
+	int fault;
+
+	fault = gpiod_get_value_cansleep(info->ovp_gpiod);
+	if (fault < 0)
+		return IRQ_HANDLED;
+
+	mutex_lock(&info->lock);
+	info->ovp_fault = !!fault;
+	if (info->ovp_fault && info->charging) {
+		dev_crit(info->dev, "input over-voltage, stopping charge\n");
+		sc2720_charger_stop_charge(info);
+		info->charging = false;
+	} else if (!info->ovp_fault) {
+		dev_info(info->dev, "input over-voltage cleared\n");
+	}
+	mutex_unlock(&info->lock);
+
+	power_supply_changed(info->psy_usb);
+	cm_notify_event(info->psy_usb, CM_EVENT_OTHERS, NULL);
+
+	return IRQ_HANDLED;
+}
+
+/*
+ * SC2721 CV-reached notification (stock chg-cv-gpios, PMIC EIC 4, CHGR_STATUS
+ * bit 4, 4.4 C:1030-1050). Diagnostic only: the "CV reached" condition that
+ * drives recharge and full-detection is already derived in software from the
+ * measured voltage and current (see sc2721_cv_hold_uv() and
+ * SC2721_FGU_MAP.md, gauge resync), as in the 4.4 driver. This flag is
+ * exposed for logging, nothing is keyed off it.
+ */
+static irqreturn_t sc2721_cv_irq_handler(int irq, void *data)
+{
+	struct sc2720_charger_info *info = data;
+	int cv;
+
+	cv = gpiod_get_value_cansleep(info->cv_gpiod);
+	if (cv < 0)
+		return IRQ_HANDLED;
+
+	mutex_lock(&info->lock);
+	info->cv_reached = !!cv;
+	mutex_unlock(&info->lock);
+
+	return IRQ_HANDLED;
+}
+
+/*
+ * Request the two optional PMIC EIC lines. Both are board data (absent on
+ * units that do not wire them); a missing property is not an error, a failed
+ * request for a present one is.
+ */
+static int sc2721_init_fault_irqs(struct platform_device *pdev,
+				  struct sc2720_charger_info *info)
+{
+	int irq, ret;
+
+	info->ovp_gpiod = devm_gpiod_get_optional(&pdev->dev, "chg-ovi", GPIOD_IN);
+	if (IS_ERR(info->ovp_gpiod))
+		return PTR_ERR(info->ovp_gpiod);
+
+	if (info->ovp_gpiod) {
+		irq = gpiod_to_irq(info->ovp_gpiod);
+		if (irq < 0)
+			return irq;
+
+		ret = devm_request_threaded_irq(&pdev->dev, irq, NULL,
+						sc2721_ovp_irq_handler,
+						IRQF_ONESHOT | IRQF_TRIGGER_RISING |
+						IRQF_TRIGGER_FALLING,
+						"sc2721_chg_ovi", info);
+		if (ret) {
+			dev_err(&pdev->dev, "failed to request OVP IRQ: %d\n", ret);
+			return ret;
+		}
+
+		info->ovp_fault = !!gpiod_get_value_cansleep(info->ovp_gpiod);
+	}
+
+	info->cv_gpiod = devm_gpiod_get_optional(&pdev->dev, "chg-cv", GPIOD_IN);
+	if (IS_ERR(info->cv_gpiod))
+		return PTR_ERR(info->cv_gpiod);
+
+	if (info->cv_gpiod) {
+		irq = gpiod_to_irq(info->cv_gpiod);
+		if (irq < 0)
+			return irq;
+
+		ret = devm_request_threaded_irq(&pdev->dev, irq, NULL,
+						sc2721_cv_irq_handler,
+						IRQF_ONESHOT | IRQF_TRIGGER_RISING |
+						IRQF_TRIGGER_FALLING,
+						"sc2721_chg_cv", info);
+		if (ret) {
+			dev_err(&pdev->dev, "failed to request CV IRQ: %d\n", ret);
+			return ret;
+		}
+
+		info->cv_reached = !!gpiod_get_value_cansleep(info->cv_gpiod);
+	}
+
+	return 0;
+}
+
 static int sc2720_charger_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
@@ -1307,6 +1468,20 @@ static int sc2720_charger_probe(struct platform_device *pdev)
 		sc2721_cv_release(info);
 		usb_unregister_notifier(info->usb_phy, &info->usb_notify);
 		return ret;
+	}
+
+	/*
+	 * Requested after hw_init() so the initial gpio read reflects the
+	 * OVP threshold just programmed, not whatever the register held
+	 * before probe.
+	 */
+	if (info->data->is_sc2721) {
+		ret = sc2721_init_fault_irqs(pdev, info);
+		if (ret) {
+			sc2721_cv_release(info);
+			usb_unregister_notifier(info->usb_phy, &info->usb_notify);
+			return ret;
+		}
 	}
 
 	sc2720_charger_detect_status(info);
