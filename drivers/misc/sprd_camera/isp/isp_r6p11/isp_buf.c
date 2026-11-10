@@ -681,6 +681,32 @@ int isp_offline_put_buf(struct isp_offline_desc *off_desc,
 	return rtn;
 }
 
+/* Undo the mapping of one offline buffer in the ISP and/or DCAM domain */
+static void isp_offline_buf_unmap_one(struct offline_ion_buf *ion_buf,
+				      bool isp, bool dcam)
+{
+	struct ion_buffer *ionbuffer = ion_buf->dmabuf->priv;
+	struct sprd_iommu_unmap_data iommu_data = {0};
+
+	iommu_data.iova_size = ionbuffer->size;
+	iommu_data.ch_type = SPRD_IOMMU_FM_CH_RW;
+	iommu_data.buf = NULL;
+
+	if (isp && ion_buf->addr.yaddr_vir) {
+		iommu_data.iova_addr = ion_buf->addr.yaddr_vir;
+		if (sprd_iommu_unmap(&s_isp_pdev->dev, &iommu_data))
+			pr_err("fail to unmap isp iommu addr\n");
+		ion_buf->addr.yaddr_vir = 0;
+	}
+
+	if (dcam && ion_buf->addr.uaddr_vir) {
+		iommu_data.iova_addr = ion_buf->addr.uaddr_vir;
+		if (sprd_iommu_unmap(&s_dcam_pdev->dev, &iommu_data))
+			pr_err("fail to unmap dcam iommu addr\n");
+		ion_buf->addr.uaddr_vir = 0;
+	}
+}
+
 int isp_offline_buf_iommu_map(struct isp_offline_desc *off_desc,
 	uint8_t off_type)
 {
@@ -692,6 +718,7 @@ int isp_offline_buf_iommu_map(struct isp_offline_desc *off_desc,
 	struct ion_buffer *ionbuffer = NULL;
 	struct sprd_iommu_map_data iommu_data;
 	unsigned int frm_q_len;
+	unsigned int done;
 
 	if (!off_desc) {
 		pr_err("fail to get offline buf is NULL\n");
@@ -711,8 +738,10 @@ int isp_offline_buf_iommu_map(struct isp_offline_desc *off_desc,
 	memset(&iommu_data, 0, sizeof(struct sprd_iommu_map_data));
 	for (num = 0; num < frm_q_len; num++) {
 		ion_buf = &buf_desc->ion_buf[num];
-		if (ion_buf->dmabuf == NULL)
-			return -EPERM;
+		if (ion_buf->dmabuf == NULL) {
+			rtn = -EPERM;
+			goto unwind;
+		}
 
 		memset(&frame, 0x0, sizeof(struct camera_frame));
 		ionbuffer = ion_buf->dmabuf->priv;
@@ -725,7 +754,8 @@ int isp_offline_buf_iommu_map(struct isp_offline_desc *off_desc,
 		rtn = sprd_iommu_map(&s_isp_pdev->dev, &iommu_data);
 		if (rtn) {
 			pr_err("fail to get iommu kaddr\n");
-			return -EFAULT;
+			rtn = -EFAULT;
+			goto unwind;
 		}
 
 		frame.yaddr_vir = iommu_data.iova_addr;
@@ -739,7 +769,9 @@ int isp_offline_buf_iommu_map(struct isp_offline_desc *off_desc,
 		rtn = sprd_iommu_map(&s_dcam_pdev->dev, &iommu_data);
 		if (rtn) {
 			pr_err("fail to get iommu kaddr\n");
-			return -EFAULT;
+			isp_offline_buf_unmap_one(ion_buf, true, false);
+			rtn = -EFAULT;
+			goto unwind;
 		}
 
 		frame.uaddr_vir = iommu_data.iova_addr;
@@ -756,13 +788,30 @@ int isp_offline_buf_iommu_map(struct isp_offline_desc *off_desc,
 		frame.type = (off_type == ISP_OFF_BUF_FULL) ? 0xf : 0xb;
 
 		rtn = isp_buf_queue_write(&buf_desc->tmp_buf_queue, &frame);
-		if (rtn)
+		if (rtn) {
 			pr_err("fail to write queue\n");
+			isp_offline_buf_unmap_one(ion_buf, true, true);
+			rtn = -EFAULT;
+			goto unwind;
+		}
 
 		buf_desc->output_frame_count++;
 	}
 
 	pr_debug("-\n");
+
+	return rtn;
+
+	/*
+	 * The stream start fails before stream on, so the stream off would
+	 * not release what is mapped here: unmap the completed buffers.
+	 */
+unwind:
+	for (done = 0; done < num; done++) {
+		isp_offline_buf_unmap_one(&buf_desc->ion_buf[done], true, true);
+		buf_desc->output_frame_count--;
+	}
+	isp_buf_queue_init(&buf_desc->tmp_buf_queue);
 
 	return rtn;
 }

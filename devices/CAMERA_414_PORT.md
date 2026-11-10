@@ -68,6 +68,10 @@ tree, branch `security/camera-ioctl`):
 - ISP: 2D-LSC weight count unbounded by the copied weights and the register area; fetch offset and frame
   (`pitch x height`, also for slices) unbounded by the imported buffer; a block-buffer allocation failure reported
   as success; a failed enable or clock enable left counts, clocks and the domain on;
+- lifetime: ISP/DCAM-LSC parameter ioctls and the raw capture now run under `isp_module_sema` and fail with
+  `-ENODEV` once the module is disabled (they used buffers `PUT_DCAM_RES` frees); a failed offline-buffer IOMMU
+  map unmaps the completed ones; a partial `pfiommu_get_sg_table()` import is dropped as a whole; a failed
+  DCAM power-on, domain, clock or IRQ enable unwinds the stages and `s_dcam_users`, as the ISP does;
 - CPP: the scaler did not check the plane extents (rotation and DMA did);
 - `sprd_ion`: every lookup cast any `dma_buf`'s `priv` to `ion_buffer`; non-ION buffers are now rejected (DRM
   PRIME imports of non-ION buffers are accepted only when contiguous).
@@ -78,7 +82,8 @@ Known and not fixed (vendor ABI: the HAL passes device addresses, not fds, so th
 - the fetch row length is not bounded (only `pitch x height`): the row span depends on the format and the MIPI
   packing; read DMA within the camera IOMMU domain;
 - the fetch bounds are global, not per ISP (the watches have one ISP, `sprd,isp-count = <1>`);
-- buffer references taken by `pfiommu_get_sg_table()` live until the module is released, and a failed unmap in
-  the CPP keeps its buffer pinned on purpose (the mapping may still be live);
-- ISP parameter ioctls are not serialised against the buffer teardown of `PUT_DCAM_RES` (a race within the HAL
-  process).
+- buffer references taken by `pfiommu_get_sg_table()` live until the module is released (as on stock, not
+  bounded: a warning is logged once past 1024 buffers; an entry cannot be dropped on `pfiommu_free_addr()`
+  because the same buffer is queued again and the frames keep a raw `dma_buf` pointer that only the list
+  reference protects), and a failed unmap in the CPP keeps its buffer pinned on purpose (the mapping may still
+  be live).

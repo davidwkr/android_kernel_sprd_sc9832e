@@ -2336,24 +2336,20 @@ static int dcam_enable_clk(void)
 	ret = clk_set_parent(dcam0_clk, dcam0_clk_parent);
 	if (ret) {
 		pr_err("fail to set dcam0_clk_parent\n");
-		clk_set_parent(dcam0_clk, dcam0_clk_default);
-		clk_disable_unprepare(dcam0_eb);
-		goto exit;
+		goto err_parent;
 	}
 
 	ret = clk_prepare_enable(dcam0_clk);
 	if (ret) {
 		pr_err("fail to set dcam0_clk\n");
-		clk_set_parent(dcam0_clk, dcam0_clk_default);
-		clk_disable_unprepare(dcam0_eb);
-		goto exit;
+		goto err_parent;
 	}
 
 	/*dcam enable*/
 	ret = clk_prepare_enable(dcam0_eb);
 	if (ret) {
 		pr_err("fail to set dcam0_enable\n");
-		goto exit;
+		goto err_clk;
 	}
 
 	/* if (s_dcam_count == DCAM_MAX_COUNT) {
@@ -2362,6 +2358,14 @@ static int dcam_enable_clk(void)
 	* //Add more if support dual camera
 	* }
 	*/
+	goto exit;
+
+	/* undo only the completed stages, so a retry starts over */
+err_clk:
+	clk_disable_unprepare(dcam0_clk);
+err_parent:
+	clk_set_parent(dcam0_clk, dcam0_clk_default);
+
 exit:
 	pr_info("dcam_enable_clk end.\n");
 
@@ -3975,11 +3979,18 @@ int sprd_dcam_module_en(enum dcam_id idx)
 		ret = sprd_cam_pw_on();
 		if (ret != 0) {
 			pr_err("fail to power on camera\n");
-			mutex_unlock(&dcam_module_sema[idx]);
-			return ret;
+			goto err_users;
 		}
-		sprd_cam_domain_eb();
-		dcam_enable_clk();
+		ret = sprd_cam_domain_eb();
+		if (ret != 0) {
+			pr_err("fail to enable camera domain %d\n", ret);
+			goto err_pw;
+		}
+		ret = dcam_enable_clk();
+		if (ret != 0) {
+			pr_err("fail to enable dcam clk %d\n", ret);
+			goto err_domain;
+		}
 		sprd_dcam_reset(idx, NULL, NULL);
 
 		ret = request_irq(s_dcam_irq[idx], dcam_isr_root,
@@ -3987,8 +3998,7 @@ int sprd_dcam_module_en(enum dcam_id idx)
 				  (void *)&s_dcam_irq[idx]);
 		if (ret) {
 			pr_err("fail to install IRQ %d\n", ret);
-			mutex_unlock(&dcam_module_sema[idx]);
-			return ret;
+			goto err_clk;
 		}
 
 		memset((void *)&s_user_func[idx][0], 0,
@@ -3998,6 +4008,22 @@ int sprd_dcam_module_en(enum dcam_id idx)
 		pr_info("DCAM%d: register isr, 0x%x\n", idx,
 			DCAM_REG_RD(idx, DCAM0_INT_MASK));
 	}
+	goto exit;
+
+	/*
+	 * Undo the first enable, so that a retry powers on again and a later
+	 * disable does not release what was never acquired.
+	 */
+err_clk:
+	dcam_disable_clk(idx);
+err_domain:
+	sprd_cam_domain_disable();
+err_pw:
+	sprd_cam_pw_off();
+err_users:
+	atomic_dec(&s_dcam_users[idx]);
+
+exit:
 	mutex_unlock(&dcam_module_sema[idx]);
 
 	pr_info("DCAM%d: enable dcam module, end %d\n", idx,
