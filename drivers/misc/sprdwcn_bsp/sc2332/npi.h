@@ -20,6 +20,10 @@
 #ifndef __SPRDWL_NPI_H__
 #define __SPRDWL_NPI_H__
 
+#include <linux/netdevice.h>
+
+bool sprdwl_is_sprdwl_ndev(const struct net_device *ndev);
+
 #define SPRDWL_NL_GENERAL_SOCK_ID	(1022)
 #define SPRDWL_NPI_CMD_START		(0)
 #define SPRDWL_NPI_CMD_SET_WLAN_CAP	(40)
