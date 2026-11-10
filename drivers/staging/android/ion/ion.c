@@ -1108,6 +1108,14 @@ static struct dma_buf_ops dma_buf_ops = {
 	.kunmap = ion_dma_buf_kunmap,
 };
 
+/* true if @dmabuf was exported by this ion driver (dmabuf->priv is then an
+ * ion_buffer) */
+bool ion_dma_buf_is_ion(struct dma_buf *dmabuf)
+{
+	return dmabuf && dmabuf->ops == &dma_buf_ops;
+}
+EXPORT_SYMBOL(ion_dma_buf_is_ion);
+
 struct ion_buffer *ion_dma_buf_to_buffer(struct dma_buf *dmabuf)
 {
 	if (dmabuf->ops != &dma_buf_ops)

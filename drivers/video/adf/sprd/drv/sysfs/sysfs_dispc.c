@@ -70,16 +70,20 @@ static ssize_t refresh_store(struct device *dev,
 	struct sprd_dispc *dispc = dev_get_drvdata(dev);
 	struct dispc_context *ctx = &dispc->ctx;
 
-
-	ctx->disable_flip = false;
 	ret = kstrtou32(buf, 10, &value);
 	if (ret) {
 		pr_err("Invalid input\n");
 		return -EINVAL;
 	}
 
-	if (value) {
+	/* cleared under refresh_lock, with the restore that ends it */
+	if (!value) {
 		down(&ctx->refresh_lock);
+		ctx->disable_flip = false;
+		up(&ctx->refresh_lock);
+	} else {
+		down(&ctx->refresh_lock);
+		ctx->disable_flip = false;
 
 		if (!ctx->is_inited) {
 			pr_err("dispc is not initialized!\n");
@@ -252,6 +256,7 @@ static ssize_t vsync_rate_report_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	int ret = 0;
+	int rate;
 	struct sprd_dispc *dispc = dev_get_drvdata(dev);
 	struct dispc_context *ctx = &dispc->ctx;
 	struct panel_info *panel = ctx->panel;
@@ -261,19 +266,34 @@ static ssize_t vsync_rate_report_store(struct device *dev,
 		return -ENXIO;
 	}
 
-	ret = kstrtoint(buf, 10, &ctx->vsync_report_rate);
-	if (ret || !ctx->vsync_report_rate) {
+	/* world-writable on stock: a rate <= 0 stopped vsync reports */
+	ret = kstrtoint(buf, 10, &rate);
+	if (ret || rate <= 0) {
 		pr_err("Invalid input for fps\n");
 		return -EINVAL;
 	}
-	if (ctx->vsync_report_rate > panel->fps)
-		ctx->vsync_report_rate = panel->fps;
+	if (rate > panel->fps)
+		rate = panel->fps;
+	if (!rate)
+		return -EINVAL;
+	ctx->vsync_report_rate = rate;
 
 	ctx->vsync_ratio_to_panel = panel->fps / ctx->vsync_report_rate;
 
 	return count;
 }
 static DEVICE_ATTR_RW(vsync_rate_report);
+
+/*
+ * regs_offset/wr_regs work on the dispc register block (reg size 0x1000 in
+ * every board DT): word-aligned offset, length in words, all inside it.
+ */
+#define DISPC_REGS_SIZE	0x1000
+static bool dispc_regs_range_ok(u32 offset, u32 length)
+{
+	return !(offset & 3) && offset < DISPC_REGS_SIZE &&
+	       length <= (DISPC_REGS_SIZE - offset) / 4;
+}
 
 static ssize_t regs_offset_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -295,7 +315,13 @@ static ssize_t regs_offset_store(struct device *dev,
 {
 	struct sprd_dispc *dispc = dev_get_drvdata(dev);
 
-	str_to_u32_array(buf, 16, dispc->ctx.base_offset);
+	u32 req[2] = {};
+
+	str_to_u32_array(buf, 16, req, ARRAY_SIZE(req));
+	if (!dispc_regs_range_ok(req[0], req[1]))
+		return -EINVAL;
+	dispc->ctx.base_offset[0] = req[0];
+	dispc->ctx.base_offset[1] = req[1];
 
 	return count;
 }
@@ -311,9 +337,12 @@ static ssize_t wr_regs_show(struct device *dev,
 	unsigned int offset = dispc->ctx.base_offset[0];
 	unsigned int length = dispc->ctx.base_offset[1];
 
+	if (!dispc_regs_range_ok(offset, length))
+		return -EINVAL;
+
 	for (i = 0; i < length; i++) {
 		reg = readl((void __iomem *)(dispc->ctx.base + offset));
-		ret += snprintf(buf + ret, PAGE_SIZE, "%x ", reg);
+		ret += scnprintf(buf + ret, PAGE_SIZE - ret, "%x ", reg);
 	}
 
 	return ret;
@@ -328,11 +357,14 @@ static ssize_t wr_regs_store(struct device *dev,
 	uint32_t *value;
 	uint32_t i;
 
-	value = kzalloc(length * 4, GFP_KERNEL);
+	if (!dispc_regs_range_ok(temp, length))
+		return -EINVAL;
+
+	value = kcalloc(length, sizeof(*value), GFP_KERNEL);
 	if (!value)
 		return -ENOMEM;
 
-	str_to_u32_array(buf, 16, value);
+	str_to_u32_array(buf, 16, value, length);
 
 	for (i = 0; i < length; i++) {
 		writel(value[i], (void __iomem *)(dispc->ctx.base + temp));
@@ -368,7 +400,7 @@ static ssize_t disable_flip_store(struct device *dev,
 		return -EINVAL;
 	}
 
-	dispc->ctx.disable_flip = value ? true : false;
+	sprd_dispc_disable_flip(dispc, value ? true : false);
 
 	return count;
 }
@@ -583,7 +615,19 @@ static ssize_t gamma_read(struct file *fp, struct kobject *kobj,
 		up(&ctx->refresh_lock);
 		return -EINVAL;
 	}
-	dispc->core->enhance_get(ctx, ENHANCE_CFG_ID_GAMMA, buf);
+	/* enhance_get() writes the whole table: never into the
+	 * caller's buffer, which may hold only count bytes */
+	{
+		u8 *tbl = kzalloc(attr->size, GFP_KERNEL);
+
+		if (!tbl) {
+			up(&ctx->refresh_lock);
+			return -ENOMEM;
+		}
+		dispc->core->enhance_get(ctx, ENHANCE_CFG_ID_GAMMA, tbl);
+		memcpy(buf, tbl + off, count);
+		kfree(tbl);
+	}
 	up(&ctx->refresh_lock);
 
 	return count;
@@ -633,7 +677,19 @@ static ssize_t slp_read(struct file *fp, struct kobject *kobj,
 		up(&ctx->refresh_lock);
 		return -EINVAL;
 	}
-	dispc->core->enhance_get(ctx, ENHANCE_CFG_ID_SLP, buf);
+	/* enhance_get() writes the whole table: never into the
+	 * caller's buffer, which may hold only count bytes */
+	{
+		u8 *tbl = kzalloc(attr->size, GFP_KERNEL);
+
+		if (!tbl) {
+			up(&ctx->refresh_lock);
+			return -ENOMEM;
+		}
+		dispc->core->enhance_get(ctx, ENHANCE_CFG_ID_SLP, tbl);
+		memcpy(buf, tbl + off, count);
+		kfree(tbl);
+	}
 	up(&ctx->refresh_lock);
 
 	return count;
@@ -683,7 +739,19 @@ static ssize_t cm_read(struct file *fp, struct kobject *kobj,
 		up(&ctx->refresh_lock);
 		return -EINVAL;
 	}
-	dispc->core->enhance_get(ctx, ENHANCE_CFG_ID_CM, buf);
+	/* enhance_get() writes the whole table: never into the
+	 * caller's buffer, which may hold only count bytes */
+	{
+		u8 *tbl = kzalloc(attr->size, GFP_KERNEL);
+
+		if (!tbl) {
+			up(&ctx->refresh_lock);
+			return -ENOMEM;
+		}
+		dispc->core->enhance_get(ctx, ENHANCE_CFG_ID_CM, tbl);
+		memcpy(buf, tbl + off, count);
+		kfree(tbl);
+	}
 	up(&ctx->refresh_lock);
 
 	return count;
@@ -733,7 +801,19 @@ static ssize_t epf_read(struct file *fp, struct kobject *kobj,
 		up(&ctx->refresh_lock);
 		return -EINVAL;
 	}
-	dispc->core->enhance_get(ctx, ENHANCE_CFG_ID_EPF, buf);
+	/* enhance_get() writes the whole table: never into the
+	 * caller's buffer, which may hold only count bytes */
+	{
+		u8 *tbl = kzalloc(attr->size, GFP_KERNEL);
+
+		if (!tbl) {
+			up(&ctx->refresh_lock);
+			return -ENOMEM;
+		}
+		dispc->core->enhance_get(ctx, ENHANCE_CFG_ID_EPF, tbl);
+		memcpy(buf, tbl + off, count);
+		kfree(tbl);
+	}
 	up(&ctx->refresh_lock);
 
 	return count;
@@ -784,7 +864,19 @@ static ssize_t hsv_read(struct file *fp, struct kobject *kobj,
 		up(&ctx->refresh_lock);
 		return -EINVAL;
 	}
-	dispc->core->enhance_get(ctx, ENHANCE_CFG_ID_HSV, buf);
+	/* enhance_get() writes the whole table: never into the
+	 * caller's buffer, which may hold only count bytes */
+	{
+		u8 *tbl = kzalloc(attr->size, GFP_KERNEL);
+
+		if (!tbl) {
+			up(&ctx->refresh_lock);
+			return -ENOMEM;
+		}
+		dispc->core->enhance_get(ctx, ENHANCE_CFG_ID_HSV, tbl);
+		memcpy(buf, tbl + off, count);
+		kfree(tbl);
+	}
 	up(&ctx->refresh_lock);
 
 	return count;
@@ -850,7 +942,7 @@ static ssize_t scl_store(struct device *dev,
 		return -EIO;
 
 	down(&ctx->refresh_lock);
-	str_to_u32_array(buf, 10, param);
+	str_to_u32_array(buf, 10, param, ARRAY_SIZE(param));
 	dispc->core->enhance_set(ctx, ENHANCE_CFG_ID_SCL, param);
 	up(&ctx->refresh_lock);
 

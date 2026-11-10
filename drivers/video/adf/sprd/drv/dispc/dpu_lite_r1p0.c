@@ -296,12 +296,13 @@ static u32 dpu_isr(struct dispc_context *ctx)
 
 	/* dpu write back done isr */
 	if (reg_val & DISPC_INT_WB_DONE_MASK) {
-		wb_en = false;
-		if (vsync_count > max_vsync_count) {
+		/* a blank since the writeback started clears wb_en: keep it */
+		if (vsync_count > max_vsync_count && wb_en) {
 			dpu_layer(ctx, wb_layer);
 			dpu_clean_lite(ctx);
 			reg_val |= DISPC_INT_FENCE_SIGNAL_REQUEST;
 		}
+		wb_en = false;
 		dpu_write_back(ctx, false);
 	}
 
@@ -930,6 +931,8 @@ static void dpu_bgcolor(struct dispc_context *ctx, u32 color)
 		return;
 
 	vsync_count = 0;
+	/* no writeback copy may replace the background */
+	wb_en = false;
 	reg->bg_color = color;
 	dpu_clean(ctx);
 }

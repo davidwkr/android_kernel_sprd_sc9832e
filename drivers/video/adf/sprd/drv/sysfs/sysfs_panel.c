@@ -134,7 +134,7 @@ static ssize_t hporch_store(struct device *dev,
 	u32 val[4] = {0};
 	int len;
 
-	len = str_to_u32_array(buf, 0, val);
+	len = str_to_u32_array(buf, 0, val, ARRAY_SIZE(val));
 
 	switch (len) {
 	/* Fall through */
@@ -179,7 +179,7 @@ static ssize_t vporch_store(struct device *dev,
 	u32 val[4] = {0};
 	int len;
 
-	len = str_to_u32_array(buf, 0, val);
+	len = str_to_u32_array(buf, 0, val, ARRAY_SIZE(val));
 
 	switch (len) {
 	/* Fall through */
@@ -341,7 +341,7 @@ static ssize_t esd_return_store(struct device *dev,
 	int len;
 	int i;
 
-	len = str_to_u32_array(buf, 16, val);
+	len = str_to_u32_array(buf, 16, val, ARRAY_SIZE(val));
 
 	panel->esd_read_count = len;
 

@@ -45,7 +45,23 @@ LIST_HEAD(dispc_enc_head);
 
 static unsigned long logo_base_from_uboot;
 static uint32_t logo_bpix_form_uboot;
-struct sprd_restruct_config *config_saved;
+/*
+ * No layers: what the display shows before the first frame and after a
+ * frame is rejected, so it stops fetching from buffers the ADF core is
+ * about to release.
+ */
+static struct sprd_restruct_config blank_config;
+struct sprd_restruct_config *config_saved = &blank_config;
+
+/* refresh_lock held, dispc initialized */
+static void sprd_dispc_blank_layers(struct sprd_dispc *dispc)
+{
+	struct dispc_context *ctx = &dispc->ctx;
+
+	dispc->core->flip(ctx, &blank_config);
+	if (!ctx->is_stopped || (ctx->if_type == SPRD_DISPC_IF_EDPI))
+		dispc->core->run(ctx);
+}
 
 static int __init logo_base_get(char *str)
 {
@@ -469,10 +485,10 @@ static int32_t sprd_dispc_uninit(struct sprd_dispc *dispc)
 	return 0;
 }
 
-void sprd_dispc_iommu_map(struct sprd_dispc *dispc,
+int sprd_dispc_iommu_map(struct sprd_dispc *dispc,
 			  struct sprd_adf_hwlayer *layer)
 {
-	int i;
+	int i, j;
 	bool fb_reserved;
 	unsigned long phys_addr;
 	size_t size;
@@ -482,15 +498,18 @@ void sprd_dispc_iommu_map(struct sprd_dispc *dispc,
 
 	for (i = 0; i < layer->n_planes; i++) {
 		dmabuf = layer->base.dma_bufs[i];
-		sprd_ion_is_reserved(-1, dmabuf, &fb_reserved);
+		fb_reserved = false;
+		if (ion_dma_buf_is_ion(dmabuf))
+			sprd_ion_is_reserved(-1, dmabuf, &fb_reserved);
 		if (fb_reserved) {
 			ret = sprd_ion_get_phys_addr(-1, dmabuf,
 						&phys_addr, &size);
-			if (ret)
+			if (ret) {
 				pr_err("get physical address error\n");
-			else
-				layer->iova_plane[i] =
-					layer->iova_plane[i] + phys_addr;
+				goto map_fail;
+			}
+			layer->iova_plane[i] =
+				layer->iova_plane[i] + phys_addr;
 		} else {
 			iommu_data.iova_size = dmabuf->size;
 			iommu_data.table = layer->mapping.sg_tables[i];
@@ -502,7 +521,7 @@ void sprd_dispc_iommu_map(struct sprd_dispc *dispc,
 				goto map_fail;
 			}
 			if (iommu_data.iova_addr == 0) {
-				ret = -1;
+				ret = -EINVAL;
 				pr_err("iommu iova_addr is 0\n");
 				goto map_fail;
 			}
@@ -516,22 +535,57 @@ void sprd_dispc_iommu_map(struct sprd_dispc *dispc,
 		}
 	}
 
-	return;
+	return 0;
 
 map_fail:
 	pr_err("iommu map failed\n");
+	/* unwind planes already mapped into the IOMMU for this layer */
+	for (j = 0; j < i; j++) {
+		if (layer->iova_space[j].iova_addr) {
+			sprd_iommu_free_kaddr(&dispc->dev, &layer->iova_space[j]);
+			memset(&layer->iova_space[j], 0,
+			       sizeof(layer->iova_space[j]));
+		}
+	}
+	return ret;
+}
+
+/* refresh_lock held, dispc initialized */
+static void sprd_dispc_iommu_unmap_layer(struct sprd_dispc *dispc,
+					 struct sprd_adf_hwlayer *hwlayer)
+{
+	int i;
+	bool fb_reserved;
+	struct dma_buf *dmabuf;
+
+	for (i = 0; i < hwlayer->n_planes; i++) {
+		dmabuf = hwlayer->base.dma_bufs[i];
+		fb_reserved = false;
+		if (ion_dma_buf_is_ion(dmabuf))
+			sprd_ion_is_reserved(-1, dmabuf, &fb_reserved);
+		if (!fb_reserved && hwlayer->iova_space[i].iova_addr) {
+			sprd_iommu_free_kaddr(&dispc->dev,
+					      &hwlayer->iova_space[i]);
+			memset(&hwlayer->iova_space[i], 0,
+			       sizeof(hwlayer->iova_space[i]));
+		}
+	}
 }
 
 void sprd_dispc_iommu_unmap(struct sprd_dispc *dispc,
 			    struct sprd_adf_hwlayer *hwlayer)
 {
-	int i;
-	bool fb_reserved;
-	struct dma_buf *dmabuf;
 	struct dispc_context *ctx = &dispc->ctx;
 
 	down(&ctx->refresh_lock);
 
+	/*
+	 * sprd_iommu_unmap() writes the display MMU's TLB/update registers,
+	 * which sit in the display power domain: touching them while the
+	 * dispc is uninitialized can hang the bus. Skipping leaks the IOVA
+	 * range and the ion pin of a post retired while suspended, which is
+	 * the lesser evil (and what 4.4 does).
+	 */
 	if (!ctx->is_inited) {
 		pr_err("dispc is not initialized from unmap!\n");
 		up(&ctx->refresh_lock);
@@ -539,13 +593,7 @@ void sprd_dispc_iommu_unmap(struct sprd_dispc *dispc,
 	}
 
 	pr_debug("iommu unmap\n");
-	for (i = 0; i < hwlayer->n_planes; i++) {
-		dmabuf = hwlayer->base.dma_bufs[i];
-		sprd_ion_is_reserved(-1, dmabuf, &fb_reserved);
-		if (!fb_reserved)
-			sprd_iommu_free_kaddr(&dispc->dev,
-					      &hwlayer->iova_space[i]);
-	}
+	sprd_dispc_iommu_unmap_layer(dispc, hwlayer);
 
 	up(&ctx->refresh_lock);
 }
@@ -657,23 +705,52 @@ static int32_t sprd_dispc_init(struct sprd_dispc *dispc)
 static int32_t sprd_dispc_flip(struct sprd_dispc *dispc,
 		struct sprd_restruct_config *config)
 {
-	int i;
+	int i, ret;
 	static bool logo2animation = true;
 	struct dispc_context *ctx = &dispc->ctx;
 
 	down(&ctx->refresh_lock);
 
-	config_saved = config;
+	/*
+	 * config_saved is what sprd_dispc_refresh_restore() programs again.
+	 * It must only point at a mapped config: the ADF core retires the
+	 * previous post (and config_saved with it) as soon as this returns.
+	 */
 	if (!ctx->is_inited) {
 		pr_err("dispc is not initialized!\n");
+		config_saved = &blank_config;
 		up(&ctx->refresh_lock);
 		return -1;
 	}
 
-	/*do iommu map when buffer is not reserved memory*/
-	for (i = 0; i < config->number_hwlayer; i++)
-		sprd_dispc_iommu_map(dispc, &config->hwlayers[i]);
+	/*
+	 * do iommu map when buffer is not reserved memory. If a layer fails,
+	 * unmap the ones mapped for this frame and show no layers instead:
+	 * the frame would fetch from unmapped or raw-offset addresses, and
+	 * the 4.4 ADF core cannot be told, so it releases the previous
+	 * frame's buffers regardless.
+	 */
+	for (i = 0; i < config->number_hwlayer; i++) {
+		ret = sprd_dispc_iommu_map(dispc, &config->hwlayers[i]);
+		if (ret) {
+			pr_err("dispc: layer %d map failed (%d), frame dropped\n",
+			       i, ret);
+			while (i-- > 0)
+				sprd_dispc_iommu_unmap_layer(dispc,
+						&config->hwlayers[i]);
+			config_saved = &blank_config;
+			sprd_dispc_blank_layers(dispc);
+			up(&ctx->refresh_lock);
+			return ret;
+		}
+	}
+	config_saved = config;
 
+	/*
+	 * Flips are only disabled with no layers on screen (bg_color and
+	 * sprd_dispc_disable_flip() clear them), so the previous frame's
+	 * buffers are not fetched once the ADF core releases them.
+	 */
 	if (ctx->disable_flip) {
 		pr_debug("dispc flip was disabled\n");
 		up(&ctx->refresh_lock);
@@ -1206,7 +1283,17 @@ int sprd_dispc_bgcolor(struct sprd_dispc *dispc, u32 color)
 
 void sprd_dispc_disable_flip(struct sprd_dispc *dispc, bool disable)
 {
-	dispc->ctx.disable_flip = disable;
+	struct dispc_context *ctx = &dispc->ctx;
+
+	down(&ctx->refresh_lock);
+	/*
+	 * While flips are disabled the ADF core keeps retiring posts, so
+	 * nothing may stay on screen that it can release.
+	 */
+	if (disable && !ctx->disable_flip && ctx->is_inited)
+		sprd_dispc_blank_layers(dispc);
+	ctx->disable_flip = disable;
+	up(&ctx->refresh_lock);
 }
 
 void sprd_dispc_disable_timeout(struct sprd_dispc *dispc, u32 timeout)
@@ -1218,8 +1305,9 @@ int sprd_dispc_refresh_restore(struct sprd_dispc *dispc)
 {
 	struct dispc_context *ctx = &dispc->ctx;
 
-	ctx->disable_flip = false;
+	/* cleared under refresh_lock, with the restore that ends it */
 	down(&ctx->refresh_lock);
+	ctx->disable_flip = false;
 
 	if (!ctx->is_inited) {
 		pr_err("dispc is not initialized!\n");

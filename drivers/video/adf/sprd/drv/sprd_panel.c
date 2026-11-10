@@ -507,6 +507,11 @@ static struct panel_info *of_parse_panel(struct device_node *panel_node)
 		panel->esd_reg = 0x0A;
 
 	count = of_property_count_u32_elems(panel_node, "esd-return-code");
+	if (count > (int)ARRAY_SIZE(panel->esd_return_code)) {
+		pr_err("esd-return-code has %d entries, max %zu\n", count,
+		       ARRAY_SIZE(panel->esd_return_code));
+		count = 0;
+	}
 	if (count > 0) {
 		panel->esd_read_count = count;
 		rc = of_property_read_u32_array(panel_node, "esd-return-code",
