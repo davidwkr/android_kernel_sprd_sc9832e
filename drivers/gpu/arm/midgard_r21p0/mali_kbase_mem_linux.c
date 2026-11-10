@@ -25,6 +25,7 @@
 #include <linux/compat.h>
 #include <linux/kernel.h>
 #include <linux/bug.h>
+#include <linux/capability.h>
 #include <linux/mm.h>
 #include <linux/mman.h>
 #include <linux/fs.h>
@@ -2075,6 +2076,14 @@ static int kbase_mmu_dump_mmap(struct kbase_context *kctx, struct vm_area_struct
 	int err = 0;
 
 	dev_dbg(kctx->kbdev->dev, "in kbase_mmu_dump_mmap\n");
+
+	/* The dump exposes raw GPU page-table physical addresses and PTEs,
+	 * which leak physical memory layout to whatever opened this device
+	 * node. Restrict it to privileged callers.
+	 */
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+
 	size = (vma->vm_end - vma->vm_start);
 	nr_pages = size >> PAGE_SHIFT;
 
