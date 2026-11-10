@@ -126,6 +126,16 @@ void adf_post_timeline_signaled(struct adf_device *dev)
 
 EXPORT_SYMBOL(adf_post_timeline_signaled);
 
+static void adf_post_retire_stale(struct adf_device *dev)
+{
+	struct adf_pending_post *post, *next;
+
+	list_for_each_entry_safe(post, next, &dev->stale_posts, head) {
+		list_del(&post->head);
+		adf_post_cleanup(dev, post);
+	}
+}
+
 static void adf_post_work_func(struct kthread_work *work)
 {
 	struct adf_device *dev =
@@ -173,6 +183,19 @@ static void adf_post_work_func(struct kthread_work *work)
 
 		list_del(&post->head);
 
+		if (err == -ETIMEDOUT) {
+			/*
+			 * The hardware may be scanning either this post or the
+			 * previous one: keep both until a later post succeeds.
+			 */
+			dev_warn(&dev->base.dev, "flip timed out\n");
+			if (dev->onscreen)
+				list_add_tail(&dev->onscreen->head,
+						&dev->stale_posts);
+			dev->onscreen = post;
+			continue;
+		}
+
 		if (err < 0) {
 			/*
 			 * The hardware never switched to this post: free its
@@ -185,6 +208,7 @@ static void adf_post_work_func(struct kthread_work *work)
 			continue;
 		}
 
+		adf_post_retire_stale(dev);
 		if (dev->onscreen)
 			adf_post_cleanup(dev, dev->onscreen);
 		dev->onscreen = post;
@@ -596,6 +620,7 @@ int adf_device_init(struct adf_device *dev, struct device *parent,
 	idr_init(&dev->interfaces);
 	mutex_init(&dev->client_lock);
 	INIT_LIST_HEAD(&dev->post_list);
+	INIT_LIST_HEAD(&dev->stale_posts);
 	mutex_init(&dev->post_lock);
 	kthread_init_worker(&dev->post_worker);
 	INIT_LIST_HEAD(&dev->attached);
@@ -646,6 +671,7 @@ void adf_device_destroy(struct adf_device *dev)
 		kthread_stop(dev->post_thread);
 	}
 
+	adf_post_retire_stale(dev);
 	if (dev->onscreen)
 		adf_post_cleanup(dev, dev->onscreen);
 	adf_device_sysfs_destroy(dev);

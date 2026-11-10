@@ -187,7 +187,8 @@ struct dispc_core_ops {
 	uint32_t (*version)(struct dispc_context *ctx);
 	int (*init)(struct dispc_context *ctx);
 	void (*uninit)(struct dispc_context *ctx);
-	void (*run)(struct dispc_context *ctx);
+	/* -ETIMEDOUT: the hw may not have switched to the new registers */
+	int (*run)(struct dispc_context *ctx);
 	void (*stop)(struct dispc_context *ctx);
 	int (*disable_vsync)(struct dispc_context *ctx);
 	int (*enable_vsync)(struct dispc_context *ctx);

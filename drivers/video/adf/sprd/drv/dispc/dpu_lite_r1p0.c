@@ -397,13 +397,14 @@ static void dpu_stop(struct dispc_context *ctx)
 	pr_info("dpu stop\n");
 }
 
-static void dpu_run(struct dispc_context *ctx)
+static int dpu_run(struct dispc_context *ctx)
 {
 	dpu_reg_t *reg = (dpu_reg_t *)ctx->base;
 	u32 int_mask;
+	int ret = 0;
 
 	if (!reg)
-		return;
+		return -ENODEV;
 
 	if (ctx->if_type == SPRD_DISPC_IF_DPI) {
 		if (ctx->is_stopped) {
@@ -436,7 +437,8 @@ static void dpu_run(struct dispc_context *ctx)
 			reg->dpu_ctrl |= BIT(5);
 
 			/*make sure all the regs are updated to the shadow*/
-			dpu_wait_update_done(ctx);
+			if (dpu_wait_update_done(ctx))
+				ret = -ETIMEDOUT;
 		}
 
 		/*
@@ -453,13 +455,16 @@ static void dpu_run(struct dispc_context *ctx)
 	} else if (ctx->if_type == SPRD_DISPC_IF_EDPI) {
 		/* make sure the dpu is in stop status, because shadow regs */
 		/* can only be updated in the rising edge of DISPC_RUN bit */
-		dpu_wait_stop_done(ctx);
+		if (dpu_wait_stop_done(ctx))
+			ret = -ETIMEDOUT;
 
 		/* start refresh */
 		reg->dpu_ctrl |= BIT(0);
 
 		ctx->is_stopped = false;
 	}
+
+	return ret;
 }
 
 static int dpu_write_back_config(struct dispc_context *ctx)

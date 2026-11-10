@@ -242,7 +242,9 @@ struct adf_device_quirks {
  * @post: flip @cfg onto the screen.  Wait for the display to begin scanning out
  *	@cfg before returning.  Return 0 on success or error code (<0) on
  *	failure; on failure, ADF will NOT treat @cfg as onscreen and will keep
- *	the previously onscreen configuration's mappings intact.
+ *	the previously onscreen configuration's mappings intact. Return
+ *	-ETIMEDOUT if the hardware may or may not have switched to @cfg: ADF
+ *	then keeps both alive until a later post succeeds.
  * @advance_timeline: signal the sync fence for the last configuration to leave
  *	the display.  If unimplemented, ADF automatically advances an sw_sync
  *	timeline.
@@ -315,6 +317,8 @@ struct adf_device {
 	size_t n_attach_allowed;
 
 	struct adf_pending_post *onscreen;
+	/* posts the hw may still scan after a post op timed out */
+	struct list_head stale_posts;
 
 	/*
 	 * Software completion-fence timeline, replacing the 4.4-era

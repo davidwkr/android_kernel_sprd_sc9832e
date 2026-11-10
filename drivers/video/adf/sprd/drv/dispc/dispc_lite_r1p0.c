@@ -290,12 +290,14 @@ static void dispc_stop(struct dispc_context *ctx)
 #endif
 }
 
-static void dispc_run(struct dispc_context *ctx)
+static int dispc_run(struct dispc_context *ctx)
 {
 	dispc_reg_t *reg = (dispc_reg_t *)ctx->base;
 
+	int ret = 0;
+
 	if (!reg)
-		return;
+		return -ENODEV;
 
 	evt_update = false;
 	if (ctx->if_type == SPRD_DISPC_IF_DPI) {
@@ -324,7 +326,8 @@ static void dispc_run(struct dispc_context *ctx)
 			reg->dispc_ctrl |= BIT(5);
 
 			/*make sure all the regs are updated to the shadow*/
-			dispc_wait_update_done(ctx);
+			if (dispc_wait_update_done(ctx))
+				ret = -ETIMEDOUT;
 		}
 
 		/* if the underflow err was disabled in isr, re-enable it */
@@ -333,13 +336,16 @@ static void dispc_run(struct dispc_context *ctx)
 	} else if (ctx->if_type == SPRD_DISPC_IF_EDPI) {
 		/* make sure the dispc is in stop status, because shadow regs */
 		/* can only be updated in the rising edge of DISPC_RUN bit */
-		dispc_wait_stop_done(ctx);
+		if (dispc_wait_stop_done(ctx))
+			ret = -ETIMEDOUT;
 
 		/* start refresh */
 		reg->dispc_ctrl |= BIT(0);
 
 		ctx->is_stopped = false;
 	}
+
+	return ret;
 }
 
 static int __maybe_unused dispc_write_back_config(struct dispc_context *ctx)

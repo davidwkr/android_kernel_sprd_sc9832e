@@ -673,9 +673,11 @@ static int32_t sprd_dispc_flip(struct sprd_dispc *dispc,
 	dispc->core->flip(ctx, config);
 	/*
 	 * Only a config that reached the hardware: ADF keeps it alive as the
-	 * onscreen post, while a failed post is freed right away.
+	 * onscreen post (also on -ETIMEDOUT below), while a failed post is
+	 * freed right away.
 	 */
 	config_saved = config;
+	ret = 0;
 
 	if (unlikely(logo2animation)) {
 		/*free logo buffer*/
@@ -692,12 +694,16 @@ static int32_t sprd_dispc_flip(struct sprd_dispc *dispc,
 		logo2animation = false;
 	}
 
-	/* update shadow registers and run if it is not in ESD Recovery */
+	/*
+	 * update shadow registers and run if it is not in ESD Recovery. A
+	 * timeout means the hw may still scan either config: -ETIMEDOUT tells
+	 * ADF to keep the previous one alive too.
+	 */
 	if (!ctx->is_stopped || (dispc->ctx.if_type == SPRD_DISPC_IF_EDPI))
-		dispc->core->run(ctx);
+		ret = dispc->core->run(ctx);
 	up(&ctx->refresh_lock);
 
-	return 0;
+	return ret == -ETIMEDOUT ? ret : 0;
 }
 
 static void sprd_dispc_enable_vsync(struct sprd_dispc *dispc)
