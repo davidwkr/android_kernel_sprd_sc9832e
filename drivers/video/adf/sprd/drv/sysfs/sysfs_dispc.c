@@ -396,7 +396,7 @@ static ssize_t disable_flip_store(struct device *dev,
 		return -EINVAL;
 	}
 
-	dispc->ctx.disable_flip = value ? true : false;
+	sprd_dispc_disable_flip(dispc, value ? true : false);
 
 	return count;
 }

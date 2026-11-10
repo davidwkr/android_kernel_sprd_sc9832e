@@ -53,6 +53,16 @@ static uint32_t logo_bpix_form_uboot;
 static struct sprd_restruct_config blank_config;
 struct sprd_restruct_config *config_saved = &blank_config;
 
+/* refresh_lock held, dispc initialized */
+static void sprd_dispc_blank_layers(struct sprd_dispc *dispc)
+{
+	struct dispc_context *ctx = &dispc->ctx;
+
+	dispc->core->flip(ctx, &blank_config);
+	if (!ctx->is_stopped || (ctx->if_type == SPRD_DISPC_IF_EDPI))
+		dispc->core->run(ctx);
+}
+
 static int __init logo_base_get(char *str)
 {
 	int len = 0;
@@ -729,18 +739,18 @@ static int32_t sprd_dispc_flip(struct sprd_dispc *dispc,
 				sprd_dispc_iommu_unmap_layer(dispc,
 						&config->hwlayers[i]);
 			config_saved = &blank_config;
-			if (!ctx->disable_flip) {
-				dispc->core->flip(ctx, &blank_config);
-				if (!ctx->is_stopped ||
-				    (dispc->ctx.if_type == SPRD_DISPC_IF_EDPI))
-					dispc->core->run(ctx);
-			}
+			sprd_dispc_blank_layers(dispc);
 			up(&ctx->refresh_lock);
 			return ret;
 		}
 	}
 	config_saved = config;
 
+	/*
+	 * Flips are only disabled with no layers on screen (bg_color and
+	 * sprd_dispc_disable_flip() clear them), so the previous frame's
+	 * buffers are not fetched once the ADF core releases them.
+	 */
 	if (ctx->disable_flip) {
 		pr_debug("dispc flip was disabled\n");
 		up(&ctx->refresh_lock);
@@ -1273,7 +1283,17 @@ int sprd_dispc_bgcolor(struct sprd_dispc *dispc, u32 color)
 
 void sprd_dispc_disable_flip(struct sprd_dispc *dispc, bool disable)
 {
-	dispc->ctx.disable_flip = disable;
+	struct dispc_context *ctx = &dispc->ctx;
+
+	down(&ctx->refresh_lock);
+	/*
+	 * While flips are disabled the ADF core keeps retiring posts, so
+	 * nothing may stay on screen that it can release.
+	 */
+	if (disable && !ctx->disable_flip && ctx->is_inited)
+		sprd_dispc_blank_layers(dispc);
+	ctx->disable_flip = disable;
+	up(&ctx->refresh_lock);
 }
 
 void sprd_dispc_disable_timeout(struct sprd_dispc *dispc, u32 timeout)
