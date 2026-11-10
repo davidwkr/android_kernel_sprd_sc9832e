@@ -31,8 +31,12 @@ int sprdwl_handle_cmd(struct net_device *ndev, struct ifreq *ifr)
 		return -EINVAL;
 	if (copy_from_user(&priv_cmd, ifr->ifr_data, sizeof(priv_cmd)))
 		return -EINVAL;
+	/* subtype, a u16 and the largest argument (an int) are read below */
+	if (priv_cmd.total_len < 2 * sizeof(unsigned short) + sizeof(int) ||
+	    priv_cmd.total_len > SPRDWL_MAX_CMD_TXLEN)
+		return -EINVAL;
 
-	command = kmalloc(priv_cmd.total_len, GFP_KERNEL);
+	command = kzalloc(priv_cmd.total_len, GFP_KERNEL);
 	if (!command)
 	    return -EINVAL;
 	if (copy_from_user(command, priv_cmd.buf, priv_cmd.total_len)) {
