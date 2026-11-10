@@ -21,3 +21,4 @@ obj-y += sprd_adf.o sprd_adf_bridge.o
 obj-y += disp_lib.o
 obj-y += disp_notify.o
 obj-y += sprd_round_corner.o
+obj-$(CONFIG_SPRD_AOD_IDLE) += sprd_aod_idle.o
