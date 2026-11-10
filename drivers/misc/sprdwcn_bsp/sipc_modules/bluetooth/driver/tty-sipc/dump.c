@@ -96,6 +96,9 @@ void bt_host_data_save(const unsigned char *buf, int count, unsigned char data_i
 
 void bt_host_data_printf(void) {
     unsigned char loop_count_i = 0, loop_count_j = 0;
+    /* the ring is optional (allocation may have failed at probe) */
+    if (data_dump == NULL)
+        return;
     for(; loop_count_j < BT_MAX_DUMP_FRAME_LEN; loop_count_j++) {
         printk("bt_host_data_printf txdata[%d]: ", loop_count_j + 1);
         printk("%d-%d-%d %d:%d:%d.%06ld ", 1900 + data_dump->txtime_t[loop_count_j].rtc_t.tm_year,
