@@ -49,20 +49,31 @@
 #define UP_THRESHOLD        9/10
 
 /*
- * GPU power-domain force-shutdown field in the pmu-apb syscon block, offset
- * 0x20, a 2-bit field at bits [25:24] (mask 0x3000000); writing 0x2000000
- * forces the domain off, 0 lets it power up normally. The upstream ARM
- * reference "sharkle" platform (drivers/gpu/arm/midgard/mali/platform/sharkle
- * in the r28p0 copy in this tree) gets this reg/mask pair from the DT via
- * syscon-names = "top_force_shutdown" on the gpu node, but neither the k18
- * nor the dm63 reconstructed stock DTS carries that property (only
- * "sprd,syscon-aon-apb" / "sprd,syscon-pmu-apb" phandles) - so it is spelled
- * out here instead, by phandle. Confirmed against the stock k18 mali.ko
- * (strings/objdump): it resolves this same register via
+ * GPU power-domain register in the pmu-apb syscon block (PD_GPU_TOP_CFG),
+ * offset 0x20. Bits [25:24] are two independent control bits, not an
+ * encoded 2-bit field: bit 25 forces the domain off regardless of other
+ * state, bit 24 lets the domain shut itself down automatically. The upstream
+ * ARM reference "sharkle" platform
+ * (drivers/gpu/arm/midgard/mali/platform/sharkle in the r28p0 copy in this
+ * tree) gets this reg/mask pair from the DT via syscon-names =
+ * "top_force_shutdown" on the gpu node, with the generic
+ * arch/arm64/boot/dts/sprd/sharkle.dtsi reference using "syscons =
+ * <&pmu_apb_controller 0x20 0x2000000>" - i.e. mask 0x2000000, touching only
+ * the force-shutdown bit (25) and leaving automatic shutdown (24) alone.
+ * Neither the k18 nor the dm63 reconstructed stock DTS carries that
+ * "syscons"/"syscon-names" property (only "sprd,syscon-aon-apb" /
+ * "sprd,syscon-pmu-apb" phandles), so the reg/mask here are spelled out as
+ * constants instead of read from DT. This port intentionally uses the wider
+ * mask 0x3000000, clearing *both* bits on power-on: that selects a fully
+ * software-managed domain (no surprise auto-shutdown behind the driver's
+ * back) rather than just disabling the hard force-off, matching what the
+ * stock k18 mali.ko does (see below) - it is not the same value as the
+ * generic sharkle.dtsi reference above, and that reference's narrower mask
+ * should not be read as corroborating this one. Confirmed against the stock
+ * k18 mali.ko (strings/objdump): it resolves this same register via
  * syscon_regmap_lookup_by_phandle(..., "sprd,syscon-pmu-apb") and an
- * ioremap'd access at (phandle base + 0x20), matching both this offset and
- * the generic sharkle.dtsi reference's "syscons = <&pmu_apb_controller 0x20
- * 0x2000000>". See devices/MALI_R21P0.md for the full trail of evidence.
+ * ioremap'd access at (phandle base + 0x20), matching this offset. See
+ * devices/MALI_R21P0.md for the full trail of evidence.
  */
 #define GPU_PWR_DOMAIN_REG   0x20
 #define GPU_PWR_DOMAIN_MASK  0x3000000
