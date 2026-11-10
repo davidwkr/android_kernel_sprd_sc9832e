@@ -736,6 +736,22 @@ fail_unlock:
 	return err;
 }
 
+/*
+ * WARNING: only reached from the MALI_2MB_ALLOC / huge-page-insertion path
+ * below (cur_level == MIDGARD_MMU_LEVEL(2), i.e. is_huge_head(*phys)), which
+ * is unreachable while CONFIG_MALI_2MB_ALLOC is disabled, as it is in every
+ * defconfig this tree currently builds.
+ *
+ * This frees the page-table page @pte used to point to (via
+ * kbase_mem_pool_free(), making it immediately reusable) *before* the caller
+ * has invalidated the GPU's TLB for the VA range being replaced with a huge
+ * ATE. A GPU page-table walk racing this call can still be using the old
+ * table page's stale content, or the freed physical page can already have
+ * been handed out for something else by the time the walk completes. Do not
+ * enable CONFIG_MALI_2MB_ALLOC on this driver without first reordering this
+ * to defer the free until after the replacing ATE has been flushed and the
+ * TLB invalidated for this range.
+ */
 static inline void cleanup_empty_pte(struct kbase_context *kctx, u64 *pte)
 {
 	phys_addr_t tmp_pgd;
