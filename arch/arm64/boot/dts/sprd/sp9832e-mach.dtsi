@@ -64,9 +64,27 @@
 		};
 
 		gpu_thmzone: gpu-thmzone {
-			polling-delay-passive = <0>;
-			polling-delay = <0>;
+			polling-delay-passive = <100>;
+			polling-delay = <1000>;
 			thermal-sensors = <&gpu_thm 0>;
+
+			/*
+			 * Critical trip only: stock has passive trips at the
+			 * same temperatures as cpu-thmzone plus a cooling-map
+			 * to a "sprd,mali-power-model" cooling device, but
+			 * this tree has no Mali/kbase driver at all (nothing
+			 * to throttle), so a passive trip with no cooling
+			 * device would be a no-op. The critical trip needs no
+			 * cooling device: the thermal core shuts the system
+			 * down directly, independent of any cooling map.
+			 */
+			trips {
+				gpu_crit: gpu_crit {
+					temperature = <110000>;
+					hysteresis = <2000>;
+					type = "critical";
+				};
+			};
 		};
 	};
 
