@@ -545,11 +545,18 @@ void sprd_dispc_iommu_unmap(struct sprd_dispc *dispc,
 	down(&ctx->refresh_lock);
 
 	/*
-	 * IOMMU teardown must happen even while the display controller
-	 * itself is suspended/uninitialized, otherwise the mapping record
-	 * in hwlayer is freed by the caller while the IOMMU entry survives,
-	 * outliving the backing buffer.
+	 * sprd_iommu_unmap() writes the display MMU's TLB/update registers,
+	 * which sit in the display power domain: touching them while the
+	 * dispc is uninitialized can hang the bus. Skipping leaks the IOVA
+	 * range and the ion pin of a post retired while suspended, which is
+	 * the lesser evil (and what 4.4 does).
 	 */
+	if (!ctx->is_inited) {
+		pr_err("dispc is not initialized from unmap!\n");
+		up(&ctx->refresh_lock);
+		return;
+	}
+
 	pr_debug("iommu unmap\n");
 	for (i = 0; i < hwlayer->n_planes; i++) {
 		dmabuf = hwlayer->base.dma_bufs[i];
