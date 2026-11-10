@@ -1,0 +1,24 @@
+#
+# Client drivers of the integrated SC2342 WCN (sharkle watches), ported from
+# the 4.4 sprdwcn_bsp tree. Module names match the stock ramdisk's insmod
+# lines: sprdwl_ng.ko, sprdbt_tty.ko, sprd_fm.ko.
+#
+config SPRDWL_NG
+	tristate "Spreadtrum SC2342 integrated Wi-Fi (sprdwl_ng, SIPC)"
+	depends on WCN_SIPC && SPRD_SIPC && CFG80211
+	help
+	  cfg80211 driver for the Wi-Fi part of the integrated SC2342,
+	  talking to the WCN CP over SIPC. Builds sprdwl_ng.ko.
+
+config SPRD_BT_TTY_SIPC
+	tristate "Spreadtrum SC2342 integrated Bluetooth tty (SIPC)"
+	depends on WCN_SIPC && SPRD_SIPC && TTY && RFKILL
+	help
+	  HCI tty for the Bluetooth part of the integrated SC2342 over
+	  SIPC. Builds sprdbt_tty.ko.
+
+config SPRD_FM_SIPC
+	tristate "Spreadtrum SC2342 integrated FM radio (SIPC)"
+	depends on WCN_SIPC && SPRD_SIPC
+	help
+	  FM radio of the integrated SC2342 over SIPC. Builds sprd_fm.ko.

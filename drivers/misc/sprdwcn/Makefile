@@ -13,3 +13,4 @@ obj-$(CONFIG_WCN_PLATFORM) += platform/
 obj-$(CONFIG_SDIOHAL) += sdio/
 obj-$(CONFIG_WCN_PCIE) += pcie/
 obj-$(CONFIG_WCN_SLP) += sleep/
+obj-$(CONFIG_WCN_SIPC) += clients/

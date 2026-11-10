@@ -62,4 +62,7 @@ source "drivers/misc/sprdwcn/pcie/Kconfig"
 # sprd's wcn platform driver based on SC2355/SC2342...,etc
 source "drivers/misc/sprdwcn/platform/Kconfig"
 
+# Wi-Fi, BT and FM client drivers of the integrated SC2342 over SIPC
+source "drivers/misc/sprdwcn/clients/Kconfig"
+
 endmenu
