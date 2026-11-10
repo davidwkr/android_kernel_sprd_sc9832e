@@ -78,6 +78,12 @@ struct sbuf_ring {
 	u8			tx_wakelock_state;
 	u8			rx_wakelock_state;
 	u16			need_wake_lock;
+	/* hold time (jiffies) of rx_wake_lock per receive notification */
+	unsigned long		rx_wake_timeout;
+	/* sbuf_read() drops the hold once the ring is empty */
+	bool			rx_release_on_read;
+	/* serializes rx_wakelock_state between sbuf_thread and readers */
+	spinlock_t		rx_wl_lock;
 
 	void			(*handler)(int event, void *data);
 	void			*data;

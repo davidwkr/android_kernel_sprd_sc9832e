@@ -192,12 +192,38 @@ static void sbuf_skip_old_data(struct sbuf_mgr *sbuf)
 	}
 }
 
+/*
+ * Release-on-read rings: once userspace has emptied the ring, drop the rx
+ * hold and re-arm it for 20 ms; rx_wl_lock makes the empty check and the
+ * release atomic against sbuf_thread() arming the hold for new data.
+ * While unread data is left the state stays and, like stock, the hold is
+ * extended by 20 ms.
+ */
+static void sbuf_rx_release_on_read(struct sbuf_ring *ring,
+				    VOLA_SBUF_RING *ringhd)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&ring->rx_wl_lock, flags);
+	if (ring->rx_wakelock_state &&
+	    ringhd->rxbuf_wrptr == ringhd->rxbuf_rdptr) {
+		ring->rx_wakelock_state = 0;
+		__pm_relax(&ring->rx_wake_lock);
+		__pm_wakeup_event(&ring->rx_wake_lock, jiffies_to_msecs(HZ / 50));
+	} else if (ring->rx_wakelock_state) {
+		/* data left (short read): like stock, extend by 20 ms */
+		__pm_wakeup_event(&ring->rx_wake_lock, jiffies_to_msecs(HZ / 50));
+	}
+	spin_unlock_irqrestore(&ring->rx_wl_lock, flags);
+}
+
 static int sbuf_thread(void *data)
 {
 	struct sbuf_mgr *sbuf = data;
 	struct sbuf_ring *ring;
 	struct smsg mcmd, mrecv;
 	int rval, bufid;
+	unsigned long flags;
 	struct sched_param param = {.sched_priority = 90};
 
 	/*set the thread as a real time thread, and its priority is 90*/
@@ -285,12 +311,27 @@ static int sbuf_thread(void *data)
 				}
 				break;
 			case SMSG_EVENT_SBUF_WRPTR:
+				/* arm the hold before readers can drain the
+				 * ring, see sbuf_rx_release_on_read()
+				 */
+				if (ring->need_wake_lock &&
+				    ring->rx_release_on_read) {
+					spin_lock_irqsave(&ring->rx_wl_lock,
+							  flags);
+					__pm_wakeup_event(&ring->rx_wake_lock,
+						jiffies_to_msecs(ring->rx_wake_timeout));
+					ring->rx_wakelock_state = 1;
+					spin_unlock_irqrestore(&ring->rx_wl_lock,
+							       flags);
+				}
 				wake_up_interruptible_all(&ring->rxwait);
 				if (ring->handler)
 					ring->handler(SBUF_NOTIFY_READ,
 						      ring->data);
-				if (ring->need_wake_lock) {
-					__pm_wakeup_event(&ring->rx_wake_lock, jiffies_to_msecs(HZ / 2));
+				if (ring->need_wake_lock &&
+				    !ring->rx_release_on_read) {
+					__pm_wakeup_event(&ring->rx_wake_lock,
+						jiffies_to_msecs(ring->rx_wake_timeout));
 					ring->rx_wakelock_state = 1;
 				}
 				break;
@@ -438,6 +479,9 @@ int sbuf_create_ex(u8 dst, u8 channel, u32 smem_idx,
 		mutex_init(&ring->txlock);
 		mutex_init(&ring->rxlock);
 		ring->need_wake_lock = 1;
+		ring->rx_wake_timeout = HZ / 2;
+		ring->rx_release_on_read = false;
+		spin_lock_init(&ring->rx_wl_lock);
 		ring->tx_wakelock_state = 0;
 		sprintf(ring->tx_wakelock_name,
 			"sbuf-%d-%d-%d-tx",
@@ -497,6 +541,35 @@ void sbuf_set_no_need_wake_lock(u8 dst, u8 channel, u32 bufnum)
 	ring->need_wake_lock = 0;
 }
 EXPORT_SYMBOL_GPL(sbuf_set_no_need_wake_lock);
+
+int sbuf_set_rx_wakelock_timeout(u8 dst, u8 channel, u32 bufnum,
+				 unsigned int msecs, bool release_on_read)
+{
+	u8 ch_index;
+	struct sbuf_mgr *sbuf;
+	struct sbuf_ring *ring;
+
+	if (!msecs || dst >= SIPC_ID_NR)
+		return -EINVAL;
+
+	ch_index = sipc_channel2index(channel);
+	if (ch_index == INVALID_CHANEL_INDEX) {
+		pr_err("%s:channel %d invalid!\n", __func__, channel);
+		return -EINVAL;
+	}
+
+	sbuf = sbufs[dst][ch_index];
+	if (!sbuf || sbuf->ringnr <= bufnum)
+		return -ENODEV;
+
+	ring = &sbuf->rings[bufnum];
+	ring->rx_wake_timeout = max_t(unsigned long, 1,
+				      msecs_to_jiffies(msecs));
+	ring->rx_release_on_read = release_on_read;
+
+	return 0;
+}
+EXPORT_SYMBOL(sbuf_set_rx_wakelock_timeout);
 
 void sbuf_destroy(u8 dst, u8 channel)
 {
@@ -929,11 +1002,15 @@ int sbuf_read(u8 dst, u8 channel, u32 bufid,
 		u_buf.buf += rxsize;
 	}
 
-	/* if read empty by user , reset lock time to 20ms */
-	if (ring->rx_wakelock_state)
-		__pm_wakeup_event(&ring->rx_wake_lock, jiffies_to_msecs(HZ / 50));
+	if (ring->rx_release_on_read) {
+		sbuf_rx_release_on_read(ring, ringhd);
+	} else {
+		/* if read empty by user , reset lock time to 20ms */
+		if (ring->rx_wakelock_state)
+			__pm_wakeup_event(&ring->rx_wake_lock, jiffies_to_msecs(HZ / 50));
 
-	ring->rx_wakelock_state = 0;
+		ring->rx_wakelock_state = 0;
+	}
 
 	mutex_unlock(&ring->rxlock);
 
