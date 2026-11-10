@@ -21,7 +21,9 @@
 
 #include "disp_lib.h"
 
-int str_to_u32_array(const char *p, unsigned int base, u32 array[])
+/* parses at most @size values: @array must hold that many */
+int str_to_u32_array(const char *p, unsigned int base, u32 array[],
+		     size_t size)
 {
 	const char *start = p;
 	char str[12];
@@ -30,7 +32,7 @@ int str_to_u32_array(const char *p, unsigned int base, u32 array[])
 
 	pr_info("input: %s", p);
 
-	for (i = 0 ; i < 255; i++) {
+	for (i = 0 ; i < 255 && i < size; i++) {
 		while (*p == ' ')
 			p++;
 		if (*p == '\0')
@@ -59,7 +61,9 @@ int str_to_u32_array(const char *p, unsigned int base, u32 array[])
 }
 EXPORT_SYMBOL_GPL(str_to_u32_array);
 
-int str_to_u8_array(const char *p, unsigned int base, u8 array[])
+/* parses at most @size values: @array must hold that many */
+int str_to_u8_array(const char *p, unsigned int base, u8 array[],
+		    size_t size)
 {
 	const char *start = p;
 	char str[12];
@@ -68,7 +72,7 @@ int str_to_u8_array(const char *p, unsigned int base, u8 array[])
 
 	pr_info("input: %s", p);
 
-	for (i = 0 ; i < 255; i++) {
+	for (i = 0 ; i < 255 && i < size; i++) {
 		while (*p == ' ')
 			p++;
 		if (*p == '\0')
