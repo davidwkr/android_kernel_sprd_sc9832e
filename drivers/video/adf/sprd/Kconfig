@@ -1,0 +1,18 @@
+
+config ADF_SPRD
+	depends on ADF
+	depends on !DRM_SPRD
+	select VIDEOMODE_HELPERS
+	select SPRD_PANEL_NOTIFIER
+	bool "Enable adf driver for spreadtrum"
+	help
+	  This driver implements adf core to enable spreadtrum
+	  adf support.
+
+	  Mutually exclusive with CONFIG_DRM_SPRD: the two drivers probe the
+	  same dispc/DSI/DPHY hardware, so only one display stack may be
+	  active on a given board. Pick this one to keep the stock Android
+	  8.1 ADF-based hwcomposer/gralloc (hwcomposer.sp9832e.so,
+	  gralloc.sp9832e.so, both libadf consumers) working unmodified;
+	  pick CONFIG_DRM_SPRD for a DRM/KMS userspace instead.
+source "drivers/video/adf/sprd/drv/Kconfig"
