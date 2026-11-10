@@ -29,6 +29,7 @@ struct adf_event_refcount {
 /* adf_fence.c: software completion-fence timeline (dma_fence/sync_file
  * based replacement for the old sw_sync timeline API) */
 unsigned int adf_sw_fence_reserve(struct adf_device *dev);
+void adf_sw_fence_unreserve(struct adf_device *dev);
 struct dma_fence *adf_sw_complete_fence(struct adf_device *dev,
 		unsigned int target);
 void adf_sw_advance_timeline(struct adf_device *dev);

@@ -408,6 +408,24 @@ static int adf_device_post_config_v1(struct adf_device *dev,
 	return adf_device_post_config(dev, &data_v2, &arg->complete_fence);
 }
 
+/*
+ * For the 32-bit compat ioctl: data is already converted into kernel
+ * memory, and the fence fd is written straight to the caller's own
+ * complete_fence before it is installed.
+ */
+long adf_file_post_config(struct file *file, struct adf_post_config_v2 *data,
+		__s32 __user *complete_fence)
+{
+	struct adf_file *fpriv = file->private_data;
+	struct adf_obj *obj = fpriv->obj;
+
+	if (obj->type != ADF_OBJ_DEVICE)
+		return -EINVAL;
+
+	return adf_device_post_config(adf_obj_to_device(obj), data,
+			complete_fence);
+}
+
 static int adf_device_post_config_v2(struct adf_device *dev,
 		struct adf_post_config_v2 __user *arg)
 {

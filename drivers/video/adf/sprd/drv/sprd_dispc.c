@@ -645,7 +645,6 @@ static int32_t sprd_dispc_flip(struct sprd_dispc *dispc,
 
 	down(&ctx->refresh_lock);
 
-	config_saved = config;
 	if (!ctx->is_inited) {
 		pr_err("dispc is not initialized!\n");
 		up(&ctx->refresh_lock);
@@ -672,6 +671,11 @@ static int32_t sprd_dispc_flip(struct sprd_dispc *dispc,
 	}
 
 	dispc->core->flip(ctx, config);
+	/*
+	 * Only a config that reached the hardware: ADF keeps it alive as the
+	 * onscreen post, while a failed post is freed right away.
+	 */
+	config_saved = config;
 
 	if (unlikely(logo2animation)) {
 		/*free logo buffer*/
@@ -1212,8 +1216,8 @@ int sprd_dispc_refresh_restore(struct sprd_dispc *dispc)
 	ctx->disable_flip = false;
 	down(&ctx->refresh_lock);
 
-	if (!ctx->is_inited) {
-		pr_err("dispc is not initialized!\n");
+	if (!ctx->is_inited || !config_saved) {
+		pr_err("dispc is not initialized or has no config!\n");
 		up(&ctx->refresh_lock);
 		return -1;
 	}

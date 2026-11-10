@@ -345,6 +345,7 @@ static struct dma_fence *adf_complete_fence(struct adf_device *dev,
 	 * its buffer is ever displayed.
 	 */
 	unsigned int seq = adf_sw_fence_reserve(dev);
+	struct dma_fence *fence;
 
 	switch (complete_fence_type) {
 	case ADF_COMPLETE_FENCE_NONE:
@@ -352,19 +353,29 @@ static struct dma_fence *adf_complete_fence(struct adf_device *dev,
 
 	case ADF_COMPLETE_FENCE_PRESENT:
 		if (dev->ops->present_fence)
-			return dev->ops->present_fence(dev, &cfg->config,
+			fence = dev->ops->present_fence(dev, &cfg->config,
 					cfg->state);
-		return adf_sw_complete_fence(dev, seq);
+		else
+			fence = adf_sw_complete_fence(dev, seq);
+		break;
 
 	case ADF_COMPLETE_FENCE_RELEASE:
 		if (dev->ops->release_fence)
-			return dev->ops->release_fence(dev, &cfg->config,
+			fence = dev->ops->release_fence(dev, &cfg->config,
 					cfg->state);
-		return adf_sw_complete_fence(dev, seq + 1);
+		else
+			fence = adf_sw_complete_fence(dev, seq + 1);
+		break;
 
 	default:
 		BUG();
 	}
+
+	/* the post is rejected: give its sequence number back (post_lock held) */
+	if (IS_ERR(fence))
+		adf_sw_fence_unreserve(dev);
+
+	return fence;
 }
 
 /**

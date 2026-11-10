@@ -328,13 +328,16 @@ struct adf_device {
 	struct adf_sw_timeline *sw_timeline;
 
 	/*
-	 * Protects has_signaled against the race between adf_post_work_func()
-	 * (process context) and adf_post_timeline_signaled() (may be called
-	 * from IRQ context by a driver) both checking/clearing it for the
-	 * same post.
+	 * Completion claiming between adf_post_work_func() (process context)
+	 * and adf_post_timeline_signaled() (may run from IRQ context).
+	 * post_gen counts dispatched posts, signaled_gen is the last one whose
+	 * completion was claimed. Whoever moves signaled_gen up to post_gen
+	 * advances the timeline, so each post advances it exactly once and a
+	 * late or spurious signal cannot advance it past the dispatched posts.
 	 */
 	spinlock_t signal_lock;
-	int has_signaled;
+	unsigned int post_gen;
+	unsigned int signaled_gen;
 };
 
 /**

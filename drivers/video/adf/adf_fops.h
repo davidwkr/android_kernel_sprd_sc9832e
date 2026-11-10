@@ -33,5 +33,7 @@ struct adf_file {
 
 void adf_file_queue_event(struct adf_file *file, struct adf_event *event);
 long adf_file_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
+long adf_file_post_config(struct file *file, struct adf_post_config_v2 *data,
+		__s32 __user *complete_fence);
 
 #endif /* __VIDEO_ADF_ADF_FOPS_H */

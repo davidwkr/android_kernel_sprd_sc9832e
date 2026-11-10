@@ -160,6 +160,21 @@ unsigned int adf_sw_fence_reserve(struct adf_device *dev)
 	return seq;
 }
 
+/*
+ * Undo the latest adf_sw_fence_reserve() when that post is rejected. Only
+ * valid while still holding the dev->post_lock the reservation was made
+ * under, so no other reservation can have followed it.
+ */
+void adf_sw_fence_unreserve(struct adf_device *dev)
+{
+	struct adf_sw_timeline *timeline = dev->sw_timeline;
+	unsigned long flags;
+
+	spin_lock_irqsave(&timeline->lock, flags);
+	timeline->timeline_max--;
+	spin_unlock_irqrestore(&timeline->lock, flags);
+}
+
 struct dma_fence *adf_sw_complete_fence(struct adf_device *dev,
 		unsigned int target)
 {

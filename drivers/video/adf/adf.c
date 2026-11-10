@@ -98,25 +98,29 @@ void adf_post_cleanup(struct adf_device *dev, struct adf_pending_post *post)
 	kfree(post);
 }
 
-void adf_post_timeline_signaled(struct adf_device *dev)
+/* true if the caller claimed the latest dispatched post's completion */
+static bool adf_post_claim_completion(struct adf_device *dev)
 {
 	unsigned long flags;
-	bool need_advance;
+	bool claimed = false;
 
-	/*
-	 * May run from IRQ context, racing adf_post_work_func()'s own
-	 * check-and-clear of has_signaled for the same post; guard both with
-	 * the same lock so exactly one side advances the timeline. The
-	 * actual advance happens outside the lock, since
-	 * adf_sw_advance_timeline() takes the (different) sw timeline lock
-	 * itself.
-	 */
 	spin_lock_irqsave(&dev->signal_lock, flags);
-	need_advance = !dev->has_signaled;
-	dev->has_signaled = true;
+	if (dev->signaled_gen != dev->post_gen) {
+		dev->signaled_gen = dev->post_gen;
+		claimed = true;
+	}
 	spin_unlock_irqrestore(&dev->signal_lock, flags);
 
-	if (need_advance)
+	return claimed;
+}
+
+void adf_post_timeline_signaled(struct adf_device *dev)
+{
+	/*
+	 * May run from IRQ context. The advance happens outside signal_lock,
+	 * since adf_sw_advance_timeline() takes the sw timeline lock itself.
+	 */
+	if (adf_post_claim_completion(dev))
 		adf_sw_advance_timeline(dev);
 }
 
@@ -138,7 +142,6 @@ static void adf_post_work_func(struct kthread_work *work)
 		int i;
 		int err;
 		unsigned long flags;
-		bool already_signaled;
 
 		for (i = 0; i < post->config.n_bufs; i++) {
 			struct dma_fence *fence =
@@ -147,14 +150,20 @@ static void adf_post_work_func(struct kthread_work *work)
 				adf_fence_wait(dev, fence);
 		}
 
-		err = dev->ops->post(dev, &post->config, post->state);
-
 		spin_lock_irqsave(&dev->signal_lock, flags);
-		already_signaled = dev->has_signaled;
-		dev->has_signaled = false;
+		dev->post_gen++;
 		spin_unlock_irqrestore(&dev->signal_lock, flags);
 
-		if (!already_signaled) {
+		err = dev->ops->post(dev, &post->config, post->state);
+
+		/*
+		 * Advanced even if the flip failed, so this post's own fences
+		 * do not hang and later posts' targets stay in step. The cost:
+		 * the still-onscreen post's release fence fires while it is
+		 * displayed, so userspace may redraw it early (a visual glitch;
+		 * ADF keeps its dma-buf references and mappings until retired).
+		 */
+		if (adf_post_claim_completion(dev)) {
 			if (dev->ops->advance_timeline)
 				dev->ops->advance_timeline(dev, &post->config,
 						post->state);

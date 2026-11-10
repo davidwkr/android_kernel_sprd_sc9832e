@@ -12,8 +12,6 @@
  *
  */
 
-#include <linux/fdtable.h>
-#include <linux/sched.h>
 #include <linux/uaccess.h>
 #include <video/adf.h>
 
@@ -24,50 +22,27 @@ long adf_compat_post_config(struct file *file,
 		struct adf_post_config32 __user *arg)
 {
 	struct adf_post_config32 cfg32;
-	struct adf_post_config __user *cfg;
-	__s32 complete_fence_fd;
-	int ret;
+	struct adf_post_config_v2 data_v2;
 
 	if (copy_from_user(&cfg32, arg, sizeof(cfg32)))
 		return -EFAULT;
 
-	cfg = compat_alloc_user_space(sizeof(*cfg));
-	if (!access_ok(VERIFY_WRITE, cfg, sizeof(*cfg)))
-		return -EFAULT;
-
-	if (put_user(cfg32.n_interfaces, &cfg->n_interfaces) ||
-			put_user(compat_ptr(cfg32.interfaces),
-					&cfg->interfaces) ||
-			put_user(cfg32.n_bufs, &cfg->n_bufs) ||
-			put_user(compat_ptr(cfg32.bufs), &cfg->bufs) ||
-			put_user(cfg32.custom_data_size,
-					&cfg->custom_data_size) ||
-			put_user(compat_ptr(cfg32.custom_data),
-					&cfg->custom_data))
-		return -EFAULT;
-
-	ret = adf_file_ioctl(file, ADF_POST_CONFIG, (unsigned long)cfg);
-	if (ret < 0)
-		return ret;
-
 	/*
-	 * By the time adf_file_ioctl() returns success, the native ioctl has
-	 * already run fd_install() for the completion fence fd: it is live
-	 * in this process's fd table whether or not the copy below succeeds.
-	 * If put_user() fails, close the fd ourselves instead of returning
-	 * -EFAULT with an fd installed that userspace was never told the
-	 * number of and can therefore never close.
+	 * Convert straight into kernel memory, as adf_device_post_config_v1()
+	 * does, instead of bouncing through a scratch user struct: the fence
+	 * fd is then written to arg->complete_fence before it is installed,
+	 * so a fault can never leave an installed fd that userspace was not
+	 * told about.
 	 */
-	if (get_user(complete_fence_fd, &cfg->complete_fence))
-		return -EFAULT;
+	data_v2.n_interfaces = cfg32.n_interfaces;
+	data_v2.interfaces = (__u64)(uintptr_t)compat_ptr(cfg32.interfaces);
+	data_v2.n_bufs = cfg32.n_bufs;
+	data_v2.bufs = (__u64)(uintptr_t)compat_ptr(cfg32.bufs);
+	data_v2.custom_data_size = cfg32.custom_data_size;
+	data_v2.custom_data = (__u64)(uintptr_t)compat_ptr(cfg32.custom_data);
+	data_v2.complete_fence_type = ADF_COMPLETE_FENCE_RELEASE;
 
-	if (put_user(complete_fence_fd, &arg->complete_fence)) {
-		if (complete_fence_fd >= 0)
-			__close_fd(current->files, complete_fence_fd);
-		return -EFAULT;
-	}
-
-	return 0;
+	return adf_file_post_config(file, &data_v2, &arg->complete_fence);
 }
 
 long adf_compat_get_device_data(struct file *file,
