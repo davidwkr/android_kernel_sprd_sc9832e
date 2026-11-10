@@ -361,6 +361,8 @@ static int msp891_probe(struct i2c_client *client,
 
 err_pres_group:
 	sysfs_remove_group(&data->pres_input->dev.kobj, &msp891_attr_group);
+	/* polling may have been enabled through it meanwhile */
+	msp891_set_enabled(data, false);
 	return ret;
 }
 
@@ -368,10 +370,13 @@ static int msp891_remove(struct i2c_client *client)
 {
 	struct msp891_data *data = i2c_get_clientdata(client);
 
-	/* Stock frees state without cancelling the work first; fixed here. */
-	cancel_delayed_work_sync(&data->work);
+	/*
+	 * Stock frees state without cancelling the work first. Remove the
+	 * attributes first so nothing can re-enable polling, then stop it.
+	 */
 	sysfs_remove_group(&data->temp_input->dev.kobj, &msp891_attr_group);
 	sysfs_remove_group(&data->pres_input->dev.kobj, &msp891_attr_group);
+	msp891_set_enabled(data, false);
 
 	return 0;
 }
