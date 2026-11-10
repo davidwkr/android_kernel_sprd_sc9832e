@@ -48,3 +48,7 @@ CONFIG_DISP_LITE_R2P0=y
 # enabled by sprd_sharkle_defconfig but in none of the six stock configs. It adds per-IO
 # overhead and claims netlink protocol 29, which the Goodix fingerprint driver needs.
 # CONFIG_IODEBUG is not set
+
+# Vibrator ("sprd,sc2721-vibrator" node in every stock DT): built in on every stock config.
+# sprd_sharkle_defconfig has it =m, and no ramdisk insmod line loads it, so haptics were dead.
+CONFIG_SPRD_VIBRATOR=y
