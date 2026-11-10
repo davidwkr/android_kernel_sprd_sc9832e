@@ -97,10 +97,15 @@ CONFIG_SPRD_WATCHDOG=y
 
 **Does not auto-start.** Read `drivers/watchdog/sprd_wdt.c:sprd_wdt_probe()`: it enables the
 peripheral clocks (`sprd_wdt_enable()`) and calls `devm_watchdog_register_device()`, but never
-calls `sprd_wdt_start()` at probe. The hardware countdown only begins once userspace opens
-`/dev/watchdog0` and issues `WDIOC_START` (or a resume from a suspend that found it already
-active). `WATCHDOG_NOWAYOUT` is set, so once started it cannot be stopped by closing the device —
-but it is never started by the kernel on its own.
+calls `sprd_wdt_start()` at probe. The watchdog core starts the hardware countdown as soon as
+userspace opens `/dev/watchdog0` (there is no separate start ioctl), or on a resume from a
+suspend that found it already active. `WATCHDOG_NOWAYOUT` is not set in
+`sprd_sharkle_defconfig`, so a started watchdog can be stopped with the magic close (write
+`V`, then close) or `WDIOC_SETOPTIONS` with `WDIOS_DISABLECARD`. The kernel never starts it on
+its own.
+
+The SoC DTS (`sharkle.dtsi`) had `interrupt =` (singular) on the watchdog node, which
+`platform_get_irq()` does not see, so probe failed. It is now `interrupts =`.
 
 Checked whether stock userspace pings it: unpacked the K18 candidate boot image
 (`~/.cache/k18-candidate/k18_candidate.img`, via this tree's own `tools/sprd_bootimg.py unpack` /
