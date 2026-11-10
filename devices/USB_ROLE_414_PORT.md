@@ -22,13 +22,20 @@ Mode 0644 (write root only). Write `host` or `device` (trailing newline fine, an
 next=...)`. A helper sets `vbus_active`/`wq_mode` under `glue->lock` and `glue->role_lock` (mutex)
 and waits for `glue->work` to finish, so the write returns after the switch:
 
-- `-EOPNOTSUPP`: `host` with no VBUS source known and `host_without_vbus` not set.
+- `-EOPNOTSUPP`: `host` with no VBUS source known and `host_without_vbus` not set. With
+  `host_without_vbus=1` and no `vbus-supply`, the switch now actually goes through (the worker no
+  longer requires a regulator it was never told to expect); VBUS must be driven externally.
 - `-EBUSY`: a device-mode cable is attached, VBUS is already present, or a switch is already
-  running.
+  running. `host` while already in host mode is **not** `-EBUSY`: it returns 0 and rearms the idle
+  timeout (see `host_idle_timeout` below) — this is how a caller keeps host mode alive past the
+  timeout without a "device"/"host" bounce.
 - `-EIO`: the switch did not verify (controller not in host mode / not runtime-active, or the
   device teardown did not leave the controller suspended).
 - `device` when not in host mode is a no-op (returns 0). Removing the glue switches back to
   device mode first.
+- An ID-GPIO cable event (`musb_sprd_id_notifier()`) arriving while a sysfs switch is in progress
+  is deferred (recorded, not applied) and replayed once the switch finishes, instead of racing the
+  switch's own VBUS/`glue->work` handling.
 
 Worst case a write blocks for a minute or more (the work item waits for the controller to
 suspend/resume); a normal switch takes about a second.
@@ -39,7 +46,9 @@ Module parameters, same as 4.4:
   enumerated below the root hub for this long after a successful `host`. Armed on host entry and on
   the last device's removal, cancelled on the first device's add; a failed idle switch is latched
   (no further idle switches until the next explicit `host`/`device` write).
-- `host_without_vbus` (bool, default 0): allow `host` although no VBUS source is known.
+- `host_without_vbus` (bool, default 0): allow `host` although no VBUS source is known. Authorises
+  the sysfs gate *and* the worker's own regulator lookup, so this is the genuine supply-less path,
+  not just a gate bypass that then fails.
 
 ## Mapping onto the 4.14 glue
 
@@ -80,16 +89,34 @@ API. `host` is refused with `-EOPNOTSUPP` unless `host_without_vbus=1`, exactly 
   4.14's `musb_sprd_resume_child()` had the same pre-existing bug as the 4.4 base (`if (ret)`
   instead of `if (ret < 0)`, no `pm_runtime_put_noidle()` on the real failure path) — fixed here the
   same way 4.4 commit `1ba17ca077f6` fixed it, independent of the role switch itself.
+  `musb_sprd_resume_child()` is shared, unconditional code: this fix applies regardless of whether
+  `CONFIG_USB_MUSB_SPRD_ROLE_SYSFS` is on or off.
 - `recover_work` (host-controller recovery) is blocked by `role_busy` for the duration of a role
   change, both in `sprd_musb_recover()` (the `.recover` op) and in `sprd_musb_recover_work()` itself
   (checked again after its `msleep(300)`), so it cannot restart host mode mid-switch or race the
-  rollback path.
+  rollback path. `musb_sprd_id_notifier()` now honours `role_busy` the same way: a cable event
+  during a switch is recorded (`glue->id_pending`/`id_pending_connect`) instead of being applied
+  immediately, and is replayed through the shared `musb_sprd_id_handle()` once the switch's `done:`
+  path clears `role_busy` — closing a window where a host-shutdown in progress could have its VBUS
+  disable race a host-start the event had just queued.
+- The VBUS regulator is now only ever enabled/disabled once per transition: `glue->vbus_on` tracks
+  whether the role code or `sprd_musb_work()` itself currently holds it enabled, so the sysfs path's
+  safety-net disable (`musb_sprd_set_otg_en()`, for the early-exit cases the work item's own
+  disable skips) no longer double-disables a regulator the work item already turned off cleanly.
+- The already-host check in `__sprd_musb_role_set()` no longer also requires `wq_mode == HOST`
+  (the worker always resets `wq_mode` to `UNKNOWN` once it dequeues a request, so that condition
+  was practically never true): a `host` write while already in host mode now reliably returns 0 and
+  rearms `host_idle_timeout`, instead of falling through to `-EBUSY` and leaving a latched idle
+  failure stuck.
 - Init order (`sprd_musb_role_init()` after `pm_runtime_enable()`), removal order
   (`sprd_musb_role_exit()` first in `musb_sprd_remove()`, leaves host mode without cable
   re-detection, drains `idle_work`/`recover_work`/`glue->work` before the child device is
   destroyed), and the VBUS-gate wording (applies to the manual sysfs `host` write only; the
   automatic extcon ID path is left alone) all carry over from 4.4 commits `d4f58c33975d`,
-  `1ba17ca077f6`, `b0cb34d0b633`, `14fe1d36eed8` and `1ce2ccd78951`.
+  `1ba17ca077f6`, `b0cb34d0b633`, `14fe1d36eed8` and `1ce2ccd78951`. The `role` sysfs attribute is
+  published only by `sprd_musb_role_init()` (not also listed in the static `musb_sprd_attrs` group),
+  so it cannot be created — and so become writable — before `role_lock`/`idle_work` are initialised,
+  and it is created exactly once.
 
 ## Known gap (4.14-specific, not in the ported commits)
 

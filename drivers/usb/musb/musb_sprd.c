@@ -80,6 +80,7 @@ struct sprd_glue {
 	u32		usb_pub_slp_poll_offset;
 	u32		usb_pub_slp_poll_mask;
 	bool		suspending;
+	bool		vbus_on;	/* glue->vbus regulator enabled by us */
 #ifdef CONFIG_USB_MUSB_SPRD_ROLE_SYSFS
 	struct mutex		role_lock;
 	bool			role_busy;	/* role transition running */
@@ -87,6 +88,8 @@ struct sprd_glue {
 	struct delayed_work	idle_work;	/* host mode idle timeout */
 	atomic_t		ndev;		/* devices below our root hub */
 	bool			idle_failed;	/* idle switch failed: no more idle switches until a role write */
+	bool			id_pending;	/* ID GPIO event deferred while role_busy */
+	bool			id_pending_connect;
 #endif
 };
 
@@ -469,19 +472,21 @@ static int musb_sprd_vbus_notifier(struct notifier_block *nb,
 	return 0;
 }
 
-static int musb_sprd_id_notifier(struct notifier_block *nb,
-				unsigned long event, void *data)
+/*
+ * Shared by musb_sprd_id_notifier() and the role code, which replays a
+ * cable event here that arrived while role_busy deferred it (see below).
+ */
+static void musb_sprd_id_handle(struct sprd_glue *glue, bool connect)
 {
-	struct sprd_glue *glue = container_of(nb, struct sprd_glue, id_nb);
 	unsigned long flags;
 
-	if (event) {
+	if (connect) {
 		spin_lock_irqsave(&glue->lock, flags);
 		if (glue->vbus_active == 1 || glue->dr_mode == USB_DR_MODE_PERIPHERAL) {
 			spin_unlock_irqrestore(&glue->lock, flags);
 			dev_info(glue->dev,
 				"ignore host connection detected from ID GPIO.\n");
-			return 0;
+			return;
 		}
 
 		glue->vbus_active = 1;
@@ -496,7 +501,7 @@ static int musb_sprd_id_notifier(struct notifier_block *nb,
 			spin_unlock_irqrestore(&glue->lock, flags);
 			dev_info(glue->dev,
 				"ignore host disconnect detected from ID GPIO.\n");
-			return 0;
+			return;
 		}
 
 		glue->vbus_active = 0;
@@ -506,7 +511,36 @@ static int musb_sprd_id_notifier(struct notifier_block *nb,
 		dev_info(glue->dev,
 			"host disconnect detected from ID GPIO.\n");
 	}
+}
 
+static int musb_sprd_id_notifier(struct notifier_block *nb,
+				unsigned long event, void *data)
+{
+	struct sprd_glue *glue = container_of(nb, struct sprd_glue, id_nb);
+
+#ifdef CONFIG_USB_MUSB_SPRD_ROLE_SYSFS
+	unsigned long flags;
+
+	/*
+	 * A role transition owns vbus_active / wq_mode right now (e.g. a
+	 * host shutdown in progress): applying this event here would race
+	 * its own queuing of glue->work. Record it and let the role code
+	 * replay it via musb_sprd_id_handle() once role_busy clears.
+	 */
+	spin_lock_irqsave(&glue->lock, flags);
+	if (READ_ONCE(glue->role_busy)) {
+		glue->id_pending = true;
+		glue->id_pending_connect = !!event;
+		spin_unlock_irqrestore(&glue->lock, flags);
+		dev_info(glue->dev,
+			"ID GPIO %s deferred: role change running\n",
+			event ? "connect" : "disconnect");
+		return 0;
+	}
+	spin_unlock_irqrestore(&glue->lock, flags);
+#endif
+
+	musb_sprd_id_handle(glue, !!event);
 	return 0;
 }
 
@@ -598,6 +632,16 @@ static __init int musb_sprd_charger_mode(char *str)
 	return 0;
 }
 __setup("androidboot.mode=", musb_sprd_charger_mode);
+
+#ifdef CONFIG_USB_MUSB_SPRD_ROLE_SYSFS
+/*
+ * Forward declaration: sprd_musb_work() below needs this to let the
+ * sysfs-authorised supply-less host case through. Full declaration,
+ * module_param() and description are with the rest of the role sysfs
+ * code further down this file.
+ */
+static bool host_without_vbus;
+#endif
 
 static void sprd_musb_recover_work(struct work_struct *work)
 {
@@ -725,17 +769,28 @@ static void sprd_musb_work(struct work_struct *work)
 			if (!glue->vbus) {
 				glue->vbus = devm_regulator_get(glue->dev, "vbus");
 				if (IS_ERR(glue->vbus)) {
-					dev_err(glue->dev,
-						"unable to get vbus supply\n");
 					glue->vbus = NULL;
-					goto end;
+#ifdef CONFIG_USB_MUSB_SPRD_ROLE_SYSFS
+					if (!READ_ONCE(host_without_vbus)) {
+#endif
+						dev_err(glue->dev,
+							"unable to get vbus supply\n");
+						goto end;
+#ifdef CONFIG_USB_MUSB_SPRD_ROLE_SYSFS
+					}
+					dev_info(glue->dev,
+						 "no vbus supply: host_without_vbus authorises this\n");
+#endif
 				}
 			}
-			ret = regulator_enable(glue->vbus);
-			if (ret) {
-				dev_err(glue->dev,
-					"Failed to enable vbus: %d\n", ret);
-				goto end;
+			if (glue->vbus) {
+				ret = regulator_enable(glue->vbus);
+				if (ret) {
+					dev_err(glue->dev,
+						"Failed to enable vbus: %d\n", ret);
+					goto end;
+				}
+				glue->vbus_on = true;
 			}
 		}
 
@@ -811,13 +866,14 @@ static void sprd_musb_work(struct work_struct *work)
 				msleep(50);
 		}
 
-		if (glue->dr_mode == USB_DR_MODE_HOST && glue->vbus) {
+		if (glue->dr_mode == USB_DR_MODE_HOST && glue->vbus_on) {
 			ret = regulator_disable(glue->vbus);
 			if (ret) {
 				dev_err(glue->dev,
 					"Failed to disable vbus: %d\n", ret);
 				goto end;
 			}
+			glue->vbus_on = false;
 		}
 
 		musb->shutdowning = 0;
@@ -1010,10 +1066,18 @@ static void musb_sprd_set_otg_en(struct sprd_glue *glue, int enable)
 	if (!glue->vbus)
 		return;
 
+	/* sprd_musb_work() may already hold (or have released) it: track
+	 * ownership so the regulator is only ever enabled/disabled once */
+	if (!!enable == glue->vbus_on)
+		return;
+
 	ret = enable ? regulator_enable(glue->vbus) : regulator_disable(glue->vbus);
-	if (ret)
+	if (ret) {
 		dev_err(glue->dev, "failed to %s vbus: %d\n",
 			enable ? "enable" : "disable", ret);
+		return;
+	}
+	glue->vbus_on = enable;
 }
 
 static void sprd_musb_idle_arm(struct sprd_glue *glue)
@@ -1040,6 +1104,7 @@ static int __sprd_musb_role_set(struct sprd_glue *glue, bool host, bool final)
 	struct musb *musb = platform_get_drvdata(glue->musb);
 	unsigned long flags;
 	bool queue = false;
+	bool id_pending, id_connect;
 	int ret = 0;
 	int vbus;
 
@@ -1059,9 +1124,8 @@ static int __sprd_musb_role_set(struct sprd_glue *glue, bool host, bool final)
 	spin_lock_irqsave(&glue->lock, flags);
 	if (host) {
 		if (glue->vbus_active && glue->dr_mode == USB_DR_MODE_HOST &&
-		    glue->wq_mode == USB_DR_MODE_HOST &&
 		    (glue->wake_lock.active || glue->power_always_on))
-			ret = 0;		/* already host */
+			ret = 0;		/* already host: rearm the idle timeout below */
 		else if (glue->vbus_active)
 			ret = -EBUSY;		/* cable attached or switching */
 		else if (vbus)
@@ -1083,8 +1147,13 @@ static int __sprd_musb_role_set(struct sprd_glue *glue, bool host, bool final)
 	}
 	spin_unlock_irqrestore(&glue->lock, flags);
 
-	if (!queue)
+	if (!queue) {
+		/* already host: a repeated "host" write is how a caller
+		 * extends host mode, so rearm the idle timeout for it */
+		if (host && ret == 0 && !atomic_read(&glue->ndev))
+			sprd_musb_idle_arm(glue);
 		goto done;
+	}
 
 	schedule_work(&glue->work);
 	/* return when the switch is done, so "device; adb" works */
@@ -1157,7 +1226,18 @@ static int __sprd_musb_role_set(struct sprd_glue *glue, bool host, bool final)
 done:
 	/* a recover_work armed meanwhile would restart host */
 	cancel_delayed_work_sync(&glue->recover_work);
+
+	spin_lock_irqsave(&glue->lock, flags);
 	WRITE_ONCE(glue->role_busy, false);
+	id_pending = glue->id_pending;
+	id_connect = glue->id_pending_connect;
+	glue->id_pending = false;
+	spin_unlock_irqrestore(&glue->lock, flags);
+
+	/* a cable event deferred by musb_sprd_id_notifier() while we ran */
+	if (id_pending)
+		musb_sprd_id_handle(glue, id_connect);
+
 	return ret;
 }
 
@@ -1413,9 +1493,11 @@ static struct attribute *musb_sprd_attrs[] = {
 	&dev_attr_maximum_speed.attr,
 	&dev_attr_current_speed.attr,
 	&dev_attr_musb_hostenable.attr,
-#ifdef CONFIG_USB_MUSB_SPRD_ROLE_SYSFS
-	&dev_attr_role.attr,
-#endif
+	/*
+	 * "role" is NOT listed here: sprd_musb_role_init() publishes it
+	 * itself, once role_lock and idle_work are initialised, so that
+	 * nothing can reach it while that state is still uninitialised.
+	 */
 	NULL
 };
 ATTRIBUTE_GROUPS(musb_sprd);
