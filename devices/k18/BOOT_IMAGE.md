@@ -1,5 +1,20 @@
 # K18 boot image candidate
 
+## Current candidate: with the r21p0 Mali driver
+
+`~/.cache/k18-candidate/k18_mali_candidate.img`, sha256
+`5d4097b3951007e2fb97e738a20c966835252ad6fac7088ddeef90d873dcbeea`. **UNTESTED ON HARDWARE; do not flash without
+the owner's explicit OK.** Built from branch `devices/k18-mali-candidate` (`security-backports` merged with
+`drivers/mali-r21p0-cve2`), with the same commands as below. The difference from the older candidate:
+`mali.ko` is the in-tree r21p0 kbase (`r21p0-01rel0 (UK version 11.0)`, the version the stock
+`libGLES_mali.so` checks for; see `../MALI_R21P0.md`), not the r28p0 external build, which the stock GPU
+library would refuse. `scripts/watch_build.sh` now picks the in-tree r21p0 module for boards whose defconfig
+selects it (K18, DM63). Kernel 24 239 632 B, ramdisk 1 442 045 B, stock DT table, stale AVB hash (unlocked
+devices only), as before.
+
+## Older candidate (r28p0 mali.ko)
+
+
 **UNTESTED ON HARDWARE. Do not flash without the owner's explicit OK.** The image is not in the repo (images are never committed); it is kept in `~/.cache/k18-candidate/k18_candidate.img`. Flash prerequisites: `../../TODO.md` section 7 and `../README.md` ("Repacking the boot image").
 
 Built from tree commit `b73d4148c5ec` (branch `devices/k18-bootimg`), kernel release 4.4.302+.

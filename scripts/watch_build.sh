@@ -61,6 +61,12 @@ echo "== build Image + modules (-j$JOBS)"
 MK -j"$JOBS" Image modules
 
 MALI=$SRC/drivers/gpu/arm/midgard/mali
+# Boards whose defconfig selects the in-tree r21p0 kbase (MALI_MIDGARD=m,
+# drivers/gpu/arm/midgard_r21p0, the version of the stock libGLES_mali.so)
+# get mali.ko from the build above; the others the external r28p0 build.
+MALI_R21=$O/drivers/gpu/arm/midgard_r21p0/mali.ko
+MALI_KO=$MALI/mali.ko
+[ -f "$MALI_R21" ] && MALI_KO=$MALI_R21
 BT=$SRC/drivers/misc/sprdwcn_bsp/sipc_modules/bluetooth/driver
 FM=$SRC/drivers/misc/sprdwcn_bsp/sipc_modules/fm/driver
 # The vendor module Kbuilds only build in their source dirs. Remove only the
@@ -102,7 +108,11 @@ for p in sys.stdin.buffer.read().split(b"\0"):
 echo "== external modules"
 # build in the source dirs; copy first, clean afterwards (also on failure)
 trap clean_dirs EXIT
-MK M="$MALI" CONFIG_MALI_MIDGARD=m CONFIG_MALI_PLATFORM_NAME=sharkle CONFIG_MALI_BOARD_PLATFORM=sharkle modules
+if [ "$MALI_KO" = "$MALI_R21" ]; then
+  echo "== mali: in-tree r21p0 ($MALI_R21)"
+else
+  MK M="$MALI" CONFIG_MALI_MIDGARD=m CONFIG_MALI_PLATFORM_NAME=sharkle CONFIG_MALI_BOARD_PLATFORM=sharkle modules
+fi
 MK M="$BT" BSP_BOARD_UNISOC_WCN_SOCKET=sipc modules
 MK M="$FM" BSP_BOARD_UNISOC_WCN_SOCKET=sipc modules
 
@@ -111,7 +121,8 @@ rm -f "${RES:?}/Image" "${RES:?}/sprdwl_ng.ko" "${RES:?}/mali.ko" "${RES:?}/sprd
       "${RES:?}/sprd_fm.ko" "${RES:?}/sha256sum.txt"
 cp "$O/arch/$ARCH/boot/Image" "$RES/"
 cp "$(find "$O/drivers" -name sprdwl_ng.ko | head -n1)" "$RES/"
-cp "$MALI/mali.ko" "$BT/sprdbt_tty.ko" "$FM/sprd_fm.ko" "$RES/"
+cp "$MALI_KO" "$RES/mali.ko"
+cp "$BT/sprdbt_tty.ko" "$FM/sprd_fm.ko" "$RES/"
 # strip debug info only (never --strip-all: modules need their symbol table)
 for k in sprdwl_ng mali sprdbt_tty sprd_fm; do
   before=$(stat -c %s "$RES/$k.ko")
