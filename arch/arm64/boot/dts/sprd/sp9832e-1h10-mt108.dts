@@ -21,6 +21,7 @@
 #include "lcd/lcd_st77916_mipi_cto150.dtsi"
 #include "lcd/lcd_st77916_mipi_hsd185.dtsi"
 #include "sp9832e-watch-gpu.dtsi"
+#include "sp9832e-watch-idle.dtsi"
 
 / {
 	model = "Spreadtrum SL8541e Board";

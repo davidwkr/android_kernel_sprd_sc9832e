@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * CPU idle states of the watches, as in their stock DTs (identical on the
+ * K18, DM63, DW100U, MT107, MT108 and DM82): core power-down plus cluster
+ * power-down, both entered through PSCI by the generic cpuidle-arm driver
+ * (CONFIG_ARM_CPUIDLE), as on the stock 4.4 kernel.
+ *
+ * cluster_pd is the deep sleep state. Its latencies are the maximum, so the
+ * menu governor never picks it at runtime; suspend-to-idle enters the
+ * deepest state regardless of latency (cpuidle_enter_s2idle(), every
+ * DT state gets enter_s2idle), and the PSCI firmware does the deep sleep.
+ * sc9832e.dtsi has only core_pd, with other latencies.
+ */
+
+&CORE_PD {
+	entry-latency-us = <1000>;
+	exit-latency-us = <500>;
+	min-residency-us = <2500>;
+};
+
+/ {
+	idle-states {
+		CLUSTER_PD: cluster_pd {
+			compatible = "arm,idle-state";
+			entry-latency-us = <0xffffffff>;
+			exit-latency-us = <0xffffffff>;
+			min-residency-us = <0xffffffff>;
+			local-timer-stop;
+			arm,psci-suspend-param = <0x1010000>;
+		};
+	};
+};
+
+&cpu0 {
+	cpu-idle-states = <&CORE_PD &CLUSTER_PD>;
+};
+
+&cpu1 {
+	cpu-idle-states = <&CORE_PD &CLUSTER_PD>;
+};
+
+&cpu2 {
+	cpu-idle-states = <&CORE_PD &CLUSTER_PD>;
+};
+
+&cpu3 {
+	cpu-idle-states = <&CORE_PD &CLUSTER_PD>;
+};

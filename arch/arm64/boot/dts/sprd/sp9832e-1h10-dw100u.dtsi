@@ -24,6 +24,7 @@
 #include "lcd/lcd_co5300_oled206_dw100u_mipi.dtsi"
 #include "lcd/lcd_co5300_oled_213_mipi.dtsi"
 #include "sp9832e-watch-gpu.dtsi"
+#include "sp9832e-watch-idle.dtsi"
 
 / {
 	model = "Spreadtrum SL8541e Board";
