@@ -933,7 +933,15 @@ int kbase_gpu_mmap(struct kbase_context *kctx, struct kbase_va_region *reg, u64 
 				if (err)
 					goto bad_insert;
 
-				kbase_mem_phy_alloc_gpu_mapped(alloc->imported.alias.aliased[i].alloc);
+				/* gpu_mappings on the aliased native alloc is
+				 * tracked from alias creation (and dropped at
+				 * alias destruction) in kbase_mem_alias(), not
+				 * here: an alias can be GPU (un)mapped several
+				 * times, or sit as a pending cookie that is
+				 * never mapped, and the eviction-protection
+				 * check must hold for that whole lifetime
+				 * (CVE-2021-28663).
+				 */
 			} else {
 				err = kbase_mmu_insert_single_page(kctx,
 					reg->start_pfn + i * stride,
@@ -964,10 +972,8 @@ bad_insert:
 		stride = reg->gpu_alloc->imported.alias.stride;
 		KBASE_DEBUG_ASSERT(reg->gpu_alloc->imported.alias.aliased);
 		while (i--)
-			if (reg->gpu_alloc->imported.alias.aliased[i].alloc) {
+			if (reg->gpu_alloc->imported.alias.aliased[i].alloc)
 				kbase_mmu_teardown_pages(kctx, reg->start_pfn + (i * stride), reg->gpu_alloc->imported.alias.aliased[i].length);
-				kbase_mem_phy_alloc_gpu_unmapped(reg->gpu_alloc->imported.alias.aliased[i].alloc);
-			}
 	}
 
 	kbase_remove_va_region(kctx, reg);
@@ -988,13 +994,12 @@ int kbase_gpu_munmap(struct kbase_context *kctx, struct kbase_va_region *reg)
 		return 0;
 
 	if (reg->gpu_alloc && reg->gpu_alloc->type == KBASE_MEM_TYPE_ALIAS) {
-		size_t i;
-
 		err = kbase_mmu_teardown_pages(kctx, reg->start_pfn, reg->nr_pages);
 		KBASE_DEBUG_ASSERT(reg->gpu_alloc->imported.alias.aliased);
-		for (i = 0; i < reg->gpu_alloc->imported.alias.nents; i++)
-			if (reg->gpu_alloc->imported.alias.aliased[i].alloc)
-				kbase_mem_phy_alloc_gpu_unmapped(reg->gpu_alloc->imported.alias.aliased[i].alloc);
+		/* gpu_mappings on the aliased native allocs is owned by the
+		 * alias's own lifetime (kbase_mem_alias() / kbase_mem_kref_free()),
+		 * not by this GPU (un)map, see kbase_gpu_mmap() above.
+		 */
 	} else {
 		err = kbase_mmu_teardown_pages(kctx, reg->start_pfn, kbase_reg_current_backed_size(reg));
 		kbase_mem_phy_alloc_gpu_unmapped(reg->gpu_alloc);
@@ -1750,8 +1755,16 @@ void kbase_mem_kref_free(struct kref *kref)
 		aliased = alloc->imported.alias.aliased;
 		if (aliased) {
 			for (i = 0; i < alloc->imported.alias.nents; i++)
-				if (aliased[i].alloc)
+				if (aliased[i].alloc) {
+					/* Matches the gpu_mappings taken in
+					 * kbase_mem_alias() for the whole
+					 * lifetime of the alias, independent of
+					 * whether/when it was GPU-mapped
+					 * (CVE-2021-28663).
+					 */
+					kbase_mem_phy_alloc_gpu_unmapped(aliased[i].alloc);
 					kbase_mem_phy_alloc_put(aliased[i].alloc);
+				}
 			vfree(aliased);
 		}
 		break;

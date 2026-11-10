@@ -1386,6 +1386,16 @@ u64 kbase_mem_alias(struct kbase_context *kctx, u64 *flags, u64 stride,
 			reg->gpu_alloc->imported.alias.aliased[i].alloc = kbase_mem_phy_alloc_get(alloc);
 			reg->gpu_alloc->imported.alias.aliased[i].length = ai[i].length;
 			reg->gpu_alloc->imported.alias.aliased[i].offset = ai[i].offset;
+
+			/* Count this alias reference against the native
+			 * alloc's mapping count immediately, not only once
+			 * the alias is actually GPU-mapped: a same-VA alias
+			 * is handed back to userspace as a pending cookie and
+			 * may sit unmapped for a while, during which
+			 * MEM_FLAGS_CHANGE must still refuse to evict the
+			 * aliased native allocation (CVE-2021-28663).
+			 */
+			kbase_mem_phy_alloc_gpu_mapped(alloc);
 		}
 	}
 
