@@ -605,6 +605,38 @@ def cmd_pack(a):
     return 0
 
 
+# ------------------------------------------------------------- dt-table ---
+
+def cmd_dt_table(a):
+    """Rebuild a one-DTB SPRD DT table around a new DTB, keeping the stock
+    header and entry fields (board id, revision, flags) so the bootloader
+    selects it the same way; only the DTB, its padded size and the table
+    size change."""
+    old = read_file(a.stock_dt)
+    dtb = read_file(a.dtb)
+    t = dt_entries(old)
+    if not t:
+        raise Error('%s is not a SPRD DT table' % a.stock_dt)
+    ver, ents = t
+    if len(ents) != 1:
+        raise Error('stock table has %d DTBs, only 1 is supported' % len(ents))
+    if len(dtb) < 8 or struct.unpack_from('>I', dtb, 0)[0] != FDT_MAGIC:
+        raise Error('%s is not a flattened device tree' % a.dtb)
+    e = list(ents[0])
+    off = e[3]
+    if off < 12 + DT_ENTRY.size or off % 0x800:
+        raise Error('unexpected stock DTB offset 0x%x' % off)
+    e[4] = align(len(dtb), 0x800)
+    out = bytearray(off + e[4])
+    out[:off] = old[:off]
+    DT_ENTRY.pack_into(out, 12, *e)
+    out[off:off + len(dtb)] = dtb
+    write_file(a.out, bytes(out))
+    print('dt table %s: id 0x%x rev %d, dtb %d bytes at 0x%x, table %d' %
+          (a.out, e[0], e[1], len(dtb), off, len(out)))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0]
                                  if __doc__ else None)
@@ -633,6 +665,12 @@ def main():
     p.add_argument('--no-avb', action='store_true',
                    help='drop the AVB vbmeta blob and footer')
     p.set_defaults(fn=cmd_pack)
+    p = sub.add_parser('dt-table',
+                       help='replace the DTB of a one-DTB SPRD DT table')
+    p.add_argument('stock_dt', help='stock DT table (the dt file of unpack)')
+    p.add_argument('dtb', help='new DTB')
+    p.add_argument('out')
+    p.set_defaults(fn=cmd_dt_table)
     a = ap.parse_args()
     try:
         return a.fn(a)
