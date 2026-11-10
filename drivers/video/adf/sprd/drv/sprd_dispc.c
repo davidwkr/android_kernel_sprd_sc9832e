@@ -414,6 +414,9 @@ void sprd_dispc_run(struct sprd_dispc *dispc)
 	dispc->core->run(ctx);
 
 	up(&ctx->refresh_lock);
+
+	/* scanout (re)started: let ADF probe again if posting was blocked */
+	sprd_adf_scanout_restarted(dispc->adf);
 }
 
 void sprd_dispc_black(struct sprd_dispc *dispc)
@@ -677,15 +680,18 @@ static int32_t sprd_dispc_flip(struct sprd_dispc *dispc,
 	 * freed right away.
 	 */
 	config_saved = config;
-	ret = 0;
-
 	/*
 	 * update shadow registers and run if it is not in ESD Recovery. A
 	 * timeout means the hw may still scan either config: -ETIMEDOUT tells
-	 * ADF to keep the previous one alive too.
+	 * ADF to keep the previous one alive too. A stopped DPI controller is
+	 * not run here, and is_stopped is also set when a stop timed out, so
+	 * no switch is confirmed either: report it the same way. The
+	 * sprd_dispc_run()/refresh_restore() that restart it unblock ADF.
 	 */
 	if (!ctx->is_stopped || (dispc->ctx.if_type == SPRD_DISPC_IF_EDPI))
 		ret = dispc->core->run(ctx);
+	else
+		ret = -ETIMEDOUT;
 
 	/*
 	 * The boot logo is not an ADF post: free it only once an update has
@@ -868,9 +874,6 @@ static int32_t sprd_dispc_resume(struct sprd_dispc *dispc)
 
 	ctx->is_inited = true;
 	up(&ctx->refresh_lock);
-
-	/* let ADF probe the hw again if timed-out updates had blocked posting */
-	sprd_adf_scanout_restarted(dispc->adf);
 
 	pr_info("dispc resume OK (Final Fix V2)\n");
 	return 0;
@@ -1241,6 +1244,8 @@ int sprd_dispc_refresh_restore(struct sprd_dispc *dispc)
 			(dispc->ctx.if_type == SPRD_DISPC_IF_EDPI))
 		dispc->core->run(ctx);
 	up(&ctx->refresh_lock);
+
+	sprd_adf_scanout_restarted(dispc->adf);
 
 	return 0;
 }

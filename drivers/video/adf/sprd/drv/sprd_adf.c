@@ -597,6 +597,17 @@ int pipe_config(struct pipe *pipe, int display_mode, int interface_id,
 {
 	struct sprd_dispc *dispc;
 
+	/*
+	 * Only single-dispc pipes are supported by this port: the double
+	 * modes flip one restruct config (and its iova records) on two
+	 * controllers, which the flip-failure handling cannot keep safe.
+	 */
+	if (display_mode != SPRD_SINGLE_DISPC) {
+		pr_err("display mode %d not supported, single dispc only\n",
+		       display_mode);
+		return -EINVAL;
+	}
+
 	switch (display_mode) {
 	case SPRD_SINGLE_DISPC:
 		pr_info("interface_id = %d\n", interface_id);
