@@ -909,8 +909,9 @@ static int sc2720_charger_set_status(struct sc2720_charger_info *info,
 	int ret = 0;
 
 	if (!val && info->charging) {
-		sc2720_charger_stop_charge(info);
-		info->charging = false;
+		ret = sc2720_charger_stop_charge(info);
+		if (!ret)
+			info->charging = false;
 	} else if (val && !info->charging) {
 		if (info->data->is_sc2721 && info->ovp_fault) {
 			dev_warn(info->dev,
@@ -972,8 +973,8 @@ static void sc2720_charger_work(struct work_struct *data)
 			goto out;
 	} else if ((!info->limit && info->charging) || !present) {
 		/* Stop charging */
-		info->charging = false;
-		sc2720_charger_stop_charge(info);
+		if (!sc2720_charger_stop_charge(info))
+			info->charging = false;
 	}
 
 out:
@@ -1285,8 +1286,8 @@ static irqreturn_t sc2721_ovp_irq_handler(int irq, void *data)
 	info->ovp_fault = !!fault;
 	if (info->ovp_fault && info->charging) {
 		dev_crit(info->dev, "input over-voltage, stopping charge\n");
-		sc2720_charger_stop_charge(info);
-		info->charging = false;
+		if (!sc2720_charger_stop_charge(info))
+			info->charging = false;
 	} else if (!info->ovp_fault) {
 		dev_info(info->dev, "input over-voltage cleared\n");
 	}
@@ -1365,8 +1366,8 @@ static int sc2721_init_fault_irqs(struct platform_device *pdev,
 		info->ovp_fault = !!ret;
 		if (info->ovp_fault && info->charging) {
 			dev_crit(&pdev->dev, "input over-voltage, stopping charge\n");
-			sc2720_charger_stop_charge(info);
-			info->charging = false;
+			if (!sc2720_charger_stop_charge(info))
+				info->charging = false;
 		}
 		mutex_unlock(&info->lock);
 	}
@@ -1415,8 +1416,8 @@ static void sc2720_charger_unwind(struct sc2720_charger_info *info)
 
 	mutex_lock(&info->lock);
 	if (info->charging) {
-		sc2720_charger_stop_charge(info);
-		info->charging = false;
+		if (!sc2720_charger_stop_charge(info))
+			info->charging = false;
 	}
 	mutex_unlock(&info->lock);
 }
