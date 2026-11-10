@@ -656,7 +656,8 @@ void kbase_mem_evictable_unmark_reclaim(struct kbase_mem_phy_alloc *alloc)
 			(u64)new_page_count);
 }
 
-int kbase_mem_evictable_make(struct kbase_mem_phy_alloc *gpu_alloc)
+int kbase_mem_evictable_make_jit(struct kbase_mem_phy_alloc *gpu_alloc,
+		struct kbase_va_region *jit_reg)
 {
 	struct kbase_context *kctx = gpu_alloc->imported.kctx;
 
@@ -669,16 +670,33 @@ int kbase_mem_evictable_make(struct kbase_mem_phy_alloc *gpu_alloc)
 			0, gpu_alloc->nents);
 
 	/*
+	 * Finish the reclaim accounting (which allocates, so it must not run
+	 * under jit_evict_lock: reclaim takes it) and mark the region before
+	 * the shrinker can see the allocation: once it is on the eviction
+	 * list the shrinker may free the backing and the zone cache.
+	 */
+	kbase_mem_evictable_mark_reclaim(gpu_alloc);
+	gpu_alloc->reg->flags |= KBASE_REG_DONT_NEED;
+
+	/*
 	 * Add the allocation to the eviction list, after this point the shrink
-	 * can reclaim it.
+	 * can reclaim it. A JIT region enters the pool in the same critical
+	 * section, so the shrinker never sees evictable backing of a region
+	 * that is not in the pool, nor the allocator a pooled region that is
+	 * not yet evictable.
 	 */
 	mutex_lock(&kctx->jit_evict_lock);
 	list_add(&gpu_alloc->evict_node, &kctx->evict_list);
+	if (jit_reg)
+		list_move(&jit_reg->jit_node, &kctx->jit_pool_head);
 	mutex_unlock(&kctx->jit_evict_lock);
-	kbase_mem_evictable_mark_reclaim(gpu_alloc);
 
-	gpu_alloc->reg->flags |= KBASE_REG_DONT_NEED;
 	return 0;
+}
+
+int kbase_mem_evictable_make(struct kbase_mem_phy_alloc *gpu_alloc)
+{
+	return kbase_mem_evictable_make_jit(gpu_alloc, NULL);
 }
 
 bool kbase_mem_evictable_unmake(struct kbase_mem_phy_alloc *gpu_alloc)
@@ -690,9 +708,13 @@ bool kbase_mem_evictable_unmake(struct kbase_mem_phy_alloc *gpu_alloc)
 
 	/*
 	 * First remove the allocation from the eviction list as it's no
-	 * longer eligible for eviction.
+	 * longer eligible for eviction. The shrinker walks the list under
+	 * jit_evict_lock only, so take it: once the allocation is off the
+	 * list, the shrinker is done with it and evicted is stable.
 	 */
+	mutex_lock(&kctx->jit_evict_lock);
 	list_del_init(&gpu_alloc->evict_node);
+	mutex_unlock(&kctx->jit_evict_lock);
 
 	if (gpu_alloc->evicted == 0) {
 		/*

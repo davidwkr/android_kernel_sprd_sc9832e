@@ -854,7 +854,19 @@ void kbase_free_alloced_region(struct kbase_va_region *reg)
 		 * memory kbase_mem_free_region is not called so it can still be
 		 * on the list at termination time of the region tracker.
 		 */
-		if (!list_empty(&reg->gpu_alloc->evict_node)) {
+		bool on_evict_list;
+
+		/*
+		 * Detach from the eviction list under jit_evict_lock before
+		 * clearing alloc->reg below: the shrinker dereferences
+		 * alloc->reg for allocations on that list.
+		 */
+		mutex_lock(&reg->kctx->jit_evict_lock);
+		on_evict_list = !list_empty(&reg->gpu_alloc->evict_node);
+		list_del_init(&reg->gpu_alloc->evict_node);
+		mutex_unlock(&reg->kctx->jit_evict_lock);
+
+		if (on_evict_list) {
 			/*
 			 * Unlink the physical allocation before unmaking it
 			 * evictable so that the allocation isn't grown back to
@@ -2315,12 +2327,14 @@ void kbase_jit_free(struct kbase_context *kctx, struct kbase_va_region *reg)
 	/* The physical backing of memory in the pool is always reclaimable */
 	kbase_gpu_vm_lock(kctx);
 	reg->flags &= ~KBASE_REG_ACTIVE_JIT_ALLOC;
-	kbase_mem_evictable_make(reg->gpu_alloc);
+	/*
+	 * Into the pool together with becoming evictable, under one
+	 * jit_evict_lock section: once reg_lock is released the shrinker may
+	 * reclaim the region and hand it to the destroy worker, so it must
+	 * not be touched after that.
+	 */
+	kbase_mem_evictable_make_jit(reg->gpu_alloc, reg);
 	kbase_gpu_vm_unlock(kctx);
-
-	mutex_lock(&kctx->jit_evict_lock);
-	list_move(&reg->jit_node, &kctx->jit_pool_head);
-	mutex_unlock(&kctx->jit_evict_lock);
 }
 
 void kbase_jit_backing_lost(struct kbase_va_region *reg)

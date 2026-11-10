@@ -106,6 +106,17 @@ int kbase_mem_grow_gpu_mapping(struct kbase_context *kctx,
 int kbase_mem_evictable_make(struct kbase_mem_phy_alloc *gpu_alloc);
 
 /**
+ * kbase_mem_evictable_make_jit - kbase_mem_evictable_make(), and move a JIT
+ *                                region into the JIT pool atomically with it
+ * @gpu_alloc: The physical allocation to make evictable
+ * @jit_reg:   The JIT region to move to kctx->jit_pool_head, or NULL
+ *
+ * Return: 0 on success, -errno on error.
+ */
+int kbase_mem_evictable_make_jit(struct kbase_mem_phy_alloc *gpu_alloc,
+		struct kbase_va_region *jit_reg);
+
+/**
  * kbase_mem_evictable_unmake - Remove a physical allocations eligibility for
  * eviction.
  * @alloc: The physical allocation to remove eviction eligibility from.
