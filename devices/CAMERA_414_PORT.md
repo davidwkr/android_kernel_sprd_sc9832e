@@ -83,7 +83,7 @@ Known and not fixed (vendor ABI: the HAL passes device addresses, not fds, so th
   packing; read DMA within the camera IOMMU domain;
 - the fetch bounds are global, not per ISP (the watches have one ISP, `sprd,isp-count = <1>`);
 - buffer references taken by `pfiommu_get_sg_table()` live until the module is released (the list is bounded
-  to 256 buffers, further imports fail with `-ENOSPC`; an entry cannot be dropped on `pfiommu_free_addr()`
+  to 1024 buffers, further imports fail with `-ENOSPC`; an entry cannot be dropped on `pfiommu_free_addr()`
   because the same buffer is queued again and the frames keep a raw `dma_buf` pointer that only the list
   reference protects), and a failed unmap in the CPP keeps its buffer pinned on purpose (the mapping may still
   be live).

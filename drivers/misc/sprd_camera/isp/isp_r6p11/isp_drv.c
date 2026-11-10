@@ -337,7 +337,13 @@ static int offline_full_thread_loop(void *arg)
 		if (!dev->is_offline_full_thread_stop) {
 			dev->is_wait_fmcu = 1;
 			wait_for_completion(&dev->fmcu_com);
-			if (!dev->is_offline_full_thread_stop) {
+			/*
+			 * Under the module lock, so PUT_DCAM_RES cannot free the
+			 * FMCU buffer while the capture is set up; skipped when
+			 * the module was disabled meanwhile.
+			 */
+			if (!dev->is_offline_full_thread_stop &&
+			    !sprd_isp_k_lock(dev)) {
 				if (sprd_isp_pipeline_proc_full(arg)) {
 					pr_err("fail to start capture!\n");
 					spin_lock(&isp_mod_lock);
@@ -348,6 +354,7 @@ static int offline_full_thread_loop(void *arg)
 						dev->fmcu_addr_vir);
 					sprd_isp_reset_fmcu();
 				}
+				sprd_isp_k_unlock(dev);
 			}
 		}
 	}

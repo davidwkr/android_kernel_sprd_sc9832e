@@ -31,9 +31,11 @@ static unsigned int dma_buffer_count;
  * Every imported buffer is referenced until the module is released and the
  * frames keep raw dma_buf pointers that depend on that reference, so an entry
  * cannot be dropped when one mapping is freed (the same buffer is queued
- * again and again). Bound the list instead.
+ * again and again). Stock never bounded the list; this only stops runaway
+ * pinning, well above the buffers one session uses (the list is cleared
+ * when the camera closes).
  */
-#define DMA_BUFFER_LIST_MAX	256
+#define DMA_BUFFER_LIST_MAX	1024
 
 /*
  * Add the imported planes of pfinfo, or none of them: a partial import must
