@@ -1287,6 +1287,15 @@ int kbase_mem_free_region(struct kbase_context *kctx, struct kbase_va_region *re
 	lockdep_assert_held(&kctx->reg_lock);
 
 	/*
+	 * Take the allocation off the eviction list under jit_evict_lock
+	 * before clearing alloc->reg below: the shrinker dereferences
+	 * alloc->reg for allocations on that list.
+	 */
+	mutex_lock(&kctx->jit_evict_lock);
+	list_del_init(&reg->gpu_alloc->evict_node);
+	mutex_unlock(&kctx->jit_evict_lock);
+
+	/*
 	 * Unlink the physical allocation before unmaking it evictable so
 	 * that the allocation isn't grown back to its last backed size
 	 * as we're going to unmap it anyway.
@@ -2156,7 +2165,7 @@ static void kbase_jit_destroy_worker(struct work_struct *work)
 		reg = list_first_entry(&kctx->jit_destroy_head,
 				struct kbase_va_region, jit_node);
 
-		list_del(&reg->jit_node);
+		list_del_init(&reg->jit_node);
 		mutex_unlock(&kctx->jit_evict_lock);
 
 		kbase_gpu_vm_lock(kctx);
@@ -2371,7 +2380,13 @@ bool kbase_jit_evict(struct kbase_context *kctx)
 	if (!list_empty(&kctx->jit_pool_head)) {
 		reg = list_entry(kctx->jit_pool_head.prev,
 				struct kbase_va_region, jit_node);
-		list_del(&reg->jit_node);
+		/*
+		 * Detach from both lists in one section and leave the links
+		 * empty, not poisoned: reclaim tests them with list_empty()
+		 * (kbase_jit_backing_lost()) until the region is freed.
+		 */
+		list_del_init(&reg->jit_node);
+		list_del_init(&reg->gpu_alloc->evict_node);
 	}
 	mutex_unlock(&kctx->jit_evict_lock);
 
@@ -2399,7 +2414,9 @@ void kbase_jit_term(struct kbase_context *kctx)
 	while (!list_empty(&kctx->jit_pool_head)) {
 		walker = list_first_entry(&kctx->jit_pool_head,
 				struct kbase_va_region, jit_node);
-		list_del(&walker->jit_node);
+		/* as in kbase_jit_evict() */
+		list_del_init(&walker->jit_node);
+		list_del_init(&walker->gpu_alloc->evict_node);
 		mutex_unlock(&kctx->jit_evict_lock);
 		kbase_mem_free_region(kctx, walker);
 		mutex_lock(&kctx->jit_evict_lock);
@@ -2409,7 +2426,7 @@ void kbase_jit_term(struct kbase_context *kctx)
 	while (!list_empty(&kctx->jit_active_head)) {
 		walker = list_first_entry(&kctx->jit_active_head,
 				struct kbase_va_region, jit_node);
-		list_del(&walker->jit_node);
+		list_del_init(&walker->jit_node);
 		mutex_unlock(&kctx->jit_evict_lock);
 		kbase_mem_free_region(kctx, walker);
 		mutex_lock(&kctx->jit_evict_lock);

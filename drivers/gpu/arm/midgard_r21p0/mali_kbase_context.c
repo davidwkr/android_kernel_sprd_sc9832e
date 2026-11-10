@@ -258,7 +258,13 @@ void kbase_destroy_context(struct kbase_context *kctx)
 	 * without the region lock being held.
 	 * The code above ensures no new JIT allocations can be made by
 	 * by the time we get to this point of context tear down.
+	 *
+	 * Unregister the eviction shrinker first: unregister_shrinker()
+	 * waits for a running scan, so none can move a pooled region to
+	 * jit_destroy_head and requeue the destroy worker once
+	 * kbase_jit_term() has cancelled it and the regions are freed.
 	 */
+	kbase_mem_evictable_deinit(kctx);
 	kbase_jit_term(kctx);
 
 	kbase_gpu_vm_lock(kctx);
@@ -307,7 +313,6 @@ void kbase_destroy_context(struct kbase_context *kctx)
 	if (pages != 0)
 		dev_warn(kbdev->dev, "%s: %d pages in use!\n", __func__, pages);
 
-	kbase_mem_evictable_deinit(kctx);
 	kbase_mem_pool_term(&kctx->mem_pool);
 	kbase_mem_pool_term(&kctx->lp_mem_pool);
 	WARN_ON(atomic_read(&kctx->nonmapped_pages) != 0);
