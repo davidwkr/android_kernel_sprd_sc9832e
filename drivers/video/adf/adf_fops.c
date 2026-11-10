@@ -370,14 +370,10 @@ static int adf_device_post_config(struct adf_device *dev,
 		goto err_import;
 	}
 
-	ret = adf_install_complete_fence(complete_fence, complete_fence_fd);
-	/* fd ownership (fd_install on success, put_unused_fd on failure) is
-	 * fully handled by adf_install_complete_fence() above; don't let the
-	 * shared cleanup below release it a second time. */
-	complete_fence_fd = -1;
-	if (ret < 0)
-		goto err_get_user;
-	return 0;
+	/* The post is queued: it owns bufs and custom_data and has freed
+	 * intfs, and adf_install_complete_fence() owns the fd either way.
+	 * Nothing below may be released here, even if the install fails. */
+	return adf_install_complete_fence(complete_fence, complete_fence_fd);
 
 err_import:
 	for (i = 0; i < data->n_bufs; i++)
