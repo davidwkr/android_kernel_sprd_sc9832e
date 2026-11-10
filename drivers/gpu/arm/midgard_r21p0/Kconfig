@@ -22,7 +22,7 @@ menuconfig MALI_MIDGARD
 	  Enable this option to build support for a ARM Mali Midgard GPU.
 
 	  To compile this driver as a module, choose M here:
-	  this will generate a single module, called mali_kbase.
+	  this will generate a single module, called mali.
 
 config MALI_GATOR_SUPPORT
 	bool "Streamline support via Gator"

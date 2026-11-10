@@ -73,9 +73,19 @@ This confirms:
    an error and crash the first power-on. Changed to
    `syscon_regmap_lookup_by_phandle(dev->of_node, "sprd,syscon-pmu-apb")`
    with the reg/mask spelled out as constants (offset `0x20`, mask
-   `0x3000000`, off-value `0x2000000`, on-value `0`). Corroborated three
-   ways: (a) the generic sharkle.dtsi reference above uses the same
-   offset/mask/off-value; (b) disassembling the stock k18 `mali.ko`'s
+   `0x3000000`, off-value `0x2000000`, on-value `0`).
+
+   Note the mask is **not** the same value as the generic sharkle.dtsi
+   reference above, which uses `0x2000000` - a single bit. Per
+   `include/linux/mfd/syscon/sprd/sharkle/pmu_apb.h`, offset `0x20` is
+   `PD_GPU_TOP_CFG`, where bit 25 is a hard force-shutdown and bit 24 is
+   automatic shutdown - two independent bits, not one 2-bit field. The
+   generic DTS only ever touches the force-shutdown bit; this port's mask
+   (`0x3000000`) touches both, so power-on here also disables automatic
+   shutdown and leaves the domain fully software-managed. That is a
+   deliberate difference, not a transcription of the generic DTS value - see
+   the comment in `mali_kbase_config_sharkle.c` above `GPU_PWR_DOMAIN_MASK`.
+   Corroborated three ways: (a) disassembling the stock k18 `mali.ko`'s
    `mali_platform_init` shows `of_parse_phandle` + `of_translate_address`
    + **`add x0, x0, #0x20`** + `__ioremap`, i.e. the same `+0x20` byte
    offset from the syscon base, right before a

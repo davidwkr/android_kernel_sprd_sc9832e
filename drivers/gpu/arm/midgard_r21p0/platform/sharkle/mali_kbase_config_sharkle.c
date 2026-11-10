@@ -49,20 +49,31 @@
 #define UP_THRESHOLD        9/10
 
 /*
- * GPU power-domain force-shutdown field in the pmu-apb syscon block, offset
- * 0x20, a 2-bit field at bits [25:24] (mask 0x3000000); writing 0x2000000
- * forces the domain off, 0 lets it power up normally. The upstream ARM
- * reference "sharkle" platform (drivers/gpu/arm/midgard/mali/platform/sharkle
- * in the r28p0 copy in this tree) gets this reg/mask pair from the DT via
- * syscon-names = "top_force_shutdown" on the gpu node, but neither the k18
- * nor the dm63 reconstructed stock DTS carries that property (only
- * "sprd,syscon-aon-apb" / "sprd,syscon-pmu-apb" phandles) - so it is spelled
- * out here instead, by phandle. Confirmed against the stock k18 mali.ko
- * (strings/objdump): it resolves this same register via
+ * GPU power-domain register in the pmu-apb syscon block (PD_GPU_TOP_CFG),
+ * offset 0x20. Bits [25:24] are two independent control bits, not an
+ * encoded 2-bit field: bit 25 forces the domain off regardless of other
+ * state, bit 24 lets the domain shut itself down automatically. The upstream
+ * ARM reference "sharkle" platform
+ * (drivers/gpu/arm/midgard/mali/platform/sharkle in the r28p0 copy in this
+ * tree) gets this reg/mask pair from the DT via syscon-names =
+ * "top_force_shutdown" on the gpu node, with the generic
+ * arch/arm64/boot/dts/sprd/sharkle.dtsi reference using "syscons =
+ * <&pmu_apb_controller 0x20 0x2000000>" - i.e. mask 0x2000000, touching only
+ * the force-shutdown bit (25) and leaving automatic shutdown (24) alone.
+ * Neither the k18 nor the dm63 reconstructed stock DTS carries that
+ * "syscons"/"syscon-names" property (only "sprd,syscon-aon-apb" /
+ * "sprd,syscon-pmu-apb" phandles), so the reg/mask here are spelled out as
+ * constants instead of read from DT. This port intentionally uses the wider
+ * mask 0x3000000, clearing *both* bits on power-on: that selects a fully
+ * software-managed domain (no surprise auto-shutdown behind the driver's
+ * back) rather than just disabling the hard force-off, matching what the
+ * stock k18 mali.ko does (see below) - it is not the same value as the
+ * generic sharkle.dtsi reference above, and that reference's narrower mask
+ * should not be read as corroborating this one. Confirmed against the stock
+ * k18 mali.ko (strings/objdump): it resolves this same register via
  * syscon_regmap_lookup_by_phandle(..., "sprd,syscon-pmu-apb") and an
- * ioremap'd access at (phandle base + 0x20), matching both this offset and
- * the generic sharkle.dtsi reference's "syscons = <&pmu_apb_controller 0x20
- * 0x2000000>". See devices/MALI_R21P0.md for the full trail of evidence.
+ * ioremap'd access at (phandle base + 0x20), matching this offset. See
+ * devices/MALI_R21P0.md for the full trail of evidence.
  */
 #define GPU_PWR_DOMAIN_REG   0x20
 #define GPU_PWR_DOMAIN_MASK  0x3000000
@@ -190,40 +201,88 @@ static void config_gpu_qos(void)
 }
 #endif
 
-static inline void mali_freq_init(struct device *dev)
+/*
+ * mali_freq_init() used to probe every DT resource through
+ * KBASE_DEBUG_ASSERT(), which compiles to a no-op in production builds
+ * (CONFIG_MALI_DEBUG is off in both k18_defconfig and dm63_defconfig): a
+ * missing syscon, clock or allocation was silently ignored and execution
+ * fell through into mali_power_on()/mali_clock_on() with an IS_ERR or NULL
+ * pointer. Each lookup below is now checked for real, with IS_ERR() (not a
+ * NULL check) for the clk/regmap APIs, which return ERR_PTR() - including
+ * -EPROBE_DEFER when the syscon or clock provider hasn't probed yet, now
+ * propagated to the caller instead of swallowed. On failure, everything
+ * already acquired is unwound so a deferred probe can retry cleanly.
+ *
+ * The "sprd,dfs-*" index properties parsed further down are still read
+ * without validating each of_property_read_u32() call or bounds-checking
+ * the resulting freq_list[] index - that is a devicetree-authoring
+ * correctness concern (this DT is ours, not attacker input), left as a
+ * hardware bring-up item; see devices/MALI_R21P0.md.
+ */
+static inline int mali_freq_init(struct device *dev)
 {
 #ifdef CONFIG_OF
-	int i = 0, clk_cnt = 0;
+	int i = 0, clk_cnt = 0, got_clk_src = 0;
+	int err;
 
 #ifdef GPU_SUPPORT_QOS
 	gpu_qos_reg = ioremap_nocache( 0x60100014, 4);
+	if (!gpu_qos_reg)
+		return -ENOMEM;
 #endif
 
 	gpu_dfs_ctx.top_reg.regmap_ptr = syscon_regmap_lookup_by_phandle(dev->of_node, "sprd,syscon-pmu-apb");
-	KBASE_DEBUG_ASSERT(!IS_ERR(gpu_dfs_ctx.top_reg.regmap_ptr));
+	if (IS_ERR(gpu_dfs_ctx.top_reg.regmap_ptr)) {
+		err = PTR_ERR(gpu_dfs_ctx.top_reg.regmap_ptr);
+		goto err_qos;
+	}
 	gpu_dfs_ctx.top_reg.args[0] = GPU_PWR_DOMAIN_REG;
 	gpu_dfs_ctx.top_reg.args[1] = GPU_PWR_DOMAIN_MASK;
 
 	gpu_dfs_ctx.gpu_clock_i = of_clk_get(dev->of_node, 0);
+	if (IS_ERR(gpu_dfs_ctx.gpu_clock_i)) {
+		err = PTR_ERR(gpu_dfs_ctx.gpu_clock_i);
+		goto err_qos;
+	}
 	gpu_dfs_ctx.gpu_clock = of_clk_get(dev->of_node, 1);
-	KBASE_DEBUG_ASSERT(gpu_dfs_ctx.gpu_clock_i);
-	KBASE_DEBUG_ASSERT(gpu_dfs_ctx.gpu_clock);
+	if (IS_ERR(gpu_dfs_ctx.gpu_clock)) {
+		err = PTR_ERR(gpu_dfs_ctx.gpu_clock);
+		goto err_clock_i;
+	}
 
 	clk_cnt = of_clk_get_parent_count(dev->of_node);
 	gpu_dfs_ctx.gpu_clk_num = clk_cnt - DTS_CLK_OFFSET;
+	if (gpu_dfs_ctx.gpu_clk_num <= 0) {
+		err = -ENODEV;
+		goto err_clock;
+	}
 
 	gpu_dfs_ctx.gpu_clk_src = vmalloc(sizeof(struct clk*) * gpu_dfs_ctx.gpu_clk_num);
-	KBASE_DEBUG_ASSERT(gpu_dfs_ctx.gpu_clk_src);
+	if (!gpu_dfs_ctx.gpu_clk_src) {
+		err = -ENOMEM;
+		goto err_clock;
+	}
 
 	for (i = 0; i < gpu_dfs_ctx.gpu_clk_num; i++)
 	{
 		gpu_dfs_ctx.gpu_clk_src[i] = of_clk_get(dev->of_node, i+DTS_CLK_OFFSET);
-		KBASE_DEBUG_ASSERT(gpu_dfs_ctx.gpu_clk_src[i]);
+		if (IS_ERR(gpu_dfs_ctx.gpu_clk_src[i])) {
+			err = PTR_ERR(gpu_dfs_ctx.gpu_clk_src[i]);
+			goto err_clk_src;
+		}
+		got_clk_src++;
 	}
 
 	gpu_dfs_ctx.freq_list_len = of_property_count_elems_of_size(dev->of_node,"sprd,dfs-lists",4*sizeof(u32));
+	if (gpu_dfs_ctx.freq_list_len <= 0) {
+		err = (gpu_dfs_ctx.freq_list_len < 0) ? gpu_dfs_ctx.freq_list_len : -EINVAL;
+		goto err_clk_src;
+	}
 	gpu_dfs_ctx.freq_list = vmalloc(sizeof(struct gpu_freq_info) * gpu_dfs_ctx.freq_list_len);
-	KBASE_DEBUG_ASSERT(gpu_dfs_ctx.freq_list);
+	if (!gpu_dfs_ctx.freq_list) {
+		err = -ENOMEM;
+		goto err_clk_src;
+	}
 
 	for(i=0; i<gpu_dfs_ctx.freq_list_len; i++)
 	{
@@ -270,15 +329,74 @@ static inline void mali_freq_init(struct device *dev)
 	gpu_dfs_ctx.freq_min = gpu_dfs_ctx.freq_range_min;
 	gpu_dfs_ctx.freq_cur = gpu_dfs_ctx.freq_default;
 	gpu_dfs_ctx.cur_voltage = gpu_voltage_cur = gpu_dfs_ctx.freq_cur->volt;
+
+	return 0;
+
+err_clk_src:
+	for (i = got_clk_src - 1; i >= 0; i--)
+		clk_put(gpu_dfs_ctx.gpu_clk_src[i]);
+	vfree(gpu_dfs_ctx.gpu_clk_src);
+	gpu_dfs_ctx.gpu_clk_src = NULL;
+err_clock:
+	clk_put(gpu_dfs_ctx.gpu_clock);
+err_clock_i:
+	clk_put(gpu_dfs_ctx.gpu_clock_i);
+err_qos:
+#ifdef GPU_SUPPORT_QOS
+	if (gpu_qos_reg) {
+		iounmap(gpu_qos_reg);
+		gpu_qos_reg = NULL;
+	}
+#endif
+	return err;
+#else
+	return 0;
 #endif
 }
 
-static inline void mali_power_on(void)
+/* Undo a successful mali_freq_init(), for the mali_platform_init() error
+ * path where a later step (power/clock/regulator) fails. */
+static inline void mali_freq_term(void)
 {
-	regmap_update_bits(gpu_dfs_ctx.top_reg.regmap_ptr, gpu_dfs_ctx.top_reg.args[0], gpu_dfs_ctx.top_reg.args[1], GPU_PWR_DOMAIN_ON);
+#ifdef CONFIG_OF
+	int i;
+
+	vfree(gpu_dfs_ctx.freq_list);
+	gpu_dfs_ctx.freq_list = NULL;
+
+	if (gpu_dfs_ctx.gpu_clk_src) {
+		for (i = 0; i < gpu_dfs_ctx.gpu_clk_num; i++)
+			clk_put(gpu_dfs_ctx.gpu_clk_src[i]);
+		vfree(gpu_dfs_ctx.gpu_clk_src);
+		gpu_dfs_ctx.gpu_clk_src = NULL;
+	}
+
+	clk_put(gpu_dfs_ctx.gpu_clock);
+	clk_put(gpu_dfs_ctx.gpu_clock_i);
+
+#ifdef GPU_SUPPORT_QOS
+	if (gpu_qos_reg) {
+		iounmap(gpu_qos_reg);
+		gpu_qos_reg = NULL;
+	}
+#endif
+#endif
+}
+
+static inline int mali_power_on(void)
+{
+	int err;
+
+	err = regmap_update_bits(gpu_dfs_ctx.top_reg.regmap_ptr, gpu_dfs_ctx.top_reg.args[0], gpu_dfs_ctx.top_reg.args[1], GPU_PWR_DOMAIN_ON);
+	if (err) {
+		pr_err("mali: failed to power on GPU domain (%d)\n", err);
+		return err;
+	}
 
 	udelay(300);
 	gpu_dfs_ctx.gpu_power_on = 1;
+
+	return 0;
 }
 
 static inline void mali_power_off(void)
@@ -297,20 +415,26 @@ static inline void mali_set_div(const struct gpu_freq_info* info)
 	//clk_set_rate(info->clk_src, info->freq/info->div);
 }
 
-static inline void mali_clock_on(void)
+static inline int mali_clock_on(void)
 {
-	int i;
+	int i, err;
 
 	//enable all clocks
 	for(i=0;i<gpu_dfs_ctx.gpu_clk_num;i++)
 	{
-		clk_prepare_enable(gpu_dfs_ctx.gpu_clk_src[i]);
+		err = clk_prepare_enable(gpu_dfs_ctx.gpu_clk_src[i]);
+		if (err)
+			goto err_clk_src;
 	}
 
-	clk_prepare_enable(gpu_dfs_ctx.gpu_clock_i);
+	err = clk_prepare_enable(gpu_dfs_ctx.gpu_clock_i);
+	if (err)
+		goto err_clk_src;
 
 	//enable gpu clock
-	clk_prepare_enable(gpu_dfs_ctx.gpu_clock);
+	err = clk_prepare_enable(gpu_dfs_ctx.gpu_clock);
+	if (err)
+		goto err_clock_i;
 	udelay(300);
 
 	//set gpu clock parent
@@ -327,6 +451,16 @@ static inline void mali_clock_on(void)
 	gpu_dfs_ctx.gpu_clock_on = 1;
 
 	gpu_freq_cur = gpu_dfs_ctx.freq_cur->freq;
+
+	return 0;
+
+err_clock_i:
+	clk_disable_unprepare(gpu_dfs_ctx.gpu_clock_i);
+err_clk_src:
+	pr_err("mali: failed to enable GPU clocks (%d)\n", err);
+	for (i = i - 1; i >= 0; i--)
+		clk_disable_unprepare(gpu_dfs_ctx.gpu_clk_src[i]);
+	return err;
 }
 
 static inline void mali_clock_off(void)
@@ -354,32 +488,67 @@ static inline void mali_clock_off(void)
 
 static int mali_platform_init(struct kbase_device *kbdev)
 {
+	int err;
+
 	KBASE_DEBUG_PRINT(4, "mali------------------- mali_platform_init\n");
 	//gpu freq
-	mali_freq_init(kbdev->dev);
+	err = mali_freq_init(kbdev->dev);
+	if (err)
+		return err;
 
-	mali_power_on();
+	err = mali_power_on();
+	if (err)
+		goto err_freq;
 
 	//clock on
-	mali_clock_on();
+	err = mali_clock_on();
+	if (err)
+		goto err_power;
 
 #ifdef CONFIG_MALI_HOTPLUG
 	kbase_hotplug_wake_up();
 #endif
 
 	gpu_dfs_ctx.gpu_dfs_workqueue = create_singlethread_workqueue("gpu_dfs");
+	if (!gpu_dfs_ctx.gpu_dfs_workqueue) {
+		err = -ENOMEM;
+		goto err_clock;
+	}
 
 	gpu_freq_list = (char*)vmalloc(256*sizeof(char));
+	if (!gpu_freq_list) {
+		err = -ENOMEM;
+		goto err_workqueue;
+	}
 	gpu_freq_list_show(gpu_freq_list);
 
 	//init gpu regulator
 	gpu_reg = devm_regulator_get(kbdev->dev, "gpu");
-	KBASE_DEBUG_ASSERT(gpu_reg);
+	if (IS_ERR(gpu_reg)) {
+		err = PTR_ERR(gpu_reg);
+		gpu_reg = NULL;
+		goto err_freq_list;
+	}
 #ifdef CONFIG_INIT_VOLTAGE
 	regulator_set_voltage(gpu_reg, gpu_dfs_ctx.freq_cur->volt, gpu_dfs_ctx.freq_cur->volt);
 #endif
 
 	return 0;
+
+err_freq_list:
+	vfree(gpu_freq_list);
+	gpu_freq_list = NULL;
+err_workqueue:
+	destroy_workqueue(gpu_dfs_ctx.gpu_dfs_workqueue);
+	gpu_dfs_ctx.gpu_dfs_workqueue = NULL;
+err_clock:
+	mali_clock_off();
+err_power:
+	mali_power_off();
+err_freq:
+	mali_freq_term();
+
+	return err;
 }
 
 static void mali_platform_term(struct kbase_device *kbdev)
@@ -400,7 +569,9 @@ static void mali_platform_term(struct kbase_device *kbdev)
 	vfree(gpu_dfs_ctx.freq_list);
 	vfree(gpu_dfs_ctx.gpu_clk_src);
 
-	regulator_put(gpu_reg);
+	/* gpu_reg was obtained with devm_regulator_get(); devres already
+	 * releases it when the device detaches, so don't also regulator_put()
+	 * it here - doing both double-frees the regulator handle. */
 
 #ifdef GPU_SUPPORT_QOS
 	if(gpu_qos_reg)
@@ -418,8 +589,10 @@ struct kbase_platform_funcs_conf platform_sharkle_funcs = {
 	.platform_term_func = mali_platform_term
 };
 
-static void mali_power_mode_change(struct kbase_device *kbdev, int power_mode)
+static int mali_power_mode_change(struct kbase_device *kbdev, int power_mode)
 {
+	int err = 0;
+
 	down(gpu_dfs_ctx.sem);
 	KBASE_DEBUG_PRINT(3, "mali_power_mode_change: %d, gpu_power_on=%d gpu_clock_on=%d\n",power_mode,gpu_dfs_ctx.gpu_power_on,gpu_dfs_ctx.gpu_clock_on);
 	switch (power_mode)
@@ -427,16 +600,18 @@ static void mali_power_mode_change(struct kbase_device *kbdev, int power_mode)
 		case 0://power on
 			if (!gpu_dfs_ctx.gpu_power_on)
 			{
-				mali_power_on();
-				mali_clock_on();
+				err = mali_power_on();
+				if (!err)
+					err = mali_clock_on();
 			}
 
-			if (!gpu_dfs_ctx.gpu_clock_on)
+			if (!err && !gpu_dfs_ctx.gpu_clock_on)
 			{
-				mali_clock_on();
+				err = mali_clock_on();
 			}
 #ifdef CONFIG_MALI_HOTPLUG
-			kbase_hotplug_wake_up();
+			if (!err)
+				kbase_hotplug_wake_up();
 #endif
 			break;
 
@@ -457,6 +632,8 @@ static void mali_power_mode_change(struct kbase_device *kbdev, int power_mode)
 			break;
 	}
 	up(gpu_dfs_ctx.sem);
+
+	return err;
 }
 
 static void pm_callback_power_off(struct kbase_device *kbdev)
@@ -477,8 +654,12 @@ static void pm_callback_power_off(struct kbase_device *kbdev)
 
 static int pm_callback_power_on(struct kbase_device *kbdev)
 {
+	int err;
+
 	KBASE_DEBUG_PRINT(4, "mali------------------- pm_callback_power_on\n");
-	mali_power_mode_change(kbdev, 0);
+	err = mali_power_mode_change(kbdev, 0);
+	if (err)
+		dev_err(kbdev->dev, "mali: GPU power-on sequence failed (%d)\n", err);
 
 #ifdef KBASE_PM_RUNTIME
 	{
@@ -503,8 +684,12 @@ static void pm_callback_power_suspend(struct kbase_device *kbdev)
 
 static void pm_callback_power_resume(struct kbase_device *kbdev)
 {
+	int err;
+
 	KBASE_DEBUG_PRINT(4, "mali------------------- pm_callback_power_resume\n");
-	mali_power_mode_change(kbdev, 0);
+	err = mali_power_mode_change(kbdev, 0);
+	if (err)
+		dev_err(kbdev->dev, "mali: GPU power-on sequence failed (%d)\n", err);
 }
 
 #ifdef KBASE_PM_RUNTIME
