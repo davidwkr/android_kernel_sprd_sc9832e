@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * GPU (Mali T820) node of the watches in the binding the r21p0 kbase sharkle
+ * platform glue expects (drivers/gpu/arm/midgard_r21p0/platform/sharkle,
+ * devices/MALI_R21P0.md). The values are the stock ones: the stock
+ * gpu@60000000 node is identical on every watch (K18, DM63, DW100U, MT107,
+ * MT108, DM82) apart from phandle numbering. Only the phandles are
+ * translated to the 4.14 providers:
+ *   stock clk@402e0000 GPU_EB   -> <&aonapb_gate CLK_GPU_EB>
+ *   stock clk@60100004 (mux)    -> <&gpu_clk CLK_GPU>
+ *   stock clk-twpll-256m/307m2/384m/512m -> <&pll CLK_TWPLL_*>
+ *   stock clk@403c002c          -> <&pll CLK_GPLL> (gpll, reg 0x2c)
+ *   stock syscon@402e0000/402b0000 -> &aon_apb_regs / &pmu_apb_regs
+ * The clock order matters: index 0 is the enable gate, 1 the mux, 2 on the
+ * parents that the third column of sprd,dfs-lists selects (absolute index).
+ */
+
+&gpu {
+	/delete-property/ syscons;
+	/delete-property/ syscon-names;
+	sprd,syscon-aon-apb = <&aon_apb_regs>;
+	sprd,syscon-pmu-apb = <&pmu_apb_regs>;
+	system-coherency = <31>;
+	clocks = <&aonapb_gate CLK_GPU_EB>,
+		 <&gpu_clk CLK_GPU>,
+		 <&pll CLK_TWPLL_256M>,
+		 <&pll CLK_TWPLL_307M2>,
+		 <&pll CLK_TWPLL_384M>,
+		 <&pll CLK_TWPLL_512M>,
+		 <&pll CLK_GPLL>;
+
+	operating-points = <
+		/* kHz    uV */
+		256000    900000
+		384000    900000
+		512000    900000
+		600000    900000
+		680000    950000
+		>;
+
+	sprd,dfs-lists = <
+		/* kHz  uV      clk div */
+		256000  900000   2    1
+		384000  900000   4    1
+		512000  900000   5    1
+		600000  900000   6    1
+		680000  950000   6    1
+		>;
+
+	sprd,dfs-default = <1>;
+	sprd,dfs-scene-extreme = <3>;
+	sprd,dfs-scene-high = <2>;
+	sprd,dfs-scene-medium = <1>;
+	sprd,dfs-scene-low = <0>;
+	sprd,dfs-range-max = <3>;
+	sprd,dfs-range-min = <0>;
+};
