@@ -2394,6 +2394,17 @@ int kbase_mmap(struct file *file, struct vm_area_struct *vma)
 				goto out_unlock;
 			}
 
+			/*
+			 * An evictable region (e.g. a freed JIT allocation in
+			 * the pool) can be reclaimed without another CPU
+			 * invalidation, so new PTEs must not be inserted into
+			 * it; kbase_cpu_vm_fault() refuses it too.
+			 */
+			if (reg->flags & KBASE_REG_DONT_NEED) {
+				err = -EINVAL;
+				goto out_unlock;
+			}
+
 			/* limit what we map to the amount currently backed */
 			if (reg->cpu_alloc->nents < (vma->vm_pgoff - reg->start_pfn + nr_pages)) {
 				if ((vma->vm_pgoff - reg->start_pfn) >= reg->cpu_alloc->nents)

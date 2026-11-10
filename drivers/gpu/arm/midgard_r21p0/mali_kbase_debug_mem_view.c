@@ -115,20 +115,33 @@ static int debug_mem_show(struct seq_file *m, void *v)
 	map = list_entry(data->lh, struct debug_mem_mapping, node);
 
 	kbase_gpu_vm_lock(mem_data->kctx);
+	/*
+	 * The JIT shrinker frees evictable backing under jit_evict_lock
+	 * only. Check the backing and take a page reference under it (same
+	 * order as kbase_mem_evictable_make(): reg_lock, then this), and drop
+	 * it before vmap(): vmap() can enter reclaim, which runs that
+	 * shrinker. The reference keeps the page from going back to the
+	 * kernel while it is read.
+	 */
+	mutex_lock(&mem_data->kctx->jit_evict_lock);
 
 	if (data->offset >= map->alloc->nents) {
+		mutex_unlock(&mem_data->kctx->jit_evict_lock);
 		seq_printf(m, "%016llx: Unbacked page\n\n", (map->start_pfn +
 				data->offset) << PAGE_SHIFT);
 		goto out;
 	}
 
+	page = phys_to_page(as_phys_addr_t(map->alloc->pages[data->offset]));
+	get_page(page);
+	mutex_unlock(&mem_data->kctx->jit_evict_lock);
+
 	if (!(map->flags & KBASE_REG_CPU_CACHED))
 		prot = pgprot_writecombine(prot);
 
-	page = phys_to_page(as_phys_addr_t(map->alloc->pages[data->offset]));
 	mapping = vmap(&page, 1, VM_MAP, prot);
 	if (!mapping)
-		goto out;
+		goto out_put;
 
 	for (i = 0; i < PAGE_SIZE; i += 4*sizeof(*mapping)) {
 		seq_printf(m, "%016llx:", i + ((map->start_pfn +
@@ -143,6 +156,8 @@ static int debug_mem_show(struct seq_file *m, void *v)
 
 	seq_putc(m, '\n');
 
+out_put:
+	put_page(page);
 out:
 	kbase_gpu_vm_unlock(mem_data->kctx);
 	return 0;
