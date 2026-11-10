@@ -196,7 +196,7 @@ Notes:
 
 ### 7.2 SC2721 charger: steps 1 to 4 done (compile only), see SC2721_FGU_MAP.md
 
-Status: `sprd,sc2721-charger` match data and the CV override are in `sc2720_charger.c`, compile only; the register comparison and the parts left disabled (OVP value, ITERM, recharge, timers, fast charge) are in `SC2721_CHARGER_MAP.md`. Step 3 (gauge resync) and the DTS nodes are still open. The original plan follows.
+Status: `sprd,sc2721-charger` match data and the CV override are in `sc2720_charger.c`, compile only; the register comparison and the parts left disabled (OVP value, ITERM, recharge, timers, fast charge) are in `SC2721_CHARGER_MAP.md`. Gauge resync and the K18/DM63 DTS nodes were done on other branches (see `SC2721_FGU_MAP.md`, `devices/k18/DTS_414.md`, `devices/dm63/DTS_414.md`). Charge safety (overall timeout, recharge, OVP/CV interrupts; see `SC2721_CHARGER_MAP.md` section 5) was added on `kernel-4.14-charge-safety`. The original plan follows.
 
 #### Plan
 
