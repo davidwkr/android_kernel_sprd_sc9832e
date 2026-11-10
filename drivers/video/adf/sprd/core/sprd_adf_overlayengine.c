@@ -173,7 +173,7 @@ struct sprd_adf_overlay_engine *sprd_adf_create_overlay_engines(
 	return engs;
 
 error_out0:
-	for (; i >= 0; i--) {
+	while (i-- > 0) {
 		ADF_DEBUG_WARN("adf_overlay_engine_destroy index =%zd;\n", i);
 		adf_overlay_engine_destroy(&engs[i].base);
 	}
