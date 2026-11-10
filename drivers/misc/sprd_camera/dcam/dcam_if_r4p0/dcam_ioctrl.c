@@ -481,7 +481,7 @@ static int dcamio_get_dcam_res(struct camera_file *camerafile,
 	ret = sprd_dcam_module_en(idx);
 	if (unlikely(ret != 0)) {
 		pr_err("fail to enable dcam module %d\n", idx);
-		goto exit;
+		goto put_res;
 	}
 
 	if (group->mode_inited > 0) {
@@ -493,7 +493,8 @@ static int dcamio_get_dcam_res(struct camera_file *camerafile,
 		(enum isp_id)idx);
 	if (unlikely(ret != 0)) {
 		pr_err("fail to enable isp module %d\n", idx);
-		goto exit;
+		sprd_dcam_module_dis(idx);
+		goto put_res;
 	}
 	camerafile->idx = idx;
 	group->mode_inited |= 1 << idx;
@@ -510,6 +511,10 @@ static int dcamio_get_dcam_res(struct camera_file *camerafile,
 	}
 
 exit:
+	return ret;
+
+put_res:
+	sprd_img_put_res(group, &res);
 	return ret;
 }
 
@@ -832,6 +837,12 @@ static int dcamio_set_path_frame_deci(struct camera_file *camerafile,
 		ret = -EFAULT;
 		goto exit;
 	}
+	if (parm.channel_id >= CAMERA_MAX_PATH) {
+		pr_err("fail to get valid channel id, PATH_FRM_DECI %d\n",
+		       parm.channel_id);
+		ret = -EINVAL;
+		goto exit;
+	}
 	DCAM_TRACE("isp path channel id: %d frame deci: %d\n",
 		   parm.channel_id, parm.deci);
 	path = &info->dcam_path[parm.channel_id];
@@ -1057,6 +1068,12 @@ static int dcamio_set_shrink(struct camera_file *camerafile,
 	if (unlikely(ret)) {
 		pr_err("fail to get user info, SET_SHRINK\n");
 		ret = -EFAULT;
+		goto exit;
+	}
+	if (parm.channel_id >= CAMERA_MAX_PATH) {
+		pr_err("fail to get valid channel id, SET_SHRINK %d\n",
+		       parm.channel_id);
+		ret = -EINVAL;
 		goto exit;
 	}
 	path = &info->dcam_path[parm.channel_id];
