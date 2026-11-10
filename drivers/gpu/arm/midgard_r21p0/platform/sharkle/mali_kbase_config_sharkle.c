@@ -448,11 +448,27 @@ static inline int mali_clock_on(void)
 	udelay(300);
 
 	//set gpu clock parent
-	clk_set_parent(gpu_dfs_ctx.gpu_clock, gpu_dfs_ctx.freq_default->clk_src);
+	err = clk_set_parent(gpu_dfs_ctx.gpu_clock, gpu_dfs_ctx.freq_default->clk_src);
+	if (err)
+		goto err_gpu_clock;
 
 	KBASE_DEBUG_ASSERT(gpu_dfs_ctx.freq_cur);
-	clk_set_rate(gpu_dfs_ctx.freq_cur->clk_src, gpu_dfs_ctx.freq_cur->freq*1000);
-	clk_set_parent(gpu_dfs_ctx.gpu_clock, gpu_dfs_ctx.freq_cur->clk_src);
+	err = clk_set_rate(gpu_dfs_ctx.freq_cur->clk_src, gpu_dfs_ctx.freq_cur->freq*1000);
+	if (!err)
+		err = clk_set_parent(gpu_dfs_ctx.gpu_clock, gpu_dfs_ctx.freq_cur->clk_src);
+	if (err) {
+		/*
+		 * Stay on the default parent (the lowest-voltage OPP, so safe
+		 * at any recorded voltage) and record it, instead of running
+		 * a parent whose rate was not established.
+		 */
+		pr_err("mali: GPU clock restore to %d kHz failed (%d), using %d kHz\n",
+		       gpu_dfs_ctx.freq_cur->freq, err,
+		       gpu_dfs_ctx.freq_default->freq);
+		clk_set_parent(gpu_dfs_ctx.gpu_clock, gpu_dfs_ctx.freq_default->clk_src);
+		gpu_dfs_ctx.freq_cur = gpu_dfs_ctx.freq_default;
+		err = 0;
+	}
 	mali_set_div(gpu_dfs_ctx.freq_cur);
 
 #ifdef GPU_SUPPORT_QOS
@@ -464,6 +480,8 @@ static inline int mali_clock_on(void)
 
 	return 0;
 
+err_gpu_clock:
+	clk_disable_unprepare(gpu_dfs_ctx.gpu_clock);
 err_clock_i:
 	clk_disable_unprepare(gpu_dfs_ctx.gpu_clock_i);
 err_clk_src:
