@@ -412,6 +412,25 @@ static int scale_k_set_input_format(struct scale_drv_private *p)
 }
 
 
+/*
+ * Check that the user offsets plus the full Y/UV plane area accessed by
+ * the scaler stay inside the mapped buffer.
+ */
+static int scale_check_buffers(struct cpp_iommu_info *info,
+			       struct sprd_cpp_size *size,
+			       unsigned int format)
+{
+	unsigned long long area = (unsigned long long)size->w * size->h;
+	int ret;
+
+	ret = cpp_check_extent(info, 0, area);
+	if (ret)
+		return ret;
+
+	return cpp_check_extent(info, 1,
+			format == SCALE_YUV420 ? area / 2 : area);
+}
+
 static int scale_k_set_addr(struct scale_drv_private *p)
 {
 	int ret = 0;
@@ -456,6 +475,13 @@ static int scale_k_set_addr(struct scale_drv_private *p)
 			pr_err("fail to get cpp src addr\n");
 			return -1;
 		}
+		ret = scale_check_buffers(&p->iommu_src, &cfg_parm->input_size,
+					  cfg_parm->input_format);
+		if (ret) {
+			pr_err("fail to get valid src buffer\n");
+			cpp_free_addr(&p->iommu_src);
+			return ret;
+		}
 
 		ret = cpp_get_sg_table(&p->iommu_dst);
 		if (ret) {
@@ -470,6 +496,15 @@ static int scale_k_set_addr(struct scale_drv_private *p)
 		if (ret) {
 			pr_err("fail to get cpp dst addr\n");
 			cpp_free_addr(&p->iommu_src);
+			return ret;
+		}
+		ret = scale_check_buffers(&p->iommu_dst,
+					  &cfg_parm->output_size,
+					  cfg_parm->output_format);
+		if (ret) {
+			pr_err("fail to get valid dst buffer\n");
+			cpp_free_addr(&p->iommu_src);
+			cpp_free_addr(&p->iommu_dst);
 			return ret;
 		}
 

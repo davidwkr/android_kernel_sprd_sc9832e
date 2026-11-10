@@ -1005,20 +1005,28 @@ int sprd_sensor_write_reg(int sensor_id, struct sensor_reg_bits_tag *pReg)
 	return ret;
 }
 
+#define SPRD_SENSOR_REG_TAB_MAX_COUNT 0xffff
+
 int sprd_sensor_write_regtab(struct sensor_reg_tab_tag *p_reg_table,
 				int sensor_id)
 {
 	char *pBuff = NULL;
 	uint32_t cnt = p_reg_table->reg_count;
 	int ret = 0;
-	uint32_t size;
+	size_t size;
 	struct sensor_reg_tag *sensor_reg_ptr;
 	struct sensor_reg_bits_tag reg_bit;
 	uint32_t i;
 	struct timeval time1 = {0}, time2 = {0};
 	struct sprd_sensor_mem_tag p_mem = {0};
 
-	size = cnt * sizeof(*sensor_reg_ptr);
+	if (cnt > SPRD_SENSOR_REG_TAB_MAX_COUNT) {
+		pr_err("SENSOR: wr reg tab cnt %d too large\n", cnt);
+		ret = -EINVAL;
+		goto exit;
+	}
+
+	size = (size_t)cnt * sizeof(*sensor_reg_ptr);
 	ret = sprd_sensor_malloc(&p_mem, size);
 	if (ret) {
 		pr_err("SENSOR: wr reg tab alloc fail %d\n", ret);
@@ -1028,7 +1036,7 @@ int sprd_sensor_write_regtab(struct sensor_reg_tab_tag *p_reg_table,
 
 	ret = copy_from_user(pBuff, p_reg_table->sensor_reg_tab_ptr, size);
 	if (ret) {
-		pr_err("sensor w err:copy user fail, size %d\n", size);
+		pr_err("sensor w err:copy user fail, size %zu\n", size);
 		goto exit;
 	}
 
@@ -1069,14 +1077,20 @@ int sprd_sensor_k_write_regtab(struct sensor_reg_tab_tag *p_reg_table,
 	char *pBuff = NULL;
 	uint32_t cnt = p_reg_table->reg_count;
 	int ret = 0;
-	uint32_t size;
+	size_t size;
 	struct sensor_reg_tag *sensor_reg_ptr;
 	struct sensor_reg_bits_tag reg_bit;
 	uint32_t i;
 	struct timeval time1 = {0}, time2 = {0};
 	struct sprd_sensor_mem_tag p_mem = {0};
 
-	size = cnt * sizeof(*sensor_reg_ptr);
+	if (cnt > SPRD_SENSOR_REG_TAB_MAX_COUNT) {
+		pr_err("SENSOR: wr reg tab cnt %d too large\n", cnt);
+		ret = -EINVAL;
+		goto exit;
+	}
+
+	size = (size_t)cnt * sizeof(*sensor_reg_ptr);
 	ret = sprd_sensor_malloc(&p_mem, size);
 	if (ret) {
 		pr_err("SENSOR: wr reg tab alloc fail %d\n", ret);
@@ -1248,6 +1262,11 @@ int sprd_sensor_write_i2c(struct sensor_i2c_tag *i2c_tab,
 		return -EINVAL;
 	}
 
+	if (cnt > sizeof(cmd)) {
+		pr_err("SENSOR: w i2c err, cnt %d too large\n", cnt);
+		return -EINVAL;
+	}
+
 	ret = copy_from_user(cmd, i2c_tab->i2c_data, cnt);
 
 	if (ret) {
@@ -1293,6 +1312,13 @@ int sprd_sensor_write_muti_i2c(struct sensor_muti_aec_i2c_tag *muti_aec_i2c)
 	struct sensor_reg_tag ssettings[AEC_I2C_SETTINGS_MAX];
 	struct sensor_reg_bits_tag reg_bit;
 	uint32_t i;
+
+	if (muti_aec_i2c->msize > AEC_I2C_SETTINGS_MAX ||
+		muti_aec_i2c->ssize > AEC_I2C_SETTINGS_MAX) {
+		pr_err("fail to check msize/ssize %d %d\n",
+			muti_aec_i2c->msize, muti_aec_i2c->ssize);
+		return -EINVAL;
+	}
 
 	ret = copy_from_user(sensor_id,
 			muti_aec_i2c->sensor_id,
@@ -1396,6 +1422,10 @@ int sprd_sensor_read_i2c(struct sensor_i2c_tag *i2c_tab,
 	p_dev = sprd_sensor_get_dev_context(sensor_id);
 	if (!p_dev) {
 		pr_err("%s, error\n", __func__);
+		return -EINVAL;
+	}
+	if (cnt > sizeof(cmd)) {
+		pr_err("SENSOR: r i2c err, cnt %d too large\n", cnt);
 		return -EINVAL;
 	}
 	ret = copy_from_user(cmd, i2c_tab->i2c_data, cnt);
