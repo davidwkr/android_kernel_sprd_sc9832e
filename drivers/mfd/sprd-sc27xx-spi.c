@@ -124,6 +124,10 @@ static const struct mfd_cell sprd_pmic_devs[] = {
 		.name = "sc27xx-bltc",
 		.of_compatible = "sprd,sc27xx-bltc",
 	}, {
+		/* SC2721 RGB LED as the LCD backlight (MT108) */
+		.name = "sc2721-bltc-rgb",
+		.of_compatible = "sprd,sc2721-bltc-rgb",
+	}, {
 		.name = "sc27xx-fgu",
 		.of_compatible = "sprd,sc27xx-fgu",
 	}, {

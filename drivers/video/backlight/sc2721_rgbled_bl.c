@@ -38,6 +38,7 @@ static void sc2721_rgbled_off(struct sc2721_rgbled_bl *bl)
 	regmap_update_bits(bl->regmap, SC2721_RTC_CLK_EN0,
 			   SC2721_RTC_BLTC_EN, 0);
 	regmap_update_bits(bl->regmap, SC2721_MODULE_EN0, SC2721_BLTC_EN, 0);
+	bl->led_level = 0;
 }
 
 static void sc2721_rgbled_set_level(struct sc2721_rgbled_bl *bl, u32 level)
@@ -123,6 +124,18 @@ static int sc2721_rgbled_probe(struct platform_device *pdev)
 	return 0;
 }
 
+static int sc2721_rgbled_remove(struct platform_device *pdev)
+{
+	struct backlight_device *bd = platform_get_drvdata(pdev);
+
+	/* off through the core, so a late brightness write keeps it off */
+	bd->props.power = FB_BLANK_POWERDOWN;
+	bd->props.brightness = 0;
+	backlight_update_status(bd);
+
+	return 0;
+}
+
 static void sc2721_rgbled_shutdown(struct platform_device *pdev)
 {
 	struct backlight_device *bd = platform_get_drvdata(pdev);
@@ -167,6 +180,7 @@ static struct platform_driver sc2721_rgbled_driver = {
 		.of_match_table	= sc2721_rgbled_of_match,
 	},
 	.probe		= sc2721_rgbled_probe,
+	.remove		= sc2721_rgbled_remove,
 	.shutdown	= sc2721_rgbled_shutdown,
 };
 module_platform_driver(sc2721_rgbled_driver);
