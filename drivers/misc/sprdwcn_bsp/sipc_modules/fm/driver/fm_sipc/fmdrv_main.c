@@ -407,6 +407,8 @@ ssize_t fm_read_rds_data(struct file *filp, char __user *buf,
 		rds_debug_data.rt_data.textlength =
 			strlen(rds_debug_data.rt_data.textdata[3]);
 
+	if (count < sizeof(rds_debug_data))
+		return -EINVAL;
 	if (copy_to_user(buf, &(rds_debug_data), sizeof(rds_debug_data))) {
 		pr_err("fm_read_rds_data ret value is -eFAULT\n");
 		return -EFAULT;
@@ -420,8 +422,12 @@ ssize_t fm_read_rds_data(struct file *filp, char __user *buf,
 		return -EWOULDBLOCK;
 	}
 
+	/* the whole structure or nothing: count is the caller's buffer */
+	if (count < sizeof(fmdev->rds_data))
+		return -EINVAL;
 	fmdev->rds_data.rt_data.textlength =
-		strlen(fmdev->rds_data.rt_data.textdata[3]);
+		strnlen(fmdev->rds_data.rt_data.textdata[3],
+			sizeof(fmdev->rds_data.rt_data.textdata[3]));
 	pr_info("fm RT len is %d\n", fmdev->rds_data.rt_data.textlength);
 	if (copy_to_user(buf, &(fmdev->rds_data), sizeof(fmdev->rds_data))) {
 		pr_info("fm_read_rds_data ret value is -eFAULT\n");

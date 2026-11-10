@@ -25,16 +25,34 @@ static const uint8_t preamble_sizes[] = {
 
 static struct packet_receive_data_t *rd;
 
+/*
+ * Allocates the parser once (driver lifetime, freed by sitm_cleanup());
+ * later calls reset it to an empty fifo and a new frame. Callers
+ * serialize this with sitm_write().
+ */
 int sitm_ini(void)
 {
-	rd = kmalloc(sizeof(struct packet_receive_data_t),
-		GFP_KERNEL);
-	if(NULL == rd)
+	struct kfifo fifo;
+
+	if (rd) {
+		fifo = rd->fifo;
+		kfifo_reset(&fifo);
+		memset(rd, 0, sizeof(*rd));
+		rd->fifo = fifo;
+		return 0;
+	}
+
+	rd = kzalloc(sizeof(struct packet_receive_data_t), GFP_KERNEL);
+	if (!rd) {
 		pr_err("no memory for packet_receive_data_t");
-	memset(rd, 0, sizeof(struct packet_receive_data_t));
+		return -ENOMEM;
+	}
 	if (kfifo_alloc(&rd->fifo,
 		HCI_HAL_SERIAL_BUFFER_SIZE, GFP_KERNEL)) {
 		pr_err("no memory for sitm ring buf");
+		kfree(rd);
+		rd = NULL;
+		return -ENOMEM;
 	}
 	return 0;
 }
