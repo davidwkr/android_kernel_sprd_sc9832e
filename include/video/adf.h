@@ -240,7 +240,9 @@ struct adf_device_quirks {
  *	creates an sw_sync fence.  Return the sync fence on success or a
  *	PTR_ERR() on failure.
  * @post: flip @cfg onto the screen.  Wait for the display to begin scanning out
- *	@cfg before returning.
+ *	@cfg before returning.  Return 0 on success or error code (<0) on
+ *	failure; on failure, ADF will NOT treat @cfg as onscreen and will keep
+ *	the previously onscreen configuration's mappings intact.
  * @advance_timeline: signal the sync fence for the last configuration to leave
  *	the display.  If unimplemented, ADF automatically advances an sw_sync
  *	timeline.
@@ -275,7 +277,7 @@ struct adf_device_ops {
 	struct dma_fence *(*release_fence)(struct adf_device *dev,
 			struct adf_post *cfg, void *driver_state);
 	/* required */
-	void (*post)(struct adf_device *dev, struct adf_post *cfg,
+	int (*post)(struct adf_device *dev, struct adf_post *cfg,
 			void *driver_state);
 	/* required if complete_fence is implemented */
 	void (*advance_timeline)(struct adf_device *dev,
@@ -324,6 +326,14 @@ struct adf_device {
 	 * adf_fence.c.
 	 */
 	struct adf_sw_timeline *sw_timeline;
+
+	/*
+	 * Protects has_signaled against the race between adf_post_work_func()
+	 * (process context) and adf_post_timeline_signaled() (may be called
+	 * from IRQ context by a driver) both checking/clearing it for the
+	 * same post.
+	 */
+	spinlock_t signal_lock;
 	int has_signaled;
 };
 

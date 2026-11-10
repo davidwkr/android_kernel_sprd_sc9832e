@@ -100,11 +100,24 @@ void adf_post_cleanup(struct adf_device *dev, struct adf_pending_post *post)
 
 void adf_post_timeline_signaled(struct adf_device *dev)
 {
-	/*only can signal once*/
-	if (dev->has_signaled)
-		return;
+	unsigned long flags;
+	bool need_advance;
+
+	/*
+	 * May run from IRQ context, racing adf_post_work_func()'s own
+	 * check-and-clear of has_signaled for the same post; guard both with
+	 * the same lock so exactly one side advances the timeline. The
+	 * actual advance happens outside the lock, since
+	 * adf_sw_advance_timeline() takes the (different) sw timeline lock
+	 * itself.
+	 */
+	spin_lock_irqsave(&dev->signal_lock, flags);
+	need_advance = !dev->has_signaled;
 	dev->has_signaled = true;
-	adf_sw_advance_timeline(dev);
+	spin_unlock_irqrestore(&dev->signal_lock, flags);
+
+	if (need_advance)
+		adf_sw_advance_timeline(dev);
 }
 
 EXPORT_SYMBOL(adf_post_timeline_signaled);
@@ -123,6 +136,9 @@ static void adf_post_work_func(struct kthread_work *work)
 
 	list_for_each_entry_safe(post, next, &saved_list, head) {
 		int i;
+		int err;
+		unsigned long flags;
+		bool already_signaled;
 
 		for (i = 0; i < post->config.n_bufs; i++) {
 			struct dma_fence *fence =
@@ -131,11 +147,14 @@ static void adf_post_work_func(struct kthread_work *work)
 				adf_fence_wait(dev, fence);
 		}
 
-		dev->ops->post(dev, &post->config, post->state);
+		err = dev->ops->post(dev, &post->config, post->state);
 
-		if (dev->has_signaled)
-			dev->has_signaled = false;
-		else {
+		spin_lock_irqsave(&dev->signal_lock, flags);
+		already_signaled = dev->has_signaled;
+		dev->has_signaled = false;
+		spin_unlock_irqrestore(&dev->signal_lock, flags);
+
+		if (!already_signaled) {
 			if (dev->ops->advance_timeline)
 				dev->ops->advance_timeline(dev, &post->config,
 						post->state);
@@ -144,6 +163,19 @@ static void adf_post_work_func(struct kthread_work *work)
 		}
 
 		list_del(&post->head);
+
+		if (err < 0) {
+			/*
+			 * The hardware never switched to this post: free its
+			 * own (never-displayed) resources, but leave the
+			 * previously onscreen post and its mappings alone,
+			 * since the display is still showing it.
+			 */
+			dev_err(&dev->base.dev, "flip failed: %d\n", err);
+			adf_post_cleanup(dev, post);
+			continue;
+		}
+
 		if (dev->onscreen)
 			adf_post_cleanup(dev, dev->onscreen);
 		dev->onscreen = post;
@@ -559,6 +591,7 @@ int adf_device_init(struct adf_device *dev, struct device *parent,
 	kthread_init_worker(&dev->post_worker);
 	INIT_LIST_HEAD(&dev->attached);
 	INIT_LIST_HEAD(&dev->attach_allowed);
+	spin_lock_init(&dev->signal_lock);
 	ret = adf_sw_fence_timeline_init(dev);
 	if (ret < 0)
 		goto err;

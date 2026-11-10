@@ -312,8 +312,9 @@ err_out:
  * @driver_data: restruct custom data
  *
  * sprd_adf_device_post() will map buf to iommu and wait flip done.
+ * Returns 0 on success or error code (<0) on failure.
  */
-static void sprd_adf_device_post(struct adf_device *dev, struct adf_post *post,
+static int sprd_adf_device_post(struct adf_device *dev, struct adf_post *post,
 				 void *driver_data)
 {
 	struct sprd_restruct_config *config;
@@ -326,24 +327,24 @@ static void sprd_adf_device_post(struct adf_device *dev, struct adf_post *post,
 
 	if (!dev) {
 		ADF_DEBUG_WARN("parameter dev is ilegal\n");
-		goto err_out;
+		return -EINVAL;
 	}
 
 	if (!post) {
 		ADF_DEBUG_WARN("parameter post is ilegal\n");
-		goto err_out;
+		return -EINVAL;
 	}
 
 	if (!driver_data) {
 		ADF_DEBUG_WARN("parameter driver_data is ilegal\n");
-		goto err_out;
+		return -EINVAL;
 	}
 
 	sprd_adf_dev = to_sprd_adf_device(dev);
 	config = (struct sprd_restruct_config *)driver_data;
 	if (!config) {
 		ADF_DEBUG_WARN("config state data error\n");
-		goto err_out;
+		return -EINVAL;
 	}
 	sprd_adf_flip_plane(sprd_adf_dev, config);
 	sprd_adf_wait_flip_done(sprd_adf_dev);
@@ -362,8 +363,7 @@ static void sprd_adf_device_post(struct adf_device *dev, struct adf_post *post,
 		last_time = current_time;
 	}
 
-err_out:
-	return;
+	return 0;
 }
 
 /**
