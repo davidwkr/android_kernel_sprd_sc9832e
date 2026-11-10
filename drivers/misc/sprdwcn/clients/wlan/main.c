@@ -68,19 +68,20 @@ static char *sprdwl_copy_priv_cmd(struct ifreq *ifr,
 	return command;
 }
 
-static void str2mac(const char *mac_addr, u8 *mac)
+/* 0, or -EINVAL unless all six octets parse */
+static int str2mac(const char *mac_addr, u8 *mac)
 {
 	unsigned int m[ETH_ALEN] = {0};
+	int i;
 
 	if (sscanf(mac_addr, "%02x:%02x:%02x:%02x:%02x:%02x",
-		   &m[0], &m[1], &m[2], &m[3], &m[4], &m[5]) != ETH_ALEN)
+		   &m[0], &m[1], &m[2], &m[3], &m[4], &m[5]) != ETH_ALEN) {
 		pr_err("failed to parse mac address '%s'", mac_addr);
-	mac[0] = m[0];
-	mac[1] = m[1];
-	mac[2] = m[2];
-	mac[3] = m[3];
-	mac[4] = m[4];
-	mac[5] = m[5];
+		return -EINVAL;
+	}
+	for (i = 0; i < ETH_ALEN; i++)
+		mac[i] = m[i];
+	return 0;
 }
 
 void sprdwl_netif_rx(struct sk_buff *skb, struct net_device *ndev)
@@ -326,36 +327,44 @@ static int sprdwl_priv_cmd(struct net_device *ndev, struct ifreq *ifr)
 	if (!strncasecmp(command, CMD_BLACKLIST_ENABLE,
 			 strlen(CMD_BLACKLIST_ENABLE))) {
 		skip = strlen(CMD_BLACKLIST_ENABLE) + 1;
-		str2mac(command + skip, addr);
-		if (!is_valid_ether_addr(addr))
+		if (str2mac(command + skip, addr) ||
+		    !is_valid_ether_addr(addr)) {
+			ret = -EINVAL;
 			goto out;
+		}
 		netdev_info(ndev, "%s: block %pM\n", __func__, addr);
 		ret = sprdwl_set_blacklist(priv, vif->mode,
 					   SPRDWL_SUBCMD_ADD, 1, addr);
 	} else if (!strncasecmp(command, CMD_BLACKLIST_DISABLE,
 				strlen(CMD_BLACKLIST_DISABLE))) {
 		skip = strlen(CMD_BLACKLIST_DISABLE) + 1;
-		str2mac(command + skip, addr);
-		if (!is_valid_ether_addr(addr))
+		if (str2mac(command + skip, addr) ||
+		    !is_valid_ether_addr(addr)) {
+			ret = -EINVAL;
 			goto out;
+		}
 		netdev_info(ndev, "%s: unblock %pM\n", __func__, addr);
 		ret = sprdwl_set_blacklist(priv, vif->mode,
 					   SPRDWL_SUBCMD_DEL, 1, addr);
 	} else if (!strncasecmp(command, CMD_ADD_WHITELIST,
 				strlen(CMD_ADD_WHITELIST))) {
 		skip = strlen(CMD_ADD_WHITELIST) + 1;
-		str2mac(command + skip, addr);
-		if (!is_valid_ether_addr(addr))
+		if (str2mac(command + skip, addr) ||
+		    !is_valid_ether_addr(addr)) {
+			ret = -EINVAL;
 			goto out;
+		}
 		netdev_info(ndev, "%s: add whitelist %pM\n", __func__, addr);
 		ret = sprdwl_set_whitelist(priv, vif->mode,
 					   SPRDWL_SUBCMD_ADD, 1, addr);
 	} else if (!strncasecmp(command, CMD_DEL_WHITELIST,
 				strlen(CMD_DEL_WHITELIST))) {
 		skip = strlen(CMD_DEL_WHITELIST) + 1;
-		str2mac(command + skip, addr);
-		if (!is_valid_ether_addr(addr))
+		if (str2mac(command + skip, addr) ||
+		    !is_valid_ether_addr(addr)) {
+			ret = -EINVAL;
 			goto out;
+		}
 		netdev_info(ndev, "%s: delete whitelist %pM\n", __func__, addr);
 		ret = sprdwl_set_whitelist(priv, vif->mode,
 					   SPRDWL_SUBCMD_DEL, 1, addr);
@@ -385,8 +394,8 @@ static int sprdwl_priv_cmd(struct net_device *ndev, struct ifreq *ifr)
 
 		tmp = command + skip + 1;
 		for (index = 0; index < counter; index++) {
-			str2mac(tmp, mac_addr);
-			if (!is_valid_ether_addr(mac_addr)) {
+			if (str2mac(tmp, mac_addr) ||
+			    !is_valid_ether_addr(mac_addr)) {
 				kfree(mac_list);
 				ret = -EINVAL;
 				goto out;
@@ -426,8 +435,8 @@ static int sprdwl_priv_cmd(struct net_device *ndev, struct ifreq *ifr)
 
 		tmp = command + skip + 1;
 		for (index = 0; index < counter; index++) {
-			str2mac(tmp, mac_addr);
-			if (!is_valid_ether_addr(mac_addr)) {
+			if (str2mac(tmp, mac_addr) ||
+			    !is_valid_ether_addr(mac_addr)) {
 				kfree(mac_list);
 				ret = -EINVAL;
 				goto out;
@@ -444,7 +453,8 @@ static int sprdwl_priv_cmd(struct net_device *ndev, struct ifreq *ifr)
 	} else if (!strncasecmp(command, CMD_11V_GET_CFG,
 				strlen(CMD_11V_GET_CFG))) {
 		/* deflaut CP support all featrue */
-		if (priv_cmd.total_len < (strlen(CMD_11V_GET_CFG) + 4)) {
+		/* "<cmd> <u8>" and its terminator */
+		if (priv_cmd.total_len < (strlen(CMD_11V_GET_CFG) + 5)) {
 			ret = -ENOMEM;
 			goto out;
 		}
@@ -452,7 +462,8 @@ static int sprdwl_priv_cmd(struct net_device *ndev, struct ifreq *ifr)
 		if (priv->fw_std & SPRDWL_STD_11V)
 			feat = priv->wnm_ft_support;
 
-		sprintf(command, "%s %d", CMD_11V_GET_CFG, feat);
+		snprintf(command, priv_cmd.total_len, "%s %d",
+			 CMD_11V_GET_CFG, feat);
 		netdev_info(ndev, "%s: get 11v feat\n", __func__);
 		if (copy_to_user(priv_cmd.buf, command, priv_cmd.total_len)) {
 			netdev_err(ndev, "%s: get 11v copy failed\n", __func__);
@@ -797,14 +808,13 @@ static int sprdwl_get_mac_from_file(struct sprdwl_vif *vif, u8 *addr)
 	set_fs(KERNEL_DS);
 
 	pos = &fp->f_pos;
-	vfs_read(fp, buf, sizeof(buf), pos);
+	/* keep a terminator for str2mac() */
+	vfs_read(fp, buf, sizeof(buf) - 1, pos);
 
 	filp_close(fp, NULL);
 	set_fs(fs);
 
-	str2mac(buf, addr);
-
-	if (!is_valid_ether_addr(addr)) {
+	if (str2mac(buf, addr) || !is_valid_ether_addr(addr)) {
 		netdev_err(vif->ndev, "%s invalid MAC address (%pM)\n",
 			   __func__, addr);
 		return -EINVAL;

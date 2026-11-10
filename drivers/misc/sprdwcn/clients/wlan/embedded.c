@@ -31,8 +31,8 @@ int sprdwl_handle_cmd(struct net_device *ndev, struct ifreq *ifr)
 		return -EINVAL;
 	if (copy_from_user(&priv_cmd, ifr->ifr_data, sizeof(priv_cmd)))
 		return -EINVAL;
-	/* subtype, a u16 and the largest argument (an int) are read below */
-	if (priv_cmd.total_len < 2 * sizeof(unsigned short) + sizeof(int) ||
+	/* subtype and a u16, then the argument: char (4) or int (5) */
+	if (priv_cmd.total_len < 2 * sizeof(unsigned short) + sizeof(char) ||
 	    priv_cmd.total_len > SPRDWL_MAX_CMD_TXLEN)
 		return -EINVAL;
 
@@ -45,7 +45,10 @@ int sprdwl_handle_cmd(struct net_device *ndev, struct ifreq *ifr)
 	}
 
 	subtype = *(unsigned short *)command;
-	if (subtype == 5) {
+	if (subtype == 5 &&
+	    priv_cmd.total_len < 2 * sizeof(unsigned short) + sizeof(int)) {
+		ret = -EINVAL;
+	} else if (subtype == 5) {
 	value = *((int *)(command + 2 * sizeof(unsigned short)));
 	netdev_info(ndev, "%s: set miracast value : %d\n",
 		__func__, value);
