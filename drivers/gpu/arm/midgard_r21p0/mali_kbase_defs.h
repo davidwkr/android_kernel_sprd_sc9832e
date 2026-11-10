@@ -1443,6 +1443,14 @@ struct kbase_context {
 	 * All other flags must be added there */
 	spinlock_t         mm_update_lock;
 	struct mm_struct *process_mm;
+	/* Number of live tracking VMAs referencing process_mm. Normally 1,
+	 * but mremap() can duplicate the tracking VMA (open the moved copy
+	 * before closing the original) without going through
+	 * kbase_tracking_page_setup(), so the accounting drain in
+	 * kbase_special_vm_close() must wait for the last of them to close
+	 * rather than firing on every close (CVE-2023-4211 variant).
+	 */
+	atomic_t process_mm_vm_count;
 	/* End of the SAME_VA zone */
 	u64 same_va_end;
 

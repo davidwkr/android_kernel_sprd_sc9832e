@@ -2607,6 +2607,18 @@ static void kbasep_os_process_page_usage_drain(struct kbase_context *kctx)
 	add_mm_counter(mm, MM_FILEPAGES, -pages);
 	spin_unlock(&mm->page_table_lock);
 #endif
+	/* Matches the mm_count reference taken alongside process_mm in
+	 * kbase_tracking_page_setup(), held until now so mm cannot be freed
+	 * out from under the add_mm_counter() accesses above.
+	 */
+	mmdrop(mm);
+}
+
+static void kbase_special_vm_open(struct vm_area_struct *vma)
+{
+	struct kbase_context *kctx = vma->vm_private_data;
+
+	atomic_inc(&kctx->process_mm_vm_count);
 }
 
 static void kbase_special_vm_close(struct vm_area_struct *vma)
@@ -2614,10 +2626,20 @@ static void kbase_special_vm_close(struct vm_area_struct *vma)
 	struct kbase_context *kctx;
 
 	kctx = vma->vm_private_data;
-	kbasep_os_process_page_usage_drain(kctx);
+
+	/* mremap() can duplicate this VMA (open the moved copy before
+	 * closing the original) without going through
+	 * kbase_tracking_page_setup(). Only drain once the last copy
+	 * closes, otherwise the still-live moved VMA is left pointing at a
+	 * process_mm that has already been cleared and potentially handed
+	 * to a different context's tracking page.
+	 */
+	if (atomic_dec_and_test(&kctx->process_mm_vm_count))
+		kbasep_os_process_page_usage_drain(kctx);
 }
 
 static const struct vm_operations_struct kbase_vm_special_ops = {
+	.open = kbase_special_vm_open,
 	.close = kbase_special_vm_close,
 };
 
@@ -2644,6 +2666,14 @@ static int kbase_tracking_page_setup(struct kbase_context *kctx, struct vm_area_
 	}
 
 	rcu_assign_pointer(kctx->process_mm, current->mm);
+	/*
+	 * Take an explicit reference on the mm_struct for as long as
+	 * tracking is installed, so kbasep_os_process_page_usage_drain()
+	 * can safely touch it even if the owning process has otherwise
+	 * already exited by the time the last tracking VMA closes.
+	 */
+	atomic_inc(&current->mm->mm_count);
+	atomic_set(&kctx->process_mm_vm_count, 1);
 
 	spin_unlock(&kctx->mm_update_lock);
 
