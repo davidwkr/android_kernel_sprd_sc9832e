@@ -2721,19 +2721,12 @@ void kbase_unmap_external_resource(struct kbase_context *kctx,
 						reg->start_pfn,
 						kbase_reg_current_backed_size(reg));
 
-				/* Userspace can CPU-mmap this region's GPU VA
-				 * directly (it is not rejected by kbase_mmap()),
-				 * which hands out PFNs pointing at these pinned
-				 * pages. Zap any such mappings before the pages
-				 * are unpinned below, so they cannot be left
-				 * referencing memory the kernel has released
-				 * back to the general page allocator
+				/* kbase_mmap() refuses to CPU-map an imported
+				 * user buffer's GPU VA, so there is no CPU PTE
+				 * mapping of these pages to invalidate here
+				 * before they are unpinned below
 				 * (CVE-2022-36449).
 				 */
-				unmap_mapping_range(kctx->filp->f_inode->i_mapping,
-						reg->start_pfn << PAGE_SHIFT,
-						kbase_reg_current_backed_size(reg) << PAGE_SHIFT,
-						1);
 			}
 
 			if (reg && ((reg->flags & (KBASE_REG_CPU_WR |

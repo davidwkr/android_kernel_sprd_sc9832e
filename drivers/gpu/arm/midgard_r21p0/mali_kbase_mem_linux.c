@@ -2334,6 +2334,27 @@ int kbase_mmap(struct file *file, struct vm_area_struct *vma)
 			}
 #endif /* CONFIG_DMA_SHARED_BUFFER */
 
+			/*
+			 * An imported user buffer's pages are GUP-pinned only
+			 * for as long as current_mapping_usage_count is
+			 * non-zero, and are unpinned (put_page()'d back to the
+			 * general page allocator) as soon as it drops to zero
+			 * through any of several unpin paths, including ones
+			 * that do not go through this fd's external-resource
+			 * tracking. A second CPU mapping of the same GPU VA
+			 * handed out here would keep pointing at those PFNs
+			 * after they are unpinned and potentially reused,
+			 * giving userspace CPU access to unrelated memory
+			 * (CVE-2022-36449). Rather than try to invalidate every
+			 * such mapping on every unpin path, simply refuse to
+			 * create one in the first place.
+			 */
+			if (KBASE_MEM_TYPE_IMPORTED_USER_BUF ==
+							reg->cpu_alloc->type) {
+				err = -EINVAL;
+				goto out_unlock;
+			}
+
 			/* limit what we map to the amount currently backed */
 			if (reg->cpu_alloc->nents < (vma->vm_pgoff - reg->start_pfn + nr_pages)) {
 				if ((vma->vm_pgoff - reg->start_pfn) >= reg->cpu_alloc->nents)
