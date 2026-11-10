@@ -17,3 +17,12 @@ CONFIG_FUEL_GAUGE_SC27XX=y
 # DM63 display: the CO5300 panel driver needs a "power" supply, the board
 # DTS gives it a fixed regulator without enable gpio (sprd,generic-mipi-panel).
 CONFIG_REGULATOR_FIXED_VOLTAGE=y
+
+# Thermal protection. cpu_thm/gpu_thm (sprd,sharkle-thermal, nvmem calibration
+# cells already in sharkle.dtsi) and the IPA cluster0-cooling path used by the
+# cpu-thmzone cooling-map in sp9832e-mach.dtsi (SPRD_CPU_COOLING,
+# SPRD_CPU_COOLING_DEVICE, SPRD_DEDICATE_THERMAL, GENERIC_ADC_THERMAL for the
+# board NTC, THERMAL_GOV_POWER_ALLOCATOR) are all already on in
+# sprd_sharkle_defconfig; only the sensor driver itself was off. See
+# devices/THERMAL_414.md.
+CONFIG_SPRD_THERMAL=y
