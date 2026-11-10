@@ -289,6 +289,16 @@ static inline int mali_freq_init(struct device *dev)
 		int clk = 0;
 
 		of_property_read_u32_index(dev->of_node, "sprd,dfs-lists", 4*i+2, &clk);
+		/* absolute index into "clocks": a parent, after gate and mux */
+		if (clk < DTS_CLK_OFFSET ||
+		    clk - DTS_CLK_OFFSET >= gpu_dfs_ctx.gpu_clk_num) {
+			dev_err(dev, "sprd,dfs-lists entry %d: bad clock index %d\n",
+				i, clk);
+			err = -EINVAL;
+			vfree(gpu_dfs_ctx.freq_list);
+			gpu_dfs_ctx.freq_list = NULL;
+			goto err_clk_src;
+		}
 		gpu_dfs_ctx.freq_list[i].clk_src = gpu_dfs_ctx.gpu_clk_src[clk-DTS_CLK_OFFSET];
 		KBASE_DEBUG_ASSERT(gpu_dfs_ctx.freq_list[i].clk_src);
 		of_property_read_u32_index(dev->of_node, "sprd,dfs-lists", 4*i, &gpu_dfs_ctx.freq_list[i].freq);
