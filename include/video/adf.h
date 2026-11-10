@@ -40,6 +40,7 @@ struct adf_interface;
 struct adf_interface_ops;
 struct adf_overlay_engine;
 struct adf_overlay_engine_ops;
+struct adf_sw_timeline;
 
 /**
  * struct adf_buffer - buffer displayed by adf_post
@@ -316,17 +317,13 @@ struct adf_device {
 	/*
 	 * Software completion-fence timeline, replacing the 4.4-era
 	 * drivers/staging/android sw_sync timeline (removed upstream, no
-	 * longer available as a kernel API in 4.14). timeline_max is the
-	 * next fence target to hand out; timeline_cur is the watermark
-	 * advanced once per completed post. A fence signals once
-	 * timeline_cur reaches the target it was created with. See
+	 * longer available as a kernel API in 4.14). The timeline object is
+	 * reference-counted separately from adf_device: fences handed to
+	 * userspace may outlive adf_device_destroy(), and each keeps the
+	 * timeline (its name and lock) alive via its own reference. See
 	 * adf_fence.c.
 	 */
-	u64 fence_context;
-	unsigned int timeline_max;
-	unsigned int timeline_cur;
-	spinlock_t sw_fence_lock;
-	struct list_head sw_fence_pending;
+	struct adf_sw_timeline *sw_timeline;
 	int has_signaled;
 };
 

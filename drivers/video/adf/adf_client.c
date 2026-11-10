@@ -329,13 +329,23 @@ done:
 }
 
 /* adf_sw_complete_fence() itself now lives in adf_fence.c, built on
- * dma_fence/sync_file; its signature and timeline semantics are
- * unchanged, so no caller below needs to change. */
+ * dma_fence/sync_file. */
 
 static struct dma_fence *adf_complete_fence(struct adf_device *dev,
 		struct adf_pending_post *cfg,
 		enum adf_complete_fence_type complete_fence_type)
 {
+	/*
+	 * Reserve this post's own sequence number up front, independently of
+	 * whether it ends up requesting a fence at all: adf_post_work_func()
+	 * advances the sw timeline by one for every post it processes
+	 * (whenever the driver does not implement advance_timeline itself),
+	 * so timeline_max must stay in lock-step with that, or else a later
+	 * post's fence target can already be <= timeline_cur and fire before
+	 * its buffer is ever displayed.
+	 */
+	unsigned int seq = adf_sw_fence_reserve(dev);
+
 	switch (complete_fence_type) {
 	case ADF_COMPLETE_FENCE_NONE:
 		return NULL;
@@ -344,13 +354,13 @@ static struct dma_fence *adf_complete_fence(struct adf_device *dev,
 		if (dev->ops->present_fence)
 			return dev->ops->present_fence(dev, &cfg->config,
 					cfg->state);
-		return adf_sw_complete_fence(dev, 0);
+		return adf_sw_complete_fence(dev, seq);
 
 	case ADF_COMPLETE_FENCE_RELEASE:
 		if (dev->ops->release_fence)
 			return dev->ops->release_fence(dev, &cfg->config,
 					cfg->state);
-		return adf_sw_complete_fence(dev, 1);
+		return adf_sw_complete_fence(dev, seq + 1);
 
 	default:
 		BUG();

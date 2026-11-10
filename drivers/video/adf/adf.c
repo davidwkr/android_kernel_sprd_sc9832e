@@ -559,7 +559,9 @@ int adf_device_init(struct adf_device *dev, struct device *parent,
 	kthread_init_worker(&dev->post_worker);
 	INIT_LIST_HEAD(&dev->attached);
 	INIT_LIST_HEAD(&dev->attach_allowed);
-	adf_sw_fence_timeline_init(dev);
+	ret = adf_sw_fence_timeline_init(dev);
+	if (ret < 0)
+		goto err;
 
 	dev->post_thread = kthread_run(kthread_worker_fn,
 			&dev->post_worker, dev->base.name);
