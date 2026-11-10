@@ -45,7 +45,13 @@ LIST_HEAD(dispc_enc_head);
 
 static unsigned long logo_base_from_uboot;
 static uint32_t logo_bpix_form_uboot;
-struct sprd_restruct_config *config_saved;
+/*
+ * No layers: what the display shows before the first frame and after a
+ * frame is rejected, so it stops fetching from buffers the ADF core is
+ * about to release.
+ */
+static struct sprd_restruct_config blank_config;
+struct sprd_restruct_config *config_saved = &blank_config;
 
 static int __init logo_base_get(char *str)
 {
@@ -695,18 +701,24 @@ static int32_t sprd_dispc_flip(struct sprd_dispc *dispc,
 
 	down(&ctx->refresh_lock);
 
-	config_saved = config;
+	/*
+	 * config_saved is what sprd_dispc_refresh_restore() programs again.
+	 * It must only point at a mapped config: the ADF core retires the
+	 * previous post (and config_saved with it) as soon as this returns.
+	 */
 	if (!ctx->is_inited) {
 		pr_err("dispc is not initialized!\n");
+		config_saved = &blank_config;
 		up(&ctx->refresh_lock);
 		return -1;
 	}
 
 	/*
 	 * do iommu map when buffer is not reserved memory. If a layer fails,
-	 * unmap the ones mapped for this frame and do not flip it: the
-	 * hardware would fetch from unmapped or raw-offset addresses. The
-	 * 4.4 ADF core cannot be told, so the display keeps the old frame.
+	 * unmap the ones mapped for this frame and show no layers instead:
+	 * the frame would fetch from unmapped or raw-offset addresses, and
+	 * the 4.4 ADF core cannot be told, so it releases the previous
+	 * frame's buffers regardless.
 	 */
 	for (i = 0; i < config->number_hwlayer; i++) {
 		ret = sprd_dispc_iommu_map(dispc, &config->hwlayers[i]);
@@ -716,10 +728,18 @@ static int32_t sprd_dispc_flip(struct sprd_dispc *dispc,
 			while (i-- > 0)
 				sprd_dispc_iommu_unmap_layer(dispc,
 						&config->hwlayers[i]);
+			config_saved = &blank_config;
+			if (!ctx->disable_flip) {
+				dispc->core->flip(ctx, &blank_config);
+				if (!ctx->is_stopped ||
+				    (dispc->ctx.if_type == SPRD_DISPC_IF_EDPI))
+					dispc->core->run(ctx);
+			}
 			up(&ctx->refresh_lock);
 			return ret;
 		}
 	}
+	config_saved = config;
 
 	if (ctx->disable_flip) {
 		pr_debug("dispc flip was disabled\n");

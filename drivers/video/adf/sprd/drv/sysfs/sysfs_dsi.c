@@ -15,6 +15,7 @@
 
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/sysfs.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -30,6 +31,8 @@ static uint8_t input_len;
 static uint8_t read_buf[64];
 /* reply length of the last accepted gen/dcs read, <= ARRAY_SIZE(read_buf) */
 static uint8_t read_len;
+/* serializes input_param/input_len and read_buf/read_len across attributes */
+static DEFINE_MUTEX(dsi_sysfs_lock);
 static uint8_t lp_cmd_en = true;
 
 /*
@@ -48,6 +51,7 @@ static ssize_t gen_read_store(struct device *dev,
 				struct device_attribute *attr,
 				const char *buf, size_t count) {
 	struct sprd_dsi *dsi = dev_get_drvdata(dev);
+	uint8_t param[2];
 	int len;
 
 	if (pm_runtime_suspended(dev->parent)) {
@@ -55,19 +59,22 @@ static ssize_t gen_read_store(struct device *dev,
 		return -ENXIO;
 	}
 
-	len = str_to_u8_array(buf, 16, input_param,
-				ARRAY_SIZE(input_param));
+	/* reg and count, parsed locally: other attributes share input_param */
+	len = str_to_u8_array(buf, 16, param, ARRAY_SIZE(param));
+	if (len < 1)
+		return -EINVAL;
 	if (len == 1)
-		input_param[1] = 1;
+		param[1] = 1;
 
 	/* the reply lands in read_buf */
-	if (input_param[1] > ARRAY_SIZE(read_buf))
+	if (param[1] > ARRAY_SIZE(read_buf))
 		return -EINVAL;
 
-	mipi_dsi_set_max_return_size(dsi, input_param[1]);
-	mipi_dsi_gen_read(dsi, &input_param[0], 1,
-			read_buf, input_param[1]);
-	read_len = input_param[1];
+	mutex_lock(&dsi_sysfs_lock);
+	mipi_dsi_set_max_return_size(dsi, param[1]);
+	mipi_dsi_gen_read(dsi, &param[0], 1, read_buf, param[1]);
+	read_len = param[1];
+	mutex_unlock(&dsi_sysfs_lock);
 
 	return count;
 }
@@ -79,10 +86,12 @@ static ssize_t gen_read_show(struct device *dev,
 	int i;
 	int ret = 0;
 
+	mutex_lock(&dsi_sysfs_lock);
 	for (i = 0; i < read_len; i++)
 		ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 				"data[%d] = 0x%02x\n",
 				i, read_buf[i]);
+	mutex_unlock(&dsi_sysfs_lock);
 
 	return ret;
 }
@@ -108,6 +117,7 @@ static ssize_t gen_write_store(struct device *dev,
 		return -ENXIO;
 	}
 
+	mutex_lock(&dsi_sysfs_lock);
 	input_len = str_to_u8_array(buf, 16, input_param,
 				ARRAY_SIZE(input_param));
 
@@ -115,6 +125,7 @@ static ssize_t gen_write_store(struct device *dev,
 		pr_info("param[%d] = 0x%x\n", i, input_param[i]);
 
 	mipi_dsi_gen_write(dsi, input_param, input_len);
+	mutex_unlock(&dsi_sysfs_lock);
 
 	return count;
 }
@@ -126,10 +137,12 @@ static ssize_t gen_write_show(struct device *dev,
 	int i;
 	int ret = 0;
 
+	mutex_lock(&dsi_sysfs_lock);
 	for (i = 0; i < input_len; i++)
 		ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 				"param[%d] = 0x%02x\n",
 				i, input_param[i]);
+	mutex_unlock(&dsi_sysfs_lock);
 
 	return ret;
 }
@@ -151,6 +164,7 @@ static ssize_t dcs_read_store(struct device *dev,
 				struct device_attribute *attr,
 				const char *buf, size_t count) {
 	struct sprd_dsi *dsi = dev_get_drvdata(dev);
+	uint8_t param[2];
 	int len;
 
 	if (pm_runtime_suspended(dev->parent)) {
@@ -158,19 +172,22 @@ static ssize_t dcs_read_store(struct device *dev,
 		return -ENXIO;
 	}
 
-	len = str_to_u8_array(buf, 16, input_param,
-				ARRAY_SIZE(input_param));
+	/* reg and count, parsed locally: other attributes share input_param */
+	len = str_to_u8_array(buf, 16, param, ARRAY_SIZE(param));
+	if (len < 1)
+		return -EINVAL;
 	if (len == 1)
-		input_param[1] = 1;
+		param[1] = 1;
 
 	/* the reply lands in read_buf */
-	if (input_param[1] > ARRAY_SIZE(read_buf))
+	if (param[1] > ARRAY_SIZE(read_buf))
 		return -EINVAL;
 
-	mipi_dsi_set_max_return_size(dsi, input_param[1]);
-	mipi_dsi_dcs_read(dsi, input_param[0],
-			  read_buf, input_param[1]);
-	read_len = input_param[1];
+	mutex_lock(&dsi_sysfs_lock);
+	mipi_dsi_set_max_return_size(dsi, param[1]);
+	mipi_dsi_dcs_read(dsi, param[0], read_buf, param[1]);
+	read_len = param[1];
+	mutex_unlock(&dsi_sysfs_lock);
 
 	return count;
 }
@@ -182,10 +199,12 @@ static ssize_t dcs_read_show(struct device *dev,
 	int i;
 	int ret = 0;
 
+	mutex_lock(&dsi_sysfs_lock);
 	for (i = 0; i < read_len; i++)
 		ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 				"data[%d] = 0x%02x\n",
 				i, read_buf[i]);
+	mutex_unlock(&dsi_sysfs_lock);
 
 	return ret;
 }
@@ -211,6 +230,7 @@ static ssize_t dcs_write_store(struct device *dev,
 		return -ENXIO;
 	}
 
+	mutex_lock(&dsi_sysfs_lock);
 	input_len = str_to_u8_array(buf, 16, input_param,
 				ARRAY_SIZE(input_param));
 
@@ -218,6 +238,7 @@ static ssize_t dcs_write_store(struct device *dev,
 		pr_info("param[%d] = 0x%x\n", i, input_param[i]);
 
 	mipi_dsi_dcs_write(dsi, input_param, input_len);
+	mutex_unlock(&dsi_sysfs_lock);
 
 	return count;
 }
@@ -229,10 +250,12 @@ static ssize_t dcs_write_show(struct device *dev,
 	int i;
 	int ret = 0;
 
+	mutex_lock(&dsi_sysfs_lock);
 	for (i = 0; i < input_len; i++)
 		ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 				"param[%d] = 0x%02x\n",
 				i, input_param[i]);
+	mutex_unlock(&dsi_sysfs_lock);
 
 	return ret;
 }
