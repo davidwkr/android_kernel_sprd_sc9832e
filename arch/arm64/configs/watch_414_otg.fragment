@@ -1,0 +1,8 @@
+# Opt-in: userspace USB host/device role switch (/sys/kernel/otg_role/role and
+# role on the 20200000.usb device), see devices/USB_ROLE_414_PORT.md. Merge on
+# top of watch_414.fragment, as 4.4's watch_otg.fragment, which no watch
+# build includes by default (stock has no such switch).
+# No board's DT gives the musb node a vbus-supply, so a plain "host" write is
+# refused (-EOPNOTSUPP) unless musb_sprd.host_without_vbus=1 (external power
+# needed).
+CONFIG_USB_MUSB_SPRD_ROLE_SYSFS=y
