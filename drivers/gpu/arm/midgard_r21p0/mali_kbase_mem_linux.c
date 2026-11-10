@@ -1878,6 +1878,14 @@ static int kbase_cpu_vm_fault(struct vm_fault *vmf)
 	if (map->alloc->reg && (map->alloc->reg->flags & KBASE_REG_DONT_NEED))
 		goto locked_bad_fault;
 
+	/*
+	 * Never insert the pinned pages of an imported user buffer: the PTEs
+	 * would outlive the pin once the external resource is released
+	 * (CVE-2022-36449). The importer already has the host mapping.
+	 */
+	if (map->alloc->type == KBASE_MEM_TYPE_IMPORTED_USER_BUF)
+		goto locked_bad_fault;
+
 	/* insert all valid pages from the fault location */
 	i = rel_pgoff;
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0))
@@ -1958,6 +1966,13 @@ static int kbase_cpu_mmap(struct kbase_va_region *reg, struct vm_area_struct *vm
 		BUG_ON(kaddr);
 		vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
 	}
+
+	/*
+	 * A cookie mmap of an imported user buffer only reserves its SAME_VA
+	 * GPU address: map no pages (see kbase_cpu_vm_fault()).
+	 */
+	if (reg->cpu_alloc->type == KBASE_MEM_TYPE_IMPORTED_USER_BUF)
+		nr_pages = 0;
 
 	if (!kaddr) {
 		unsigned long addr = vma->vm_start + aligned_offset;
@@ -2360,7 +2375,10 @@ int kbase_mmap(struct file *file, struct vm_area_struct *vma)
 			 * giving userspace CPU access to unrelated memory
 			 * (CVE-2022-36449). Rather than try to invalidate every
 			 * such mapping on every unpin path, simply refuse to
-			 * create one in the first place.
+			 * create one in the first place. The cookie mmap that
+			 * reserves a SAME_VA import cannot be refused, so
+			 * kbase_cpu_mmap() and kbase_cpu_vm_fault() never insert
+			 * the pages of such a buffer either.
 			 */
 			if (KBASE_MEM_TYPE_IMPORTED_USER_BUF ==
 							reg->cpu_alloc->type) {
