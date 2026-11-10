@@ -81,6 +81,49 @@
 
 #include <mali_kbase_tlstream.h>
 
+/* Module parameters consumed by platform/sharkle (debug verbosity, legacy
+ * QOS/boost/DVFS tuning knobs), matching the stock r21p0 vendor build this
+ * kernel's mali.ko must stay compatible with (same names: a thermal/power
+ * HAL or debug script that pokes /sys/module/mali/parameters should still
+ * find what it expects). Kept here, next to KERNEL_SIDE_DDK_VERSION_STRING
+ * below, rather than in platform/sharkle itself, to match stock's layout.
+ */
+int mali_debug_level = 2;
+module_param(mali_debug_level, int, S_IRUSR | S_IWUSR | S_IWGRP | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(mali_debug_level, "Higher number, more dmesg output");
+
+int gpu_upthreshold = 80;
+module_param(gpu_upthreshold, int, S_IRUSR | S_IWUSR | S_IWGRP | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(gpu_upthreshold, "GPU gpu_upthreshold");
+
+int gpu_downdifferential = 10;
+module_param(gpu_downdifferential, int, S_IRUSR | S_IWUSR | S_IWGRP | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(gpu_downdifferential, "GPU gpu_downdifferential");
+
+int gpu_pollingtime = 50;
+module_param(gpu_pollingtime, int, S_IRUSR | S_IWUSR | S_IWGRP | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(gpu_pollingtime, "GPU gpu_pollingtime");
+
+int gpu_freq_cur;
+module_param(gpu_freq_cur, int, S_IRUSR | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(gpu_freq_cur, "GPU gpu_freq_cur");
+
+int gpu_voltage_cur;
+module_param(gpu_voltage_cur, int, S_IRUSR | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(gpu_voltage_cur, "GPU gpu_voltage_cur");
+
+char *gpu_freq_list;
+module_param(gpu_freq_list, charp, S_IRUSR | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(gpu_freq_list, "GPU freq_list");
+
+int gpu_boost_level;
+module_param(gpu_boost_level, int, S_IRUSR | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(gpu_boost_level, "GPU gpu_boost_level");
+
+int gpu_power_alawys_on;
+module_param(gpu_power_alawys_on, int, S_IRUSR | S_IWUSR | S_IWGRP | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(gpu_power_alawys_on, "GPU power always on");
+
 #include <mali_kbase_as_fault_debugfs.h>
 
 /* GPU IRQ Tags */
@@ -4062,6 +4105,9 @@ static const struct dev_pm_ops kbase_pm_ops = {
 static const struct of_device_id kbase_dt_ids[] = {
 	{ .compatible = "arm,malit6xx" },
 	{ .compatible = "arm,mali-midgard" },
+	/* sprd gpu@60000000 node (sharkle platform): matches the stock mali.ko's
+	 * own "of:N*T*Csprd,mali-midgard*" alias. */
+	{ .compatible = "sprd,mali-midgard" },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, kbase_dt_ids);

@@ -13,6 +13,6 @@
 #
 
 
-mali_kbase-y += \
+mali-y += \
 	$(MALI_PLATFORM_DIR)/mali_kbase_config_vexpress.o \
 	mali_kbase_platform_fake.o

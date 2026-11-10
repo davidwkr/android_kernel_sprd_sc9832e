@@ -127,11 +127,13 @@ endif
 
 ccflags-y += -I$(KBASE_PATH)
 
-# Tell the Linux build system from which .o file to create the kernel module
-obj-$(CONFIG_MALI_MIDGARD) += mali_kbase.o
+# Tell the Linux build system from which .o file to create the kernel module.
+# Named "mali" (not upstream's "mali_kbase"): the stock ramdisk insmods
+# mali.ko and tools/sprd_ramdisk.py replace-modules looks for that name.
+obj-$(CONFIG_MALI_MIDGARD) += mali.o
 
 # Tell the Linux build system to enable building of our .c files
-mali_kbase-y := $(SRC:.c=.o)
+mali-y := $(SRC:.c=.o)
 
 # Kconfig passes in the name with quotes for in-tree builds - remove them.
 platform_name := $(shell echo $(CONFIG_MALI_PLATFORM_NAME))
@@ -139,27 +141,30 @@ MALI_PLATFORM_DIR := platform/$(platform_name)
 ccflags-y += -I$(src)/$(MALI_PLATFORM_DIR)
 include $(src)/$(MALI_PLATFORM_DIR)/Kbuild
 
-# ipa/ (devfreq cooling) is not imported: this tree uses legacy DVFS
-# (CONFIG_MALI_MIDGARD_DVFS), not CONFIG_MALI_DEVFREQ.
+# mali_kbase.h unconditionally includes ipa/mali_kbase_ipa.h, so ipa/ must be
+# present even though its .c files only build under CONFIG_DEVFREQ_THERMAL
+# (see ipa/Kbuild, which is not set in this tree - matches the stock mali.ko,
+# whose symbol table has no ipa/cooling symbols either).
+include $(src)/ipa/Kbuild
 
-mali_kbase-$(CONFIG_MALI_DMA_FENCE) += \
+mali-$(CONFIG_MALI_DMA_FENCE) += \
 	mali_kbase_dma_fence.o \
 	mali_kbase_fence.o
-mali_kbase-$(CONFIG_SYNC) += \
+mali-$(CONFIG_SYNC) += \
 	mali_kbase_sync_android.o \
 	mali_kbase_sync_common.o
-mali_kbase-$(CONFIG_SYNC_FILE) += \
+mali-$(CONFIG_SYNC_FILE) += \
 	mali_kbase_sync_file.o \
 	mali_kbase_sync_common.o \
 	mali_kbase_fence.o
 
 ifeq ($(MALI_MOCK_TEST),1)
 # Test functionality
-mali_kbase-y += tests/internal/src/mock/mali_kbase_pm_driver_mock.o
+mali-y += tests/internal/src/mock/mali_kbase_pm_driver_mock.o
 endif
 
 include  $(src)/backend/gpu/Kbuild
-mali_kbase-y += $(BACKEND:.c=.o)
+mali-y += $(BACKEND:.c=.o)
 
 
 ccflags-y += -I$(src)/backend/gpu
