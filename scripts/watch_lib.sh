@@ -9,10 +9,10 @@
 watch_select() {
   case $1 in
     dm63)                      DEVFRAGS="dm63_touch watch_hrs watch_sc7a22 dm63_aod gpu_mali_sharkle" ;;
-    dw100u-silver|dw100u-v13m|dw100u) DEVFRAGS="dw100u_touch watch_hrs watch_sc7a22 dw100u_aod dw100u_fp" ;;
-    mt107)                     DEVFRAGS="mt107" ;;
-    mt108)                     DEVFRAGS="mt108" ;;
-    dm82)                      DEVFRAGS="dm82" ;;
+    dw100u-silver|dw100u-v13m|dw100u) DEVFRAGS="dw100u_touch watch_hrs watch_sc7a22 dw100u_aod dw100u_fp gpu_mali_sharkle" ;;
+    mt107)                     DEVFRAGS="mt107 gpu_mali_sharkle" ;;
+    mt108)                     DEVFRAGS="mt108 gpu_mali_sharkle" ;;
+    dm82)                      DEVFRAGS="dm82 gpu_mali_sharkle" ;;
     k18)                       DEVFRAGS="k18 gpu_mali_sharkle" ;;
     *) usage ;;
   esac
