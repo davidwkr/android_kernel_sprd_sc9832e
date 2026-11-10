@@ -167,10 +167,11 @@ Next:
    variants (`ADF_414_PORT.md`, "Board variants"), and the K18 has a bring-up boot image candidate
    (`k18/BOOT_414.md`). The DRM path still needs a DRM-capable composer (a newer Android build).
 3. Mali kbase: r21p0 for the stock blob, done on 4.4 (see the 4.4 tree's `devices/MALI_R21P0.md`); the 4.14 port
-   (branch `drivers/mali-r21p0-414`, `sp9832e-watch-gpu.dtsi`) is in review, then DM63/DW100U ADF images.
+   (`sp9832e-watch-gpu.dtsi`, with stock DVFS voltage scaling) is merged; next, DM63/DW100U ADF images.
 4. Missing on 4.14: Wi-Fi/BT netdev drivers, deep sleep, camera (needs ION, now present).
-5. The DRM sprd sysfs parser overflow and the rest of its debug sysfs bounds: fixed on branch
-   `security/drm-sysfs-414`, in review.
+5. The DRM sprd sysfs parser overflow and the rest of its debug sysfs bounds: fixed and merged. Root-only debug
+   writes that can crash or misprogram the hardware (DTB reload, writeback dump, DSI transfers vs suspend, clock
+   values) are vendor behaviour, accepted.
 6. AOD on DRM, WCN/GNSS tweaks, SIPC hardening, the remaining stock panels, ports for the parts without a
    4.14 driver (BetterLife touch, bd1xxx heart rate, msp891, af6837).
 
