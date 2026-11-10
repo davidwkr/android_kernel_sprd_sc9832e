@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * DM63 with the ADF display stack (CONFIG_ADF_SPRD, watch_414_adf.fragment),
+ * for the stock Android 8.1 vendor hwcomposer/gralloc, which use ADF.
+ *
+ * Everything but the display is sp9832e-1h10-dm63.dts; the ADF nodes are
+ * sp9832e-watch-adf.dtsi. The DM63 dts enables iommu_dispc with the sharkle
+ * default iova (0x70000000 + 0x8000000), which is the stock DM63 one.
+ *
+ * Panels: all 14 stock /lcds nodes, generated from the stock DT by
+ * devices/stock_lcds_to_dtsi.py (lcd/dm63_stock_lcds_adf.dtsi). The
+ * bootloader's lcd_id=ID<hex> selects the node named lcd<hex>; the stock DM63
+ * reports ID5300213 (lcd5300213, CO5300 2.13 inch).
+ */
+
+#include "sp9832e-1h10-dm63.dts"
+#include "sp9832e-watch-adf.dtsi"
+
+/ {
+	lcds {
+		#include "lcd/dm63_stock_lcds_adf.dtsi"
+	};
+
+	sprd-panel-if {
+		panel-drivers = <&dm63_lcd9b71 &dm63_lcd9b71182 &dm63_lcd779167
+				 &dm63_lcd77916 &dm63_lcd77916385 &dm63_lcd7797
+				 &dm63_lcd7801 &dm63_lcd13613 &dm63_lcd8601204
+				 &dm63_lcd86011952 &dm63_lcd53001952
+				 &dm63_lcd5300206 &dm63_lcd5300213 &dm63_lcdffff>;
+	};
+};

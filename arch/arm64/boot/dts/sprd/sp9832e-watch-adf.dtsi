@@ -1,0 +1,152 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * ADF display nodes shared by the watch ADF board variants (CONFIG_ADF_SPRD,
+ * watch_414_adf.fragment), for the stock Android 8.1 vendor hwcomposer/gralloc,
+ * which use ADF. Include after the board dts.
+ *
+ * The DRM display nodes (display-subsystem, dpu, dsi with its
+ * generic-mipi-panel, dphy) are disabled and the stock ADF nodes are added in
+ * the bindings the ported drivers expect (drivers/video/adf/sprd,
+ * devices/ADF_414_PORT.md). The stock nodes dispc@20800000, dsi@21800000,
+ * dphy@0, sprd-panel-if and sprd-adf are identical on the K18, DM63 and
+ * DW100U silver stock DTs apart from phandles; only the clock and iommu
+ * phandles are translated to the 4.14 providers:
+ *   stock clk-twpll-384m        -> <&pll CLK_TWPLL_384M>
+ *   stock clk-twpll-128m        -> <&pll CLK_TWPLL_128M>
+ *   stock clk@215000a0          -> <&ap_clk CLK_DISPC0>      (reg 0xa0)
+ *   stock clk@215000a4          -> <&ap_clk CLK_DISPC0_DPI>  (reg 0xa4)
+ *   stock apahb gate <1> / <0>  -> <&apahb_gate DISPC_EB> / <CLK_DSI_EB>
+ *   stock iommu@20800160        -> &iommu_dispc (enabled and sized by the
+ *                                  board dts)
+ * The drivers find each other through the OF graph, not by node name, so the
+ * ADF nodes are named apart from the disabled DRM ones.
+ *
+ * The board file adds its stock panel nodes under /lcds and sets
+ * sprd-panel-if's panel-drivers; the bootloader's lcd_id=ID<hex> selects the
+ * panel-drivers node named lcd<hex> (sprd_panel.c).
+ */
+
+/ {
+	display-subsystem {
+		status = "disabled";
+	};
+
+	sprd-panel-if {
+		compatible = "sprd-panel-if";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@1 {
+			reg = <1>;
+			adf_panel_in: endpoint@0 {
+				remote-endpoint = <&adf_dphy_out>;
+			};
+		};
+	};
+
+	sprd-adf {
+		compatible = "sprd-adf";
+		status = "okay";
+		/* SPRD_SINGLE_DISPC, the only mode the 4.14 port accepts */
+		sprd,display-mode = <3>;
+		sprd,dispc = <&adf_dispc>;
+	};
+};
+
+&dpu {
+	status = "disabled";
+};
+
+&dsi {
+	status = "disabled";
+};
+
+&dphy {
+	status = "disabled";
+};
+
+&soc {
+	ap-ahb {
+		adf_dispc: adf-dispc@20800000 {
+			compatible = "sprd,display-controller";
+			reg = <0x0 0x20800000 0x0 0x1000>;
+			dev-id = <0>;
+			sprd,dpi_clk_div = <1>;
+			interrupts = <GIC_SPI 46 IRQ_TYPE_LEVEL_HIGH>;
+			clock-src = <384000000 128000000>;
+			clock-names = "clk_dispc_core_parent",
+				      "clk_dispc_dpi_parent",
+				      "clk_dispc_core",
+				      "clk_dispc_dpi",
+				      "clk_dispc_ahb_eb";
+			clocks = <&pll CLK_TWPLL_384M>,
+				 <&pll CLK_TWPLL_128M>,
+				 <&ap_clk CLK_DISPC0>,
+				 <&ap_clk CLK_DISPC0_DPI>,
+				 <&apahb_gate DISPC_EB>;
+			iommus = <&iommu_dispc>;
+			status = "okay";
+			sprd,ip = "dpu-lite-r1p0";
+			sprd,soc = "sharkle";
+
+			port {
+				adf_dispc_out: endpoint@0 {
+					remote-endpoint = <&adf_dsi_in>;
+				};
+			};
+		};
+
+		adf_dsi: adf-dsi@21800000 {
+			compatible = "sprd,dsi-controller";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			dev-id = <0>;
+			reg = <0x0 0x21800000 0x0 0x1000>;
+			interrupts = <GIC_SPI 48 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 49 IRQ_TYPE_LEVEL_HIGH>;
+			clock-names = "clk_dsi0_ahb_eb";
+			clocks = <&apahb_gate CLK_DSI_EB>;
+			status = "okay";
+			sprd,ip = "sprd,dsi-ctrl-r1p0";
+			sprd,soc = "sharkle";
+
+			port@0 {
+				reg = <0>;
+				adf_dsi_out: endpoint {
+					remote-endpoint = <&adf_dphy_in>;
+				};
+			};
+
+			port@1 {
+				reg = <1>;
+				adf_dsi_in: endpoint {
+					remote-endpoint = <&adf_dispc_out>;
+				};
+			};
+		};
+
+		adf_dphy: adf-dphy {
+			compatible = "sprd,mipi-dsi-phy";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <0x0 0x21800000 0x0 0x1000>;
+			status = "okay";
+			sprd,ip = "sprd,megacores-sharkle";
+			sprd,soc = "sharkle";
+
+			port@0 {
+				reg = <0>;
+				adf_dphy_out: endpoint {
+					remote-endpoint = <&adf_panel_in>;
+				};
+			};
+
+			port@1 {
+				reg = <1>;
+				adf_dphy_in: endpoint {
+					remote-endpoint = <&adf_dsi_out>;
+				};
+			};
+		};
+	};
+};

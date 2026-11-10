@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * DW100U silver with the ADF display stack (CONFIG_ADF_SPRD,
+ * watch_414_adf.fragment), for the stock Android 8.1 vendor
+ * hwcomposer/gralloc, which use ADF.
+ *
+ * Everything but the display is sp9832e-1h10-dw100u-silver.dts; the ADF nodes
+ * are sp9832e-watch-adf.dtsi.
+ *
+ * Panels: all 23 stock /lcds nodes, generated from the stock DT by
+ * devices/stock_lcds_to_dtsi.py (lcd/dw100u_stock_lcds_adf.dtsi). The
+ * bootloader's lcd_id=ID<hex> selects the node named lcd<hex>; the silver
+ * unit reports ID5300204 (lcd5300204, CO5300 2.04 inch).
+ */
+
+#include "sp9832e-1h10-dw100u-silver.dts"
+#include "sp9832e-watch-adf.dtsi"
+
+/ {
+	lcds {
+		#include "lcd/dw100u_stock_lcds_adf.dtsi"
+	};
+
+	sprd-panel-if {
+		panel-drivers = <&dw100u_lcd9b71 &dw100u_lcd9b71182
+				 &dw100u_lcd779167 &dw100u_lcd77916
+				 &dw100u_lcd77916385 &dw100u_lcd985520
+				 &dw100u_lcd77916200 &dw100u_lcd7797
+				 &dw100u_lcd7801 &dw100u_lcd7801206
+				 &dw100u_lcd13613 &dw100u_lcd13613206
+				 &dw100u_lcd8601204 &dw100u_lcd86011952
+				 &dw100u_lcd5300178 &dw100u_lcd53001952
+				 &dw100u_lcd5300204 &dw100u_lcd5300206
+				 &dw100u_lcd5300213 &dw100u_lcd13613213
+				 &dw100u_lcd3311148 &dw100u_lcd3311214
+				 &dw100u_lcdffff>;
+	};
+};
