@@ -481,7 +481,7 @@ static int dcamio_get_dcam_res(struct camera_file *camerafile,
 	ret = sprd_dcam_module_en(idx);
 	if (unlikely(ret != 0)) {
 		pr_err("fail to enable dcam module %d\n", idx);
-		goto exit;
+		goto put_res;
 	}
 
 	if (group->mode_inited > 0) {
@@ -493,7 +493,8 @@ static int dcamio_get_dcam_res(struct camera_file *camerafile,
 		(enum isp_id)idx);
 	if (unlikely(ret != 0)) {
 		pr_err("fail to enable isp module %d\n", idx);
-		goto exit;
+		sprd_dcam_module_dis(idx);
+		goto put_res;
 	}
 	camerafile->idx = idx;
 	group->mode_inited |= 1 << idx;
@@ -510,6 +511,10 @@ static int dcamio_get_dcam_res(struct camera_file *camerafile,
 	}
 
 exit:
+	return ret;
+
+put_res:
+	sprd_img_put_res(group, &res);
 	return ret;
 }
 

@@ -11,6 +11,7 @@
  * GNU General Public License for more details.
  */
 
+#include <linux/dma-buf.h>
 #include <linux/uaccess.h>
 #include <video/sprd_mm.h>
 #include "sprd_isp_hw.h"
@@ -103,6 +104,31 @@ static void isp_fetch_overwrite_info(
 	fetch_info_inner->size = fetch_info->size;
 }
 
+/*
+ * Bytes the fetch may read from the Y address last programmed by
+ * RAW_BLOCK (the imported buffer after the image offset), and its pitch.
+ * The U/V addresses come from user space unchecked (no fd for them).
+ */
+static unsigned long s_fetch_room;
+static unsigned int s_fetch_pitch;
+
+/*
+ * A frame of @height lines @pitch apart must fit in @room. Each line spans
+ * at most one pitch, so this never rejects a frame that fits, whatever the
+ * pitch unit.
+ */
+static int isp_fetch_check_extent(unsigned int pitch, unsigned int height,
+				  unsigned long room)
+{
+	if ((unsigned long long)pitch * height > room) {
+		pr_err("fail to fit fetch pitch %u x height %u in 0x%lx\n",
+		       pitch, height, room);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 unsigned int isp_k_fetch_get_raw_info(unsigned int *width,
 			unsigned int *height)
 {
@@ -127,6 +153,21 @@ static int isp_k_fetch_raw_block(struct isp_io_param *param,
 	if (ret != 0) {
 		pr_err("fail to copy from user, ret = %d\n", ret);
 		return -EPERM;
+	}
+	if (!fetch_info.bypass) {
+		unsigned long room = 0;
+
+		if (isp_k_param->fetch_pfinfo.size[0] >
+		    isp_k_param->fetch_pfinfo.offset[0])
+			room = isp_k_param->fetch_pfinfo.size[0] -
+				isp_k_param->fetch_pfinfo.offset[0];
+		ret = isp_fetch_check_extent(fetch_info.pitch.chn0,
+					     fetch_info.size.height & 0xFFFF,
+					     room);
+		if (ret)
+			return ret;
+		s_fetch_room = room;
+		s_fetch_pitch = fetch_info.pitch.chn0;
 	}
 	fetch_info.addr.chn0 = isp_k_param->fetch_raw_phys_addr;
 	s_isp_fetch_info.addr.chn0 = isp_k_param->fetch_raw_phys_addr;
@@ -201,7 +242,7 @@ static int isp_k_fetch_start(struct isp_io_param *param, enum isp_id idx)
 }
 
 static int isp_k_fetch_slice_size(struct isp_io_param *param,
-							enum isp_id idx)
+		struct isp_k_block *isp_k_param, enum isp_id idx)
 {
 	int ret = 0;
 	unsigned int size = 0;
@@ -213,6 +254,12 @@ static int isp_k_fetch_slice_size(struct isp_io_param *param,
 		pr_err("fail to copy from user, ret = %d\n", ret);
 		return -EPERM;
 	}
+
+	/* against the buffer RAW_BLOCK programmed, if it is still mapped */
+	ret = isp_fetch_check_extent(s_fetch_pitch, slice_size.height & 0xFFFF,
+			isp_k_param->fetch_pfinfo.size[0] ? s_fetch_room : 0);
+	if (ret)
+		return ret;
 
 	size = ((slice_size.height & 0xFFFF) << 16)
 		| (slice_size.width & 0xFFFF);
@@ -228,6 +275,8 @@ static int isp_k_fetch_transaddr(struct isp_io_param *param,
 	int ret = 0;
 	struct isp_dev_block_addr fetch_buf;
 	struct isp_statis_buf fetch_remap_buf;
+	struct dma_buf *dmabuf;
+	size_t buf_size;
 
 	memset(&fetch_buf, 0x00, sizeof(struct isp_dev_block_addr));
 	memset(&fetch_remap_buf, 0x00, sizeof(struct isp_statis_buf));
@@ -236,6 +285,23 @@ static int isp_k_fetch_transaddr(struct isp_io_param *param,
 	if (ret) {
 		pr_err("fail to copy from user, ret = %d\n", ret);
 		return -EFAULT;
+	}
+
+	/*
+	 * Check the offset before the import, which keeps a reference until
+	 * the module is released, so a rejected request pins nothing.
+	 */
+	dmabuf = dma_buf_get(fetch_buf.img_fd);
+	if (IS_ERR_OR_NULL(dmabuf)) {
+		pr_err("fail to get fetch dma buf, fd %u\n", fetch_buf.img_fd);
+		return -EINVAL;
+	}
+	buf_size = dmabuf->size;
+	dma_buf_put(dmabuf);
+	if (fetch_buf.img_offset.chn0 >= buf_size) {
+		pr_err("fail to get valid img_offset chn0:0x%lx, buf size:0x%zx\n",
+				fetch_buf.img_offset.chn0, buf_size);
+		return -EINVAL;
 	}
 
 	fetch_remap_buf.pfinfo.dev = &s_isp_pdev->dev;
@@ -248,7 +314,6 @@ static int isp_k_fetch_transaddr(struct isp_io_param *param,
 		return ret;
 	}
 
-	/* before mapping, so a rejected offset leaves no iova behind */
 	if (fetch_buf.img_offset.chn0 >= fetch_remap_buf.pfinfo.size[0]) {
 		pr_err("fail to get valid img_offset chn0:0x%lx, buf size:0x%zx\n",
 				fetch_buf.img_offset.chn0,
@@ -267,6 +332,7 @@ static int isp_k_fetch_transaddr(struct isp_io_param *param,
 	isp_k_param->fetch_raw_phys_addr = fetch_remap_buf.pfinfo.iova[0]
 		+ fetch_buf.img_offset.chn0;
 	isp_k_param->fetch_pfinfo.size[0] = fetch_remap_buf.pfinfo.size[0];
+	isp_k_param->fetch_pfinfo.offset[0] = fetch_buf.img_offset.chn0;
 	isp_k_param->fetch_pfinfo.dev = &s_isp_pdev->dev;
 
 	pr_debug("fetch addr 0x%lx, size 0x%zx\n",
@@ -299,7 +365,7 @@ int isp_k_cfg_fetch(struct isp_io_param *param,
 		ret = isp_k_fetch_start(param, idx);
 		break;
 	case ISP_PRO_FETCH_SLICE_SIZE:
-		ret = isp_k_fetch_slice_size(param, idx);
+		ret = isp_k_fetch_slice_size(param, isp_k_param, idx);
 		break;
 	case ISP_PRO_FETCH_TRANSADDR:
 		ret = isp_k_fetch_transaddr(param, isp_k_param);
