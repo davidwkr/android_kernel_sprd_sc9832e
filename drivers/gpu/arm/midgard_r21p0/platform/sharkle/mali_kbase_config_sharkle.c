@@ -542,6 +542,21 @@ static int mali_platform_init(struct kbase_device *kbdev)
 #ifdef CONFIG_INIT_VOLTAGE
 	regulator_set_voltage(gpu_reg, gpu_dfs_ctx.freq_cur->volt, gpu_dfs_ctx.freq_cur->volt);
 #endif
+#ifdef CONFIG_ADJUST_VOLTAGE
+	/*
+	 * cur_voltage was the default OPP's voltage, assumed. Use the rail's
+	 * real voltage, and raise it if it is below the default OPP's; an
+	 * unknown voltage (0) makes the next transition set it.
+	 */
+	err = regulator_get_voltage(gpu_reg);
+	gpu_dfs_ctx.cur_voltage = err > 0 ? err : 0;
+	if (gpu_dfs_ctx.cur_voltage < gpu_dfs_ctx.freq_cur->volt &&
+	    !regulator_set_voltage(gpu_reg, gpu_dfs_ctx.freq_cur->volt,
+				   gpu_dfs_ctx.freq_cur->volt))
+		gpu_dfs_ctx.cur_voltage = gpu_dfs_ctx.freq_cur->volt;
+	gpu_voltage_cur = gpu_dfs_ctx.cur_voltage;
+	err = 0;
+#endif
 
 	return 0;
 
@@ -840,25 +855,40 @@ static int freq_search(struct gpu_freq_info freq_list[], int len, int key)
 	return -1;
 }
 
-static void gpu_change_freq(void)
+/*
+ * Returns 0 or the clock error. On error freq_cur is kept: the caller must
+ * not lower the voltage, the GPU may still run at the old (higher) rate.
+ */
+static int gpu_change_freq(void)
 {
+	int err = 0;
+
 	KBASE_DEBUG_PRINT(3, "GPU_DVFS gpu_change_freq cur_freq %6d -> next_freq %6d\n",
 				gpu_dfs_ctx.freq_cur->freq, gpu_dfs_ctx.freq_next->freq);
 	if(gpu_dfs_ctx.freq_next != gpu_dfs_ctx.freq_cur)
 	{
 		if(gpu_dfs_ctx.freq_next->clk_src != gpu_dfs_ctx.freq_cur->clk_src)
 		{
-			clk_set_rate(gpu_dfs_ctx.freq_next->clk_src, gpu_dfs_ctx.freq_next->freq*1000);
-			clk_set_parent(gpu_dfs_ctx.gpu_clock, gpu_dfs_ctx.freq_next->clk_src);
+			err = clk_set_rate(gpu_dfs_ctx.freq_next->clk_src, gpu_dfs_ctx.freq_next->freq*1000);
+			if (!err)
+				err = clk_set_parent(gpu_dfs_ctx.gpu_clock, gpu_dfs_ctx.freq_next->clk_src);
 		}
 		else
 		{
 			if(gpu_dfs_ctx.freq_next->freq != gpu_dfs_ctx.freq_cur->freq)
 			{
-				clk_set_parent(gpu_dfs_ctx.gpu_clock, gpu_dfs_ctx.freq_default->clk_src);
-				clk_set_rate(gpu_dfs_ctx.freq_next->clk_src, gpu_dfs_ctx.freq_next->freq*1000);
-				clk_set_parent(gpu_dfs_ctx.gpu_clock, gpu_dfs_ctx.freq_next->clk_src);
+				err = clk_set_parent(gpu_dfs_ctx.gpu_clock, gpu_dfs_ctx.freq_default->clk_src);
+				if (!err)
+					err = clk_set_rate(gpu_dfs_ctx.freq_next->clk_src, gpu_dfs_ctx.freq_next->freq*1000);
+				if (!err)
+					err = clk_set_parent(gpu_dfs_ctx.gpu_clock, gpu_dfs_ctx.freq_next->clk_src);
 			}
+		}
+		if (err) {
+			pr_err_ratelimited("mali: GPU clock change %d -> %d kHz failed (%d)\n",
+					   gpu_dfs_ctx.freq_cur->freq,
+					   gpu_dfs_ctx.freq_next->freq, err);
+			return err;
 		}
 		if(gpu_dfs_ctx.freq_next->div != gpu_dfs_ctx.freq_cur->div)
 		{
@@ -871,7 +901,9 @@ static void gpu_change_freq(void)
 			trace_clock_set_rate(VENDOR_FTRACE_MODULE_NAME, gpu_dfs_ctx.freq_cur->freq, raw_smp_processor_id());
 #endif
 		}
-	}
+
+	return 0;
+}
 
 static int gpu_change_volt_freq(void)
 {
@@ -887,10 +919,11 @@ static int gpu_change_volt_freq(void)
 
 	if (ret)
 	{
+		result = 0;
 		//set frequency
 		if (gpu_dfs_ctx.gpu_power_on && gpu_dfs_ctx.gpu_clock_on)
 		{
-			gpu_change_freq();
+			result = gpu_change_freq();
 		}
 		else
 		{
@@ -898,19 +931,20 @@ static int gpu_change_volt_freq(void)
 			gpu_dfs_ctx.freq_cur = gpu_dfs_ctx.freq_next;
 		}
 
-		//downgrade voltage
-		ret = downgrade_voltage();
-		result = 0;
+		/* a failed clock change may leave the old, faster rate */
+		if (!result)
+			ret = downgrade_voltage();
 	}
 	up(gpu_dfs_ctx.sem);
 #else
 	down(gpu_dfs_ctx.sem);
 	KBASE_DEBUG_PRINT(3, "GPU_DVFS gpu_change_volt_freq gpu_power_on=%d, gpu_clock_on=%d\n",
 		gpu_dfs_ctx.gpu_power_on, gpu_dfs_ctx.gpu_clock_on);
+	result = 0;
 	//set frequency
 	if (gpu_dfs_ctx.gpu_power_on && gpu_dfs_ctx.gpu_clock_on)
 	{
-		gpu_change_freq();
+		result = gpu_change_freq();
 	}
 	else
 	{
@@ -918,7 +952,6 @@ static int gpu_change_volt_freq(void)
 		gpu_dfs_ctx.freq_cur = gpu_dfs_ctx.freq_next;
 	}
 
-	result = 0;
 	up(gpu_dfs_ctx.sem);
 #endif
 
