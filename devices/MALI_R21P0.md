@@ -202,6 +202,35 @@ Strip debug info first (`aarch64-linux-gnu-strip --strip-debug mali.ko`,
 *not* `--strip-all`) or build with `INSTALL_MOD_STRIP=1`, same as the other
 ramdisk modules.
 
+## Security backports
+
+Reviewed against the public kbase-security-fix list for releases around
+r21p0 (a reviewer pass over the imported `mali_kbase_mem*.c`,
+`mali_kbase_softjobs.c`, `mali_kbase_mmu.c`, `mali_kbase_core_linux.c`).
+Scope here is the kbase core memory/MMU findings; the devfreq and
+power-domain findings from the same review are tracked separately
+(platform/backend, owned elsewhere). No ioctl numbers or userspace-visible
+struct layouts changed by any of these - all are internal checks/bookkeeping
+tightened or new capability gates; each rejects a bad argument combination
+with an error rather than changing the ABI a correct caller sees.
+
+| CVE | Applied? | Fix |
+|---|---|---|
+| CVE-2021-28663 (pending aliases bypass eviction protection) | Yes | `3c9e05b454f5` - `gpu_mappings` on an aliased native alloc is now taken for the alias's whole lifetime (from `kbase_mem_alias()` through `kbase_mem_kref_free()`), not only while actually GPU-mapped, closing the pending-cookie window where `MEM_FLAGS_CHANGE`/resize could evict/shrink a still-aliased allocation. |
+| CVE-2021-28664 / CVE-2021-39793 / CVE-2022-22706 (missing CPU-write check in user-buffer GUP) | Yes | `0ec9fa205da1` - both `get_user_pages()` call sites (import-time and deferred job-time pinning) now request `FOLL_WRITE` from `(KBASE_REG_CPU_WR \| KBASE_REG_GPU_WR)`, not `GPU_WR` alone; the matching dirty-page bookkeeping on unmap was updated to match. |
+| CVE-2022-20186 (also ARM CVE-2022-28348; alias size-check integer overflow) | Yes | `1d7f6c9a7f91` - `kbase_mem_alias()`'s `nents * stride` overflow check reordered to a division, and the per-entry `offset + length > nents` check changed to a subtraction form. |
+| CVE-2022-38181 (JIT allocation freed while still active) | Yes | `9d6803c3b3f0` - new internal-only `KBASE_REG_ACTIVE_JIT_ALLOC` region flag, set/cleared under `reg_lock` across a JIT allocation's active lifetime; `MEM_FLAGS_CHANGE` now refuses to mark an active JIT region evictable, so only `kbase_jit_free()` can do so. |
+| CVE-2022-36449 (imported user-buffer / Project Zero 2327 group) | Yes | `45269373e6fe` - CPU PTE mappings of an imported user buffer's GPU VA are invalidated with `unmap_mapping_range()` before the backing pages are unpinned, rather than rejecting the mmap outright. Checked first: `libGLES_mali.so` isn't in `/home/blackbox/.cache/k18-inputs`, but a copy exists at `.../tp/sfd_tool/extracted/vendor/lib*/egl/libGLES_mali.so`; `strings` on it was inconclusive for `BASE_MEM_IMPORT_TYPE_USER_BUFFER` (import-type constants are compiled-in enum values, not strings), but its build-config string shows the OpenCL `clImportMemoryARM`/`cl_arm_import_memory_host` path compiled in, so a real host-buffer USER_BUFFER import can't be ruled out - invalidate-before-unpin was used per the task's guidance for that case. `kbase_vmap_prot()` now refuses to map `KBASE_MEM_TYPE_IMPORTED_USER_BUF` regions at all, since its kref doesn't pin the GUP pages and none of its kernel-side callers (replay jobs, soft jobs, vinstr) have a legitimate reason to target one. |
+| CVE-2023-4211 (splittable tracking VMA / stale `mm_struct`) | Yes | `5e9df698246f` - `kbase_tracking_page_setup()` now rejects any `BASE_MEM_MAP_TRACKING_HANDLE` mmap that isn't exactly one page, so the mapping can't be split and give rise to multiple independent `close()` callbacks racing the single `kctx->process_mm` reference. |
+| MMU page-table dump physical-address disclosure | Yes | `1e3a294054df` - `BASE_MEM_MMU_DUMP_HANDLE` mmap now requires `capable(CAP_SYS_ADMIN)` before dumping raw GPU page-table physical addresses/PTEs to userspace. |
+| Page-table reclamation race / `cleanup_empty_pte()` (CVE-2022-36449 group, issue 2333) | Latent, not reachable | `397adfd60b62` - documented only: the hazard is real but only reachable via the `MALI_2MB_ALLOC`/huge-page-insertion path, which is `default n` upstream and absent from both `k18_defconfig` and `dm63_defconfig`. Added a comment at `cleanup_empty_pte()` so enabling that option later isn't done without first fixing the free-before-flush ordering. |
+| CVE-2022-33917 (CSF VMA-splitting) | No - doesn't apply | This import is Job Manager (JM), not Command Stream Frontend (CSF); there are no CSF queue mappings to split. No change. |
+| CVE-2022-36449, CSF short-read overwrite | No - doesn't apply | The JM `BASE_JD_SET_EVENTS`/replay reader already checks `count` (`mali_kbase_core_linux.c`); this is a CSF-only code path not present here. No change. |
+
+Owned-file findings from the review are all accounted for above. The
+devfreq/power-domain findings (platform/sharkle glue) are out of scope for
+this set of commits.
+
 ## Open items
 
 - **Hardware bring-up is untested** (offline-only task: no device access).
