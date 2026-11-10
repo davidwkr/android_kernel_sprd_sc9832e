@@ -28,6 +28,7 @@
 #include <linux/dma-buf.h>
 #include <linux/err.h>
 #include <linux/fcntl.h>
+#include <linux/file.h>
 #include <linux/idr.h>
 #include <linux/slab.h>
 #include <linux/sprd_ion.h>
@@ -276,8 +277,14 @@ static int legacy_free(struct ion_legacy_client *client, int handle)
 	return 0;
 }
 
-/* ION_IOC_MAP and ION_IOC_SHARE are identical in the legacy ABI. */
-static int legacy_share(struct ion_legacy_client *client, int handle)
+/*
+ * ION_IOC_MAP and ION_IOC_SHARE are identical in the legacy ABI. The fd is
+ * only reserved here, with a reference on the buffer: the caller installs
+ * it (legacy_share_commit) once the fd number has reached userspace, or
+ * drops both (legacy_share_abort), so a failed copy leaks nothing.
+ */
+static int legacy_share(struct ion_legacy_client *client, int handle,
+			struct dma_buf **out)
 {
 	struct dma_buf *dmabuf;
 	int fd;
@@ -291,11 +298,26 @@ static int legacy_share(struct ion_legacy_client *client, int handle)
 	if (!dmabuf)
 		return -EINVAL;
 
-	fd = dma_buf_fd(dmabuf, O_CLOEXEC);
-	if (fd < 0)
+	fd = get_unused_fd_flags(O_CLOEXEC);
+	if (fd < 0) {
 		dma_buf_put(dmabuf);
+		return fd;
+	}
 
+	*out = dmabuf;
 	return fd;
+}
+
+/* Consumes the reference taken by legacy_share(). */
+static void legacy_share_commit(int fd, struct dma_buf *dmabuf)
+{
+	fd_install(fd, dmabuf->file);
+}
+
+static void legacy_share_abort(int fd, struct dma_buf *dmabuf)
+{
+	put_unused_fd(fd);
+	dma_buf_put(dmabuf);
 }
 
 static int legacy_import(struct ion_legacy_client *client, int fd,
@@ -420,6 +442,12 @@ static int legacy_custom_map_kernel(void __user *arg_user)
 	if (IS_ERR(dmabuf))
 		return PTR_ERR(dmabuf);
 
+	/* the sprd kernel-map helpers assume an ion exporter */
+	if (!ion_dma_buf_is_ion(dmabuf)) {
+		dma_buf_put(dmabuf);
+		return -EINVAL;
+	}
+
 	vaddr = sprd_ion_map_kernel(dmabuf, 0);
 	if (IS_ERR(vaddr)) {
 		dma_buf_put(dmabuf);
@@ -457,6 +485,7 @@ long ion_ioctl_dispatch(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	struct ion_legacy_client *client = filp->private_data;
 	void __user *arg_user = (void __user *)arg;
+	struct dma_buf *dmabuf;
 	int handle, fd, ret;
 
 	switch (cmd) {
@@ -473,8 +502,11 @@ long ion_ioctl_dispatch(struct file *filp, unsigned int cmd, unsigned long arg)
 			return ret;
 
 		data.handle = handle;
-		if (copy_to_user(arg_user, &data, sizeof(data)))
+		if (copy_to_user(arg_user, &data, sizeof(data))) {
+			/* userspace never learned the handle: drop it */
+			legacy_free(client, handle);
 			return -EFAULT;
+		}
 
 		return 0;
 	}
@@ -495,13 +527,16 @@ long ion_ioctl_dispatch(struct file *filp, unsigned int cmd, unsigned long arg)
 		if (copy_from_user(&data, arg_user, sizeof(data)))
 			return -EFAULT;
 
-		fd = legacy_share(client, data.handle);
+		fd = legacy_share(client, data.handle, &dmabuf);
 		if (fd < 0)
 			return fd;
 
 		data.fd = fd;
-		if (copy_to_user(arg_user, &data, sizeof(data)))
+		if (copy_to_user(arg_user, &data, sizeof(data))) {
+			legacy_share_abort(fd, dmabuf);
 			return -EFAULT;
+		}
+		legacy_share_commit(fd, dmabuf);
 
 		return 0;
 	}
@@ -517,8 +552,11 @@ long ion_ioctl_dispatch(struct file *filp, unsigned int cmd, unsigned long arg)
 			return ret;
 
 		data.handle = handle;
-		if (copy_to_user(arg_user, &data, sizeof(data)))
+		if (copy_to_user(arg_user, &data, sizeof(data))) {
+			/* userspace never learned the handle: drop it */
+			legacy_free(client, handle);
 			return -EFAULT;
+		}
 
 		return 0;
 	}
@@ -618,6 +656,12 @@ static int legacy_custom_map_kernel_compat(void __user *arg_user)
 	if (IS_ERR(dmabuf))
 		return PTR_ERR(dmabuf);
 
+	/* the sprd kernel-map helpers assume an ion exporter */
+	if (!ion_dma_buf_is_ion(dmabuf)) {
+		dma_buf_put(dmabuf);
+		return -EINVAL;
+	}
+
 	vaddr = sprd_ion_map_kernel(dmabuf, 0);
 	if (IS_ERR(vaddr)) {
 		dma_buf_put(dmabuf);
@@ -656,8 +700,11 @@ long ion_compat_ioctl_dispatch(struct file *filp, unsigned int cmd,
 			return ret;
 
 		data32.handle = handle;
-		if (copy_to_user(arg_user, &data32, sizeof(data32)))
+		if (copy_to_user(arg_user, &data32, sizeof(data32))) {
+			/* userspace never learned the handle: drop it */
+			legacy_free(client, handle);
 			return -EFAULT;
+		}
 
 		return 0;
 	}
