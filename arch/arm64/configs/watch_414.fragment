@@ -33,3 +33,7 @@ CONFIG_SPRD_THERMAL=y
 # safe with the stock userspace on this image.
 CONFIG_WATCHDOG_CORE=y
 CONFIG_SPRD_WATCHDOG=y
+
+# TRUSTY: DT node already wired in sp9832e-1h10-dw100u.dtsi, shared by all
+# sp9832e-1h10-* boards.
+CONFIG_TRUSTY=y
