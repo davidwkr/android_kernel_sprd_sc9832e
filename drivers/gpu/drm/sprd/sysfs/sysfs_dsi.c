@@ -41,6 +41,10 @@ static ssize_t phy_freq_store(struct device *dev,
 	int freq;
 	struct sprd_dsi *dsi = dev_get_drvdata(dev);
 
+	/* set by sprd_dsi_host_attach(), after sysfs is published */
+	if (!dsi->phy)
+		return -ENODEV;
+
 	ret = kstrtoint(buf, 10, &freq);
 	if (ret) {
 		pr_err("Invalid input freq\n");
@@ -65,6 +69,10 @@ static ssize_t phy_freq_show(struct device *dev,
 {
 	int ret;
 	struct sprd_dsi *dsi = dev_get_drvdata(dev);
+
+	/* set by sprd_dsi_host_attach(), after sysfs is published */
+	if (!dsi->phy)
+		return -ENODEV;
 
 	ret = snprintf(buf, PAGE_SIZE, "%u Kbps\n", dsi->phy->ctx.freq);
 
