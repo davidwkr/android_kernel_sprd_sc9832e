@@ -2250,9 +2250,25 @@ struct kbase_va_region *kbase_jit_allocate(struct kbase_context *kctx,
 			if (ret)
 				goto update_failed;
 		}
+
+		/*
+		 * Mark the region as an active JIT allocation before
+		 * dropping the lock that keeps it off the eviction list.
+		 * Otherwise a concurrent MEM_FLAGS_CHANGE can observe the
+		 * region as a plain (non-JIT) native allocation and put it
+		 * back on the evictable list before this flag becomes
+		 * visible, reopening the reclaim/UAF window fixed for
+		 * CVE-2022-38181.
+		 */
+		reg->flags |= KBASE_REG_ACTIVE_JIT_ALLOC;
 		kbase_gpu_vm_unlock(kctx);
 	} else {
-		/* No suitable JIT allocation was found so create a new one */
+		/* No suitable JIT allocation was found so create a new one.
+		 * kbase_mem_alloc() is asked to mark the region as an
+		 * active JIT allocation itself, before the region is
+		 * published to the address space, so it can never be
+		 * observed in a reclaimable state.
+		 */
 		u64 flags = BASE_MEM_PROT_CPU_RD | BASE_MEM_PROT_GPU_RD |
 				BASE_MEM_PROT_GPU_WR | BASE_MEM_GROW_ON_GPF |
 				BASE_MEM_COHERENT_LOCAL;
@@ -2261,7 +2277,7 @@ struct kbase_va_region *kbase_jit_allocate(struct kbase_context *kctx,
 		mutex_unlock(&kctx->jit_evict_lock);
 
 		reg = kbase_mem_alloc(kctx, info->va_pages, info->commit_pages,
-				info->extent, &flags, &gpu_addr);
+				info->extent, &flags, &gpu_addr, true);
 		if (!reg)
 			goto out_unlocked;
 
@@ -2269,10 +2285,6 @@ struct kbase_va_region *kbase_jit_allocate(struct kbase_context *kctx,
 		list_add(&reg->jit_node, &kctx->jit_active_head);
 		mutex_unlock(&kctx->jit_evict_lock);
 	}
-
-	kbase_gpu_vm_lock(kctx);
-	reg->flags |= KBASE_REG_ACTIVE_JIT_ALLOC;
-	kbase_gpu_vm_unlock(kctx);
 
 	return reg;
 

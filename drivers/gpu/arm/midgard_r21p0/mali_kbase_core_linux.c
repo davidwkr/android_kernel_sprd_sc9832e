@@ -582,7 +582,7 @@ static int kbase_api_mem_alloc(struct kbase_context *kctx,
 	reg = kbase_mem_alloc(kctx, alloc->in.va_pages,
 			alloc->in.commit_pages,
 			alloc->in.extent,
-			&flags, &gpu_va);
+			&flags, &gpu_va, false);
 
 	if (!reg)
 		return -ENOMEM;

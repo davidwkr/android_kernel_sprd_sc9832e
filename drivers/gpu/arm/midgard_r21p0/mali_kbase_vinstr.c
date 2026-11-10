@@ -342,7 +342,7 @@ static int kbasep_vinstr_map_kernel_dump_buffer(
 	nr_pages = PFN_UP(vinstr_ctx->dump_size);
 
 	reg = kbase_mem_alloc(kctx, nr_pages, nr_pages, 0, &flags,
-			&vinstr_ctx->gpu_va);
+			&vinstr_ctx->gpu_va, false);
 	if (!reg)
 		return -ENOMEM;
 

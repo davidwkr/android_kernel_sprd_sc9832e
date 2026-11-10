@@ -84,7 +84,7 @@ static int kbase_mem_shrink_gpu_mapping(struct kbase_context *kctx,
 
 struct kbase_va_region *kbase_mem_alloc(struct kbase_context *kctx,
 		u64 va_pages, u64 commit_pages, u64 extent, u64 *flags,
-		u64 *gpu_va)
+		u64 *gpu_va, bool jit_alloc)
 {
 	int zone;
 	int gpu_pc_bits;
@@ -168,6 +168,15 @@ struct kbase_va_region *kbase_mem_alloc(struct kbase_context *kctx,
 				(unsigned long long)va_pages);
 		goto no_mem;
 	}
+
+	/*
+	 * Mark JIT allocations as active before the region is published to
+	 * the address space below, so that a concurrent MEM_FLAGS_CHANGE can
+	 * never observe it as an evictable, plain native allocation
+	 * (CVE-2022-38181).
+	 */
+	if (jit_alloc)
+		reg->flags |= KBASE_REG_ACTIVE_JIT_ALLOC;
 
 	kbase_gpu_vm_lock(kctx);
 
