@@ -176,7 +176,7 @@ struct kbase_va_region *kbase_mem_alloc(struct kbase_context *kctx,
 	 * (CVE-2022-38181).
 	 */
 	if (jit_alloc)
-		reg->flags |= KBASE_REG_ACTIVE_JIT_ALLOC;
+		reg->flags |= KBASE_REG_ACTIVE_JIT_ALLOC | KBASE_REG_JIT_OWNED;
 
 	kbase_gpu_vm_lock(kctx);
 
@@ -767,6 +767,10 @@ int kbase_mem_flags_change(struct kbase_context *kctx, u64 gpu_addr, unsigned in
 	/* Validate the region */
 	reg = kbase_region_tracker_find_region_base_address(kctx, gpu_addr);
 	if (!reg || (reg->flags & KBASE_REG_FREE))
+		goto out_unlock;
+
+	/* JIT regions' eviction state belongs to the JIT allocator */
+	if (reg->flags & KBASE_REG_JIT_OWNED)
 		goto out_unlock;
 
 	/* Is the region being transitioning between not needed and needed? */

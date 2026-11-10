@@ -1361,6 +1361,14 @@ int kbase_mem_free(struct kbase_context *kctx, u64 gpu_addr)
 			goto out_unlock;
 		}
 
+		if (reg->flags & KBASE_REG_JIT_OWNED) {
+			/* freed only by the JIT allocator, see the flag */
+			dev_warn(kctx->kbdev->dev, "%s called on JIT memory 0x%llX",
+					__func__, gpu_addr);
+			err = -EINVAL;
+			goto out_unlock;
+		}
+
 		if ((reg->flags & KBASE_REG_ZONE_MASK) == KBASE_REG_ZONE_SAME_VA) {
 			/* SAME_VA must be freed through munmap */
 			dev_warn(kctx->kbdev->dev, "%s called on SAME_VA memory 0x%llX", __func__,

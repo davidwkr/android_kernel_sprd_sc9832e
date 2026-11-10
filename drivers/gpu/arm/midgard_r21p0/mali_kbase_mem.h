@@ -296,6 +296,15 @@ struct kbase_va_region {
  */
 #define KBASE_REG_ACTIVE_JIT_ALLOC  (1ul << 23)
 
+/* Region was created by the JIT allocator and belongs to it for its whole
+ * life, active or pooled; set before the region is published and never
+ * cleared. Only the internal JIT paths may free it (they call
+ * kbase_mem_free_region() directly): user MEM_FREE and MEM_FLAGS_CHANGE
+ * are refused, or kctx->jit_alloc[] and the JIT lists would keep pointers
+ * to a freed region.
+ */
+#define KBASE_REG_JIT_OWNED         (1ul << 24)
+
 #define KBASE_REG_ZONE_SAME_VA      KBASE_REG_ZONE(0)
 
 /* only used with 32-bit clients */
