@@ -34,6 +34,45 @@ static const u8 *wpa_scan_get_ie(u8 *res, u8 ie_len, u8 ie)
 	return NULL;
 }
 
+/*
+ * Typed policies, so nla_parse() rejects attributes too short for the
+ * nla_get_*() below.
+ */
+static const struct nla_policy sprdwl_gscan_policy[SPRDWL_ATTR_GSCAN_MAX + 1] = {
+	[SPRDWL_ATTR_GSCAN_REQUEST_ID] = { .type = NLA_U32 },
+	[SPRDWL_ATTR_GSCAN_BASE_PERIOD] = { .type = NLA_U32 },
+	[SPRDWL_ATTR_GSCAN_MAX_AP_PER_SCAN] = { .type = NLA_U32 },
+	[SPRDWL_ATTR_GSCAN_THRESHOLD_PERCENT] = { .type = NLA_U32 },
+	[SPRDWL_ATTR_GSCAN_REPORT_NUM_SCANS] = { .type = NLA_U32 },
+	[SPRDWL_ATTR_GSCAN_NUM_BUCKETS] = { .type = NLA_U32 },
+	[SPRDWL_ATTR_GSCAN_BUCKET_SPEC] = { .type = NLA_NESTED },
+	[SPRDWL_ATTR_GSCAN_BUCKET_BAND] = { .type = NLA_U32 },
+	[SPRDWL_ATTR_GSCAN_BUCKET_PERIOD] = { .type = NLA_U32 },
+	[SPRDWL_ATTR_GSCAN_BUCKET_REPORT_EVENTS] = { .type = NLA_U32 },
+	[SPRDWL_ATTR_GSCAN_BUCKET_NUM_CHANNEL_SPECS] = { .type = NLA_U32 },
+	[SPRDWL_ATTR_GSCAN_BUCKET_MAX_PERIOD] = { .type = NLA_U32 },
+	[SPRDWL_ATTR_GSCAN_BUCKET_BASE] = { .type = NLA_U32 },
+	[SPRDWL_ATTR_GSCAN_BUCKET_STEP_COUNT] = { .type = NLA_U32 },
+	[SPRDWL_ATTR_GSCAN_CHANNEL_SPEC] = { .type = NLA_NESTED },
+	[SPRDWL_ATTR_GSCAN_CHANNEL] = { .type = NLA_U32 },
+	[SPRDWL_ATTR_GSCAN_CHANNEL_DWELL_TIME] = { .type = NLA_U32 },
+	[SPRDWL_ATTR_GSCAN_CHANNEL_PASSIVE] = { .type = NLA_U8 },
+};
+
+/* get_valid_channels parses its SPRDWL_VENDOR_ATTR_* in the GSCAN table */
+static const struct nla_policy sprdwl_valid_ch_policy[SPRDWL_ATTR_GSCAN_MAX + 1] = {
+	[SPRDWL_VENDOR_ATTR_WIFI_BAND] = { .type = NLA_U32 },
+	[SPRDWL_VENDOR_ATTR_MAX_CHANNELS] = { .type = NLA_U32 },
+};
+
+static const struct nla_policy sprdwl_ll_clr_policy[SPRDWL_ATTR_LL_STATS_CLR_MAX + 1] = {
+	[SPRDWL_ATTR_LL_STATS_CLR_CONFIG_REQ_MASK] = { .type = NLA_U32 },
+};
+
+static const struct nla_policy sprdwl_sar_policy[WLAN_ATTR_SAR_LIMITS_MAX + 1] = {
+	[WLAN_ATTR_SAR_LIMITS_SAR_ENABLE] = { .type = NLA_U32 },
+};
+
 static int parse_bucket(struct sprdwl_vif *vif, struct nlattr *bucket_spec,
 			struct sprdwl_cmd_gscan_set_config *config)
 {
@@ -52,7 +91,7 @@ static int parse_bucket(struct sprdwl_vif *vif, struct nlattr *bucket_spec,
 		}
 		ret =  nla_parse(bucket, SPRDWL_ATTR_GSCAN_MAX,
 				 nla_data(attr_bucket), nla_len(attr_bucket),
-				 NULL, NULL);
+				 sprdwl_gscan_policy, NULL);
 		if (ret) {
 			netdev_err(vif->ndev, "parse bucket error:%d\n", index);
 			return -EINVAL;
@@ -130,7 +169,7 @@ static int parse_bucket(struct sprdwl_vif *vif, struct nlattr *bucket_spec,
 			}
 			ret = nla_parse(channel, SPRDWL_ATTR_GSCAN_MAX,
 					nla_data(channel_attr),
-					nla_len(channel_attr), NULL, NULL);
+					nla_len(channel_attr), sprdwl_gscan_policy, NULL);
 
 			if (ret) {
 				netdev_err(vif->ndev, "parse channel error\n");
@@ -187,7 +226,7 @@ static int sprdwl_vendor_gscan_start(struct wiphy *wiphy,
 	memset(&scan_params, 0, sizeof(scan_params));
 
 	ret = nla_parse(mattributes, SPRDWL_ATTR_GSCAN_MAX,
-			data, len, NULL, NULL);
+			data, len, sprdwl_gscan_policy, NULL);
 	if (ret < 0) {
 		netdev_err(vif->ndev, "%s failed to parse attribute\n", __func__);
 		return -EINVAL;
@@ -254,11 +293,13 @@ static int sprdwl_vendor_gscan_start(struct wiphy *wiphy,
 			   &config);
 	if (ret)
 		return ret;
+	mutex_lock(&vif->priv->gscan_lock);
 	vif->priv->gscan_buckets_num = config.num_buckets;
 	for (index = 0; index < MAX_BUCKETS; index++) {
 		vif->priv->gscan_res[index].num_results = 0;
 		vif->priv->gscan_res[index].scan_id = index + 1;
 	}
+	mutex_unlock(&vif->priv->gscan_lock);
 
 	slen = sizeof(struct sprdwl_cmd_gscan_set_config);
 	ret = sprdwl_set_gscan_config(vif->priv, vif->mode, (void *)(&config),
@@ -725,7 +766,7 @@ static int sprdwl_vendor_clr_llstat_handler(struct wiphy *wiphy,
 		return -EINVAL;
 	}
 	err = nla_parse(tb, SPRDWL_ATTR_LL_STATS_CLR_MAX, data,
-			len, NULL, NULL);
+			len, sprdwl_ll_clr_policy, NULL);
 	if (err)
 		return err;
 	if (tb[SPRDWL_ATTR_LL_STATS_CLR_CONFIG_REQ_MASK]){
@@ -852,7 +893,7 @@ static int sprdwl_vendor_get_channel_list(struct wiphy *wiphy,
 	struct nlattr *mattributes[SPRDWL_ATTR_GSCAN_MAX + 1];
 
 	ret = nla_parse(mattributes, SPRDWL_ATTR_GSCAN_MAX,
-			data, len, NULL, NULL);
+			data, len, sprdwl_valid_ch_policy, NULL);
 	if (ret < 0) {
 		netdev_err(vif->ndev, "failed to parse attribute\n");
 		return -EINVAL;
@@ -935,6 +976,11 @@ static int sprdwl_vendor_get_cached_gscan_results(struct wiphy *wiphy,
 
 	nla_for_each_attr(pos, (void *)data, len, rem_len) {
 		type = nla_type(pos);
+		/* every attribute handled below is a u32 */
+		if (nla_len(pos) < sizeof(u32)) {
+			ret = -EINVAL;
+			break;
+		}
 		switch (type) {
 		case SPRDWL_ATTR_GSCAN_REQUEST_ID:
 			request_id = nla_get_u32(pos);
@@ -954,13 +1000,19 @@ static int sprdwl_vendor_get_cached_gscan_results(struct wiphy *wiphy,
 		if (ret < 0)
 			break;
 	}
+	if (ret < 0)
+		return ret;
 
+	/* the cache is built and read under gscan_lock until the reply */
+	mutex_lock(&vif->priv->gscan_lock);
 	rlen = vif->priv->gscan_buckets_num
 		* sizeof(struct sprdwl_gscan_cached_results);
 	payload = rlen + 0x100;
 	reply = cfg80211_vendor_cmd_alloc_reply_skb(wiphy, payload);
-	if (!reply)
+	if (!reply) {
+		mutex_unlock(&vif->priv->gscan_lock);
 		return -ENOMEM;
+	}
 	for (i = 0; i < vif->priv->gscan_buckets_num; i++) {
 		if (!(vif->priv->gscan_res + i)->num_results)
 			continue;
@@ -1121,6 +1173,7 @@ static int sprdwl_vendor_get_cached_gscan_results(struct wiphy *wiphy,
 	nla_nest_end(reply, cached_list);
 	}
 
+	mutex_unlock(&vif->priv->gscan_lock);
 	ret = cfg80211_vendor_cmd_reply(reply);
 	if (ret < 0)
 		netdev_err(vif->ndev, "%s failed to reply skb!\n", __func__);
@@ -1128,6 +1181,7 @@ static int sprdwl_vendor_get_cached_gscan_results(struct wiphy *wiphy,
 	return ret;
 
 out_put_fail:
+	mutex_unlock(&vif->priv->gscan_lock);
 	kfree_skb(reply);
 	WARN_ON(1);
 	return -EMSGSIZE;
@@ -1144,30 +1198,29 @@ static int sprdwl_vendor_cached_scan_result(struct sprdwl_vif *vif,
 	if (IS_ERR_OR_NULL(priv->gscan_res))
 		netdev_err(vif->ndev, "%s gscan res invalid!\n", __func__);
 
-	if (bucket_id >= priv->gscan_buckets_num || !priv->gscan_res ||
+	if (!priv->gscan_res)
+		return -EINVAL;
+	mutex_lock(&priv->gscan_lock);
+	if (bucket_id >= priv->gscan_buckets_num ||
 	    bucket_id >= MAX_BUCKETS) {
+		mutex_unlock(&priv->gscan_lock);
 		netdev_err(vif->ndev, "%s the gscan buffer invalid!\n",
 			   __func__);
 		return -EINVAL;
 	}
 	p = priv->gscan_res + bucket_id;
 
-	if (MAX_AP_CACHE_PER_SCAN <= p->num_results) {
-		netdev_err(vif->ndev, "%s the scan result reach the MAX num.\n",
-			   __func__);
-		return -EINVAL;
-	}
 	netdev_info(vif->ndev, "%s buketid: %d ,num_results:%d !\n",
 		    __func__, bucket_id, p->num_results);
-	for (i = 0; i < p->num_results; i++) {
+	/* drop expired entries, replace an existing BSS */
+	for (i = 0; i < p->num_results; ) {
 		if (time_after(jiffies - VENDOR_SCAN_RESULT_EXPIRE,
 			       (unsigned long)p->results[i].ts)) {
-			memcpy((void *)(&p->results[i]),
-			       (void *)(&p->results[i + 1]),
-				sizeof(struct sprdwl_gscan_result)
-				* (p->num_results - i - 1));
-
+			memmove(&p->results[i], &p->results[i + 1],
+				sizeof(struct sprdwl_gscan_result) *
+				(p->num_results - i - 1));
 			p->num_results--;
+			continue;
 		}
 		if (!memcmp(p->results[i].bssid, item->bssid, ETH_ALEN) &&
 		    strlen(p->results[i].ssid) == strlen(item->ssid) &&
@@ -1178,15 +1231,24 @@ static int sprdwl_vendor_cached_scan_result(struct sprdwl_vif *vif,
 			memcpy((void *)(&p->results[i]),
 			       (void *)item,
 				sizeof(struct sprdwl_gscan_result));
+			mutex_unlock(&priv->gscan_lock);
 			return 0;
 		}
+		i++;
 	}
 
+	if (MAX_AP_CACHE_PER_SCAN <= p->num_results) {
+		mutex_unlock(&priv->gscan_lock);
+		netdev_err(vif->ndev, "%s the scan result reach the MAX num.\n",
+			   __func__);
+		return -EINVAL;
+	}
 	memcpy((void *)(&p->results[p->num_results]),
 	       (void *)item, sizeof(struct sprdwl_gscan_result));
 	p->results[p->num_results].ie_length = 0;
 	p->results[p->num_results].ie_data[0] = 0;
 	p->num_results++;
+	mutex_unlock(&priv->gscan_lock);
 	return 0;
 }
 
@@ -1592,7 +1654,8 @@ static int sprdwl_vendor_set_sar_limits(struct wiphy *wiphy,
 	struct nlattr *tb[WLAN_ATTR_SAR_LIMITS_MAX + 1];
 
 	netdev_info(vif->ndev, "%s enter:\n", __func__);
-	if (nla_parse(tb, WLAN_ATTR_SAR_LIMITS_MAX, data, len, NULL, NULL)) {
+	if (nla_parse(tb, WLAN_ATTR_SAR_LIMITS_MAX, data, len,
+		      sprdwl_sar_policy, NULL)) {
 		netdev_err(vif->ndev, "Invalid ATTR\n");
 		return -EINVAL;
 	}
@@ -1862,12 +1925,11 @@ int sprdwl_vendor_init(struct wiphy *wiphy)
 	wiphy->n_vendor_events = ARRAY_SIZE(sprdwl_vendor_events);
 	buf_size = MAX_BUCKETS * sizeof(struct sprdwl_gscan_cached_results);
 
-	priv->gscan_res = kmalloc(buf_size, GFP_KERNEL);
+	priv->gscan_res = kzalloc(buf_size, GFP_KERNEL);
 
 	if (!priv->gscan_res)
 		return -ENOMEM;
-
-	memset(priv->gscan_res, 0, sizeof(buf_size));
+	mutex_init(&priv->gscan_lock);
 	return 0;
 }
 

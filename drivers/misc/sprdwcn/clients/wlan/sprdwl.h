@@ -169,6 +169,8 @@ struct sprdwl_priv {
 	/*gscan*/
 	u32 gscan_buckets_num;
 	struct sprdwl_gscan_cached_results *gscan_res;
+	/* gscan_res and gscan_buckets_num: vendor commands vs results */
+	struct mutex gscan_lock;
 	int gscan_req_id;
 	/* default MAC addr*/
 	unsigned char default_mac[ETH_ALEN];
