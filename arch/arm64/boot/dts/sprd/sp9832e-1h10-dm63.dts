@@ -643,9 +643,20 @@
 	};
 
 	/*
-	 * TODO not mapped: stock af6837_mag@0C (compass,af6837) has no 4.14
-	 * driver and is unbound on the unit. Also no och1970 node: stock DM63
-	 * has none (it is a DW100U part, magnetic,och1970, rst-gpio).
+	 * stock af6837_mag@0C (compass,af6837): no other stock properties.
+	 * Per devices/AF6837_INTERFACE.md the stock DM63 unit has this node
+	 * but the driver never ends up bound on the running stock image, i.e.
+	 * the chip is probably not fitted on this board; the chip-id check
+	 * in the 4.14 driver fails cleanly (-ENODEV) in that case.
+	 */
+	af6837_mag@c {
+		compatible = "compass,af6837";
+		reg = <0x0c>;
+	};
+
+	/*
+	 * No och1970 node: stock DM63 has none (it is a DW100U part,
+	 * magnetic,och1970, rst-gpio).
 	 */
 };
 

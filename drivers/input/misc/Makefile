@@ -86,6 +86,8 @@ obj-$(CONFIG_INPUT_IDEAPAD_SLIDEBAR)	+= ideapad_slidebar.o
 obj-$(CONFIG_INPUT_QMA6981_I2C)		+= qma6981.o
 obj-$(CONFIG_SENSORS_SC7A22)		+= sc7a22.o
 obj-$(CONFIG_SENSORS_OCH1970)		+= och1970.o
+obj-$(CONFIG_SENSORS_MSP891)		+= msp891.o
+obj-$(CONFIG_SENSORS_COMPASS_AF6837)	+= af6837.o
 obj-$(CONFIG_INPUT_SENSORS_HRS3XXX)	+= hrs3xxx.o
 hrs3xxx-y := hrs3xxx_core.o
 

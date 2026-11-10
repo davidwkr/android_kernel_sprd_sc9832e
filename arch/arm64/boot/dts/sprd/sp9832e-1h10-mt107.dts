@@ -667,9 +667,20 @@
 		power-gpio = <&ap_gpio 130 GPIO_ACTIVE_HIGH>;
 	};
 
+	/* stock msp891_gas@20 (pressure,msp891): no other stock properties. */
+	msp891_gas@20 {
+		compatible = "pressure,msp891";
+		reg = <0x20>;
+	};
+
+	/* stock af6837_mag@0C (compass,af6837): no other stock properties. */
+	af6837_mag@c {
+		compatible = "compass,af6837";
+		reg = <0x0c>;
+	};
+
 	/*
-	 * TODO not mapped (fitted in stock, no 4.14 driver): msp891_gas@20
-	 * (pressure,msp891), af6837_mag@0c (compass,af6837), bd1xxx_hr@38
+	 * TODO not mapped (fitted in stock, no 4.14 driver): bd1xxx_hr@38
 	 * (heartrate,bd1xxx, power-gpio ap_gpio 90). The HRS3xxx covers heart
 	 * rate.
 	 */
