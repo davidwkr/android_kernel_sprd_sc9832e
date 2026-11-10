@@ -133,6 +133,17 @@ struct kbasep_debug_assert_cb {
 #define KBASE_DEBUG_CODE(X) CSTD_NOP()
 #endif				/* CONFIG_MALI_DEBUG */
 
+/* sprd: platform glue debug print, gated by the mali_debug_level module
+ * parameter (declared in mali_kbase_core_linux.c), ported along with the
+ * platform/sharkle sources from the r28p0 sprd fork in this tree.
+ */
+extern int mali_debug_level;
+#define KBASE_DEBUG_PRINT(level, fmt, ...) \
+	do { \
+		if ((level) <= mali_debug_level) \
+			printk(KERN_INFO "MALI " fmt, ##__VA_ARGS__); \
+	} while (0)
+
 /** @} */
 
 /**

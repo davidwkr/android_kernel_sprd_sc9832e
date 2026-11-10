@@ -22,7 +22,7 @@
  * Attached value: number in kHz
  * Default value: NA
  */
-#define GPU_FREQ_KHZ_MAX 600000
+#define GPU_FREQ_KHZ_MAX 680000
 /**
  * Minimum frequency GPU will be clocked at. Given in kHz.
  * This must be specified as there is no default value.
@@ -69,19 +69,6 @@
  * Default value: See @ref kbase_platform_funcs_conf
  */
 #define PLATFORM_FUNCS (&platform_sharkle_funcs)
-
-/** Power model for IPA
- *
- * Attached value: pointer to @ref mali_pa_model_ops
- */
-#define POWER_MODEL_CALLBACKS (NULL)
-
-/**
- * Secure mode switch
- *
- * Attached value: pointer to @ref kbase_secure_ops
- */
-#define SECURE_CALLBACKS (NULL)
 
 extern struct kbase_pm_callback_conf pm_sharkle_callbacks;
 extern struct kbase_platform_funcs_conf platform_sharkle_funcs;

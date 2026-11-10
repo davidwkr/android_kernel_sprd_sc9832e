@@ -48,6 +48,27 @@
 #define PM_RUNTIME_DELAY_MS 50
 #define UP_THRESHOLD        9/10
 
+/*
+ * GPU power-domain force-shutdown field in the pmu-apb syscon block, offset
+ * 0x20, a 2-bit field at bits [25:24] (mask 0x3000000); writing 0x2000000
+ * forces the domain off, 0 lets it power up normally. The upstream ARM
+ * reference "sharkle" platform (drivers/gpu/arm/midgard/mali/platform/sharkle
+ * in the r28p0 copy in this tree) gets this reg/mask pair from the DT via
+ * syscon-names = "top_force_shutdown" on the gpu node, but neither the k18
+ * nor the dm63 reconstructed stock DTS carries that property (only
+ * "sprd,syscon-aon-apb" / "sprd,syscon-pmu-apb" phandles) - so it is spelled
+ * out here instead, by phandle. Confirmed against the stock k18 mali.ko
+ * (strings/objdump): it resolves this same register via
+ * syscon_regmap_lookup_by_phandle(..., "sprd,syscon-pmu-apb") and an
+ * ioremap'd access at (phandle base + 0x20), matching both this offset and
+ * the generic sharkle.dtsi reference's "syscons = <&pmu_apb_controller 0x20
+ * 0x2000000>". See devices/MALI_R21P0.md for the full trail of evidence.
+ */
+#define GPU_PWR_DOMAIN_REG   0x20
+#define GPU_PWR_DOMAIN_MASK  0x3000000
+#define GPU_PWR_DOMAIN_ON    0x0
+#define GPU_PWR_DOMAIN_OFF   0x2000000
+
 struct gpu_freq_info {
 	struct clk* clk_src;
 	int freq;	//kHz
@@ -178,9 +199,10 @@ static inline void mali_freq_init(struct device *dev)
 	gpu_qos_reg = ioremap_nocache( 0x60100014, 4);
 #endif
 
-	gpu_dfs_ctx.top_reg.regmap_ptr = syscon_regmap_lookup_by_name(dev->of_node,"top_force_shutdown");
-	KBASE_DEBUG_ASSERT(gpu_dfs_ctx.top_reg.regmap_ptr);
-	syscon_get_args_by_name(dev->of_node,"top_force_shutdown", 2, (uint32_t *)gpu_dfs_ctx.top_reg.args);
+	gpu_dfs_ctx.top_reg.regmap_ptr = syscon_regmap_lookup_by_phandle(dev->of_node, "sprd,syscon-pmu-apb");
+	KBASE_DEBUG_ASSERT(!IS_ERR(gpu_dfs_ctx.top_reg.regmap_ptr));
+	gpu_dfs_ctx.top_reg.args[0] = GPU_PWR_DOMAIN_REG;
+	gpu_dfs_ctx.top_reg.args[1] = GPU_PWR_DOMAIN_MASK;
 
 	gpu_dfs_ctx.gpu_clock_i = of_clk_get(dev->of_node, 0);
 	gpu_dfs_ctx.gpu_clock = of_clk_get(dev->of_node, 1);
@@ -253,7 +275,7 @@ static inline void mali_freq_init(struct device *dev)
 
 static inline void mali_power_on(void)
 {
-	regmap_update_bits(gpu_dfs_ctx.top_reg.regmap_ptr, gpu_dfs_ctx.top_reg.args[0], gpu_dfs_ctx.top_reg.args[1], ~gpu_dfs_ctx.top_reg.args[1]);
+	regmap_update_bits(gpu_dfs_ctx.top_reg.regmap_ptr, gpu_dfs_ctx.top_reg.args[0], gpu_dfs_ctx.top_reg.args[1], GPU_PWR_DOMAIN_ON);
 
 	udelay(300);
 	gpu_dfs_ctx.gpu_power_on = 1;
@@ -267,7 +289,7 @@ static inline void mali_power_off(void)
 #endif
 	gpu_dfs_ctx.gpu_power_on = 0;
 
-	regmap_update_bits(gpu_dfs_ctx.top_reg.regmap_ptr, gpu_dfs_ctx.top_reg.args[0], gpu_dfs_ctx.top_reg.args[1], gpu_dfs_ctx.top_reg.args[1]);
+	regmap_update_bits(gpu_dfs_ctx.top_reg.regmap_ptr, gpu_dfs_ctx.top_reg.args[0], gpu_dfs_ctx.top_reg.args[1], GPU_PWR_DOMAIN_OFF);
 }
 
 static inline void mali_set_div(const struct gpu_freq_info* info)

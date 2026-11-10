@@ -13,4 +13,9 @@
 #
 
 
-obj-y += mali_kbase_config_sharkle.o
+# Must append to mali-y (not obj-y): this Kbuild is reached via a plain
+# "include" from the top-level Kbuild, not a recursed-into subdirectory, so
+# for an out-of-tree (M=) build obj-y here has no built-in.o to attach to and
+# silently drops the object - platform_sharkle_funcs/pm_sharkle_callbacks
+# would be undefined in the final mali.ko.
+mali-y += $(MALI_PLATFORM_DIR)/mali_kbase_config_sharkle.o
