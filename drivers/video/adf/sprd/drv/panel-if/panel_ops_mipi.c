@@ -65,6 +65,9 @@ static int32_t mipi_panel_esd_check(struct panel_device *pd)
 	uint8_t read_buf[4] = {0};
 	uint8_t i;
 
+	if (panel->esd_read_count > ARRAY_SIZE(read_buf))
+		return -EINVAL;
+
 	mipi_dsi_lp_cmd_enable(dsi, false);
 	mipi_dsi_set_max_return_size(dsi, panel->esd_read_count);
 	mipi_dsi_dcs_read(dsi, panel->esd_reg, read_buf,
@@ -88,6 +91,9 @@ static uint32_t mipi_panel_read_id(struct panel_device *pd)
 	struct panel_info *panel = pd->panel;
 	uint8_t read_buf[4] = {0};
 	int i;
+
+	if (panel->id_size > ARRAY_SIZE(read_buf))
+		return -EINVAL;
 
 	mipi_dsi_lp_cmd_enable(dsi, true);
 	mipi_dsi_set_max_return_size(dsi, panel->id_size);
