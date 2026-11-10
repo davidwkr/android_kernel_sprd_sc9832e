@@ -1,0 +1,39 @@
+#
+# (C) COPYRIGHT 2016-2017 ARM Limited. All rights reserved.
+#
+# This program is free software and is provided to you under the terms of the
+# GNU General Public License version 2 as published by the Free Software
+# Foundation, and any use by you of this program is subject to the terms
+# of such GNU licence.
+#
+# A copy of the licence is included with the program, and can also be obtained
+# from Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
+# Boston, MA  02110-1301, USA.
+#
+#
+
+
+# ipa/*.c is only buildable together with CONFIG_DEVFREQ_THERMAL: that's what
+# gates kbdev->ipa (the struct these files access) in mali_kbase_defs.h, and
+# what mali_kbase_ipa.h's own "#else" branch checks before reducing the API
+# it declares to inert stubs. This tree builds with CONFIG_MALI_DEVFREQ=y but
+# CONFIG_DEVFREQ_THERMAL unset (matches the stock mali.ko: no ipa/cooling
+# symbols in its symbol table either), so none of this is compiled - ipa/'s
+# two headers are kept only so mali_kbase.h's and mali_kbase_core_linux.c's
+# unconditional #includes resolve.
+ifeq ($(CONFIG_DEVFREQ_THERMAL),y)
+
+mali-y += \
+	ipa/mali_kbase_ipa_simple.o \
+	ipa/mali_kbase_ipa.o
+
+mali-$(CONFIG_DEBUG_FS) += ipa/mali_kbase_ipa_debugfs.o
+
+ifneq ($(wildcard $(src)/ipa/mali_kbase_ipa_vinstr_g71.c),)
+  mali-y += \
+	ipa/mali_kbase_ipa_vinstr_g71.o \
+	ipa/mali_kbase_ipa_vinstr_common.o
+
+endif
+
+endif

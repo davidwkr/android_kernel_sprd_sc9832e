@@ -50,3 +50,11 @@ CONFIG_USB_CONFIGFS_EEM=y
 CONFIG_USB_CONFIGFS_F_HID=y
 CONFIG_USB_CONFIGFS_NCM=y
 CONFIG_USB_CONFIGFS_OBEX=y
+
+# Mali Midgard r21p0 (T820, sharkle platform glue), the DDK version of the
+# stock libGLES_mali.so (UK 11.0); see devices/MALI_R21P0.md. Built in like
+# the rest of this config: the stock ramdisk's insmod of its 4.4 mali.ko
+# then just fails.
+CONFIG_MALI_MIDGARD=y
+CONFIG_MALI_PLATFORM_NAME="sharkle"
+CONFIG_MALI_DEVFREQ=y

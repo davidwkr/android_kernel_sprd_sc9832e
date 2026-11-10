@@ -1,0 +1,32 @@
+#
+# (C) COPYRIGHT 2013 ARM Limited. All rights reserved.
+#
+# This program is free software and is provided to you under the terms of the
+# GNU General Public License version 2 as published by the Free Software
+# Foundation, and any use by you of this program is subject to the terms
+# of such GNU licence.
+#
+# A copy of the licence is included with the program, and can also be obtained
+# from Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
+# Boston, MA  02110-1301, USA.
+#
+#
+
+
+# Must append to mali-y (not obj-y): this Kbuild is reached via a plain
+# "include" from the top-level Kbuild, not a recursed-into subdirectory, so
+# for an out-of-tree (M=) build obj-y here has no built-in.o to attach to and
+# silently drops the object - platform_sharkle_funcs/pm_sharkle_callbacks
+# would be undefined in the final mali.ko.
+mali-y += $(MALI_PLATFORM_DIR)/mali_kbase_config_sharkle.o
+
+# Tell backend/gpu/mali_kbase_devfreq.c it can use this platform's
+# kbase_platform_get_init_freq()/kbase_platform_set_freq() instead of the
+# generic kbdev->clock ("clk_mali") path. Only defined when this Kbuild is
+# included, i.e. only when CONFIG_MALI_PLATFORM_NAME="sharkle".
+ccflags-y += -DMALI_PLATFORM_SHARKLE
+# DVFS raises vddcore ("gpu" supply) before a faster OPP and lowers it after
+# a slower one, as the stock mali.ko does (it imports regulator_get_voltage
+# and has the upgrade_voltage path); without it 680 MHz runs at the
+# previous voltage. A failed raise keeps the old frequency.
+ccflags-y += -DCONFIG_ADJUST_VOLTAGE
