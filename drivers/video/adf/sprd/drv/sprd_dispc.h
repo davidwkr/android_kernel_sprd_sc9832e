@@ -283,7 +283,7 @@ int sprd_dispc_dynamic_clk(struct sprd_dispc *dispc, int type, u32 new_val);
 int sprd_dispc_wb_buf_alloc(struct sprd_dispc *dispc,
 			    int heap_type, size_t *size, u32 *buffer);
 
-void sprd_dispc_iommu_map(struct sprd_dispc *dispc,
+int sprd_dispc_iommu_map(struct sprd_dispc *dispc,
 			  struct sprd_adf_hwlayer *layer);
 void sprd_dispc_iommu_unmap(struct sprd_dispc *dispc,
 			    struct sprd_adf_hwlayer *hwlayer);

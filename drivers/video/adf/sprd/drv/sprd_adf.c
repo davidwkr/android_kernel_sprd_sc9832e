@@ -130,6 +130,17 @@ struct sprd_restruct_config *sprd_adf_restruct_post_config(struct adf_post
 	for (i = 0; i < post->n_bufs; i++) {
 		dst = &config->hwlayers[i];
 		cust_src = &data->hwlayers[i];
+
+		if (cust_src->start_x < 0 || cust_src->start_y < 0 ||
+		    (u32)cust_src->start_x + cust_src->start_w > bufs[i].w ||
+		    (u32)cust_src->start_y + cust_src->start_h > bufs[i].h) {
+			pr_warn("hwlayer %zu crop rect (%d,%d %ux%u) exceeds buffer %ux%u\n",
+				i, cust_src->start_x, cust_src->start_y,
+				cust_src->start_w, cust_src->start_h,
+				bufs[i].w, bufs[i].h);
+			goto error_free_config;
+		}
+
 		dst->mapping = post->mappings[i];
 		dst->base = bufs[i];
 		dst->hwlayer_id = i;
@@ -193,6 +204,8 @@ struct sprd_restruct_config *sprd_adf_restruct_post_config(struct adf_post
 
 	return config;
 
+error_free_config:
+	kfree(config);
 error_out:
 	return NULL;
 }

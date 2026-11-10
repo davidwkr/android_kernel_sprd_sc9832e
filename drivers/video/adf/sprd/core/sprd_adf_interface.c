@@ -738,7 +738,7 @@ struct sprd_adf_interface *sprd_adf_create_interfaces(
 	return intfs;
 
 error_out0:
-	for (; i >= 0; i--) {
+	while (i-- > 0) {
 		ADF_DEBUG_WARN("adf_interface_destroy index =%zd;\n", i);
 		adf_interface_destroy(&intfs[i].base);
 		sprd_adf_destroy_interface_private_data(intfs[i].data);
