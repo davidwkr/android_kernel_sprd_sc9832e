@@ -8,9 +8,20 @@ config DRM_SPRD
 	select DRM_PANEL
 	select VIDEOMODE_HELPERS
 	select BACKLIGHT_CLASS_DEVICE
+	select SPRD_PANEL_NOTIFIER
 	help
 	  Choose this option if you have a Spreadtrum chipsets.
 	  If M is selected the module will be called sprd-drm.
+
+# sprd_panel_notifier.c (include/linux/sprd_panel_notifier.h) is shared
+# between this driver and CONFIG_ADF_SPRD (drivers/video/adf/sprd): whichever
+# one is actually probing the panel raises it, so touch/sc7a22 code that
+# subscribes to screen on/off does not care which display stack is active.
+# Built directly by drivers/gpu/drm/Makefile, independent of the
+# obj-$(CONFIG_DRM_SPRD) += sprd/ directory recursion below, so it is still
+# built when CONFIG_DRM_SPRD is off and CONFIG_ADF_SPRD is on.
+config SPRD_PANEL_NOTIFIER
+	bool
 
 #
 #SPRD DRM GSP driver

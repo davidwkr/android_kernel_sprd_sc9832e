@@ -8,8 +8,10 @@ obj-y := sprd_drm.o \
 	sprd_dpu.o \
 	sprd_dsi.o \
 	sprd_dphy.o \
-	sprd_panel.o \
-	sprd_panel_notifier.o
+	sprd_panel.o
+
+# sprd_panel_notifier.o is built by the parent Makefile instead (shared
+# with CONFIG_ADF_SPRD, see drivers/gpu/drm/sprd/Kconfig)
 
 obj-y += dummy/dummy_crtc.o
 obj-y += dummy/dummy_connector.o

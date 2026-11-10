@@ -1,0 +1,29 @@
+
+config DISP_R1P0
+	depends on ADF
+	bool "Enable disp r1p0 driver for spreadtrum"
+	help
+	  This driver implements disp r1p0 driver to enable spreadtrum
+	  disp r1p0 support.
+
+config DISP_LITE_R2P0
+	depends on ADF
+	bool "Enable disp lite r2p0 driver for spreadtrum"
+	help
+	This driver implements disp lite r2p0 driver to enable spreadtrum
+	disp lite r2p0 support.
+
+config SPRD_AOD_IDLE
+	tristate "Panel idle mode (AOD) and double-tap wake for SC9832E watches"
+	depends on ADF_SPRD && BACKLIGHT_CLASS_DEVICE && INPUT
+	default n
+	help
+	  Switches the MIPI-DSI OLED panel (CO5300) between normal and idle
+	  mode (DCS 0x38/0x39) from /sys/kernel/aod_idle/, with a separate
+	  idle brightness, and provides double-tap-to-wake from the
+	  "cst0xx_ts" (DM63) or "hyn_ts" (DW100U) touch screen through the
+	  "aod_dtap" input device.
+	  In-tree replacement for the stock aod_idle.ko of the DM63; also
+	  used on the DW100U.
+
+	  If unsure, say N.

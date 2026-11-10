@@ -89,6 +89,9 @@ obj-$(CONFIG_DRM_STM) += stm/
 obj-$(CONFIG_DRM_STI) += sti/
 obj-$(CONFIG_DRM_IMX) += imx/
 obj-$(CONFIG_DRM_SPRD) += sprd/
+# Shared with CONFIG_ADF_SPRD (drivers/video/adf/sprd/sprd_adf.c): built
+# whichever display driver is active, see drivers/gpu/drm/sprd/Kconfig.
+obj-$(CONFIG_SPRD_PANEL_NOTIFIER) += sprd/sprd_panel_notifier.o
 obj-$(CONFIG_DRM_MEDIATEK) += mediatek/
 obj-$(CONFIG_DRM_MESON)	+= meson/
 obj-y			+= i2c/

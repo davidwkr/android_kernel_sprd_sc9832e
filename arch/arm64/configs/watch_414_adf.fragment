@@ -1,0 +1,14 @@
+# ADF display stack (ported from the 4.4 product tree, see
+# devices/ADF_414_PORT.md) instead of the DRM/KMS one. Merge on top of
+# sprd_sharkle_defconfig + watch_414.fragment, then run olddefconfig.
+#
+# CONFIG_ADF_SPRD "depends on !DRM_SPRD" (drivers/video/adf/sprd/Kconfig)
+# only blocks turning ADF_SPRD on *while* DRM_SPRD is already on in an
+# interactive config session; a batch merge like this one still has to
+# turn DRM_SPRD off itself first, or olddefconfig just drops the
+# unsatisfiable CONFIG_ADF_SPRD=y line below instead of touching
+# DRM_SPRD. Hence the explicit "is not set" here, not just the dependency.
+# CONFIG_DRM_SPRD is not set
+CONFIG_ADF=y
+CONFIG_ADF_SPRD=y
+CONFIG_DISP_LITE_R2P0=y

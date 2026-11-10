@@ -26,7 +26,7 @@ enum sprd_panel_event {
 	SPRD_PANEL_EVENT_ON,
 };
 
-#if IS_ENABLED(CONFIG_DRM_SPRD)
+#if IS_ENABLED(CONFIG_SPRD_PANEL_NOTIFIER)
 int sprd_panel_notifier_register(struct notifier_block *nb);
 int sprd_panel_notifier_unregister(struct notifier_block *nb);
 /* Last event sent: true if the screen is on (true before the first event). */
