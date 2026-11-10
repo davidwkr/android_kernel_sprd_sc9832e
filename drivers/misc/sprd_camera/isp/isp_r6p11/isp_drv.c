@@ -3633,33 +3633,39 @@ static int isp_enable_clk(void)
 		ret = clk_set_parent(isp0_clk, isp0_clk_parent);
 		if (ret) {
 			pr_info("isp0_clk_parent error.\n");
-			clk_set_parent(isp0_clk, isp0_clk_default);
-			clk_disable_unprepare(isp0_clk);
-			goto exit;
+			goto err_parent;
 		}
 
 		ret = clk_prepare_enable(isp0_clk);
 		if (ret) {
 			pr_info("isp0_clk error.\n");
-			clk_set_parent(isp0_clk, isp0_clk_default);
-			clk_disable_unprepare(isp0_clk);
-			goto exit;
+			goto err_parent;
 		}
 
 		/*isp enable*/
 		ret = clk_prepare_enable(isp0_eb);
 		if (ret) {
 			pr_info("isp0_eb error.\n");
-			goto exit;
+			goto err_clk;
 		}
 
 		ret = clk_prepare_enable(isp0_axi_eb);
 		if (ret) {
 			pr_info("isp0_axi_eb error.\n");
-			goto exit;
+			goto err_eb;
 		}
 	} else
 		pr_info("ISP clock already enabled\n");
+	goto exit;
+
+	/* undo only the completed stages, and the count, so a retry starts over */
+err_eb:
+	clk_disable_unprepare(isp0_eb);
+err_clk:
+	clk_disable_unprepare(isp0_clk);
+err_parent:
+	clk_set_parent(isp0_clk, isp0_clk_default);
+	atomic_dec(&isp_enable_lock);
 
 exit:
 	pr_info("isp enable clk done, %d\n",
