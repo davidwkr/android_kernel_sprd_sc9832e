@@ -222,16 +222,24 @@ static ssize_t wr_regs_show(struct device *dev,
 	unsigned int i;
 	unsigned int reg;
 	struct sprd_dpu *dpu = dev_get_drvdata(dev);
-	unsigned int offset = dpu->ctx.base_offset[0];
-	unsigned int length = dpu->ctx.base_offset[1];
+	struct dpu_context *ctx = &dpu->ctx;
+	unsigned int offset = ctx->base_offset[0];
+	unsigned int length = ctx->base_offset[1];
 
-	if (!dpu_regs_range_ok(&dpu->ctx, offset, length))
+	if (!dpu_regs_range_ok(ctx, offset, length))
 		return -EINVAL;
 
+	/* the registers are only accessible while the dpu is powered */
+	down(&ctx->refresh_lock);
+	if (!ctx->is_inited) {
+		up(&ctx->refresh_lock);
+		return -ENXIO;
+	}
 	for (i = 0; i < length; i++) {
-		reg = readl((void __iomem *)(dpu->ctx.base + offset));
+		reg = readl((void __iomem *)(ctx->base + offset + i * 4));
 		ret += scnprintf(buf + ret, PAGE_SIZE - ret, "%x ", reg);
 	}
+	up(&ctx->refresh_lock);
 
 	return ret;
 }
@@ -240,28 +248,40 @@ static ssize_t wr_regs_store(struct device *dev,
 	struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct sprd_dpu *dpu = dev_get_drvdata(dev);
-	uint32_t temp = dpu->ctx.base_offset[0];
-	uint32_t length = dpu->ctx.base_offset[1];
+	struct dpu_context *ctx = &dpu->ctx;
+	uint32_t temp = ctx->base_offset[0];
+	uint32_t length = ctx->base_offset[1];
 	uint32_t *value;
 	uint32_t i;
+	int ret = count;
 
-	if (!dpu_regs_range_ok(&dpu->ctx, temp, length))
+	if (!dpu_regs_range_ok(ctx, temp, length) || !length)
 		return -EINVAL;
 
 	value = kcalloc(length, sizeof(*value), GFP_KERNEL);
 	if (!value)
 		return -ENOMEM;
 
-	str_to_u32_array(buf, 16, value, length);
-
-	for (i = 0; i < length; i++) {
-		writel(value[i], (void __iomem *)(dpu->ctx.base + temp));
-		temp += 0x04;
+	/* one value per register, or nothing is written */
+	if (str_to_u32_array(buf, 16, value, length) != length) {
+		kfree(value);
+		return -EINVAL;
 	}
 
+	down(&ctx->refresh_lock);
+	if (!ctx->is_inited) {
+		ret = -ENXIO;
+		goto out;
+	}
+	for (i = 0; i < length; i++) {
+		writel(value[i], (void __iomem *)(ctx->base + temp));
+		temp += 0x04;
+	}
+out:
+	up(&ctx->refresh_lock);
 	kfree(value);
 
-	return count;
+	return ret;
 }
 static DEVICE_ATTR_RW(wr_regs);
 
@@ -425,7 +445,11 @@ static const struct attribute_group dpu_group = {
 static int dpu_enhance_get_slice(struct sprd_dpu *dpu, int id, size_t size,
 				 char *buf, loff_t off, size_t count)
 {
-	u8 *tbl = kzalloc(size, GFP_KERNEL);
+	/*
+	 * Some cores fill more than the sysfs ABI size (SLP: 6 bytes in
+	 * sysfs, up to 48 in r4p0); no core table exceeds a page.
+	 */
+	u8 *tbl = kzalloc(max_t(size_t, size, PAGE_SIZE), GFP_KERNEL);
 
 	if (!tbl)
 		return -ENOMEM;
