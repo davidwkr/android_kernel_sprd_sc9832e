@@ -53,9 +53,14 @@ static ssize_t gen_read_store(struct device *dev,
 		return -ENXIO;
 	}
 
-	len = str_to_u8_array(buf, 16, input_param);
+	len = str_to_u8_array(buf, 16, input_param,
+				ARRAY_SIZE(input_param));
 	if (len == 1)
 		input_param[1] = 1;
+
+	/* the reply lands in read_buf */
+	if (input_param[1] > ARRAY_SIZE(read_buf))
+		return -EINVAL;
 
 	mipi_dsi_set_max_return_size(dsi, input_param[1]);
 	mipi_dsi_gen_read(dsi, &input_param[0], 1,
@@ -100,7 +105,8 @@ static ssize_t gen_write_store(struct device *dev,
 		return -ENXIO;
 	}
 
-	input_len = str_to_u8_array(buf, 16, input_param);
+	input_len = str_to_u8_array(buf, 16, input_param,
+				ARRAY_SIZE(input_param));
 
 	for (i = 0; i < input_len; i++)
 		pr_info("param[%d] = 0x%x\n", i, input_param[i]);
@@ -149,9 +155,14 @@ static ssize_t dcs_read_store(struct device *dev,
 		return -ENXIO;
 	}
 
-	len = str_to_u8_array(buf, 16, input_param);
+	len = str_to_u8_array(buf, 16, input_param,
+				ARRAY_SIZE(input_param));
 	if (len == 1)
 		input_param[1] = 1;
+
+	/* the reply lands in read_buf */
+	if (input_param[1] > ARRAY_SIZE(read_buf))
+		return -EINVAL;
 
 	mipi_dsi_set_max_return_size(dsi, input_param[1]);
 	mipi_dsi_dcs_read(dsi, input_param[0],
@@ -196,7 +207,8 @@ static ssize_t dcs_write_store(struct device *dev,
 		return -ENXIO;
 	}
 
-	input_len = str_to_u8_array(buf, 16, input_param);
+	input_len = str_to_u8_array(buf, 16, input_param,
+				ARRAY_SIZE(input_param));
 
 	for (i = 0; i < input_len; i++)
 		pr_info("param[%d] = 0x%x\n", i, input_param[i]);

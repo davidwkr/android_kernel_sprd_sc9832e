@@ -295,7 +295,8 @@ static ssize_t regs_offset_store(struct device *dev,
 {
 	struct sprd_dispc *dispc = dev_get_drvdata(dev);
 
-	str_to_u32_array(buf, 16, dispc->ctx.base_offset);
+	str_to_u32_array(buf, 16, dispc->ctx.base_offset,
+			 ARRAY_SIZE(dispc->ctx.base_offset));
 
 	return count;
 }
@@ -332,7 +333,7 @@ static ssize_t wr_regs_store(struct device *dev,
 	if (!value)
 		return -ENOMEM;
 
-	str_to_u32_array(buf, 16, value);
+	str_to_u32_array(buf, 16, value, length);
 
 	for (i = 0; i < length; i++) {
 		writel(value[i], (void __iomem *)(dispc->ctx.base + temp));
@@ -850,7 +851,7 @@ static ssize_t scl_store(struct device *dev,
 		return -EIO;
 
 	down(&ctx->refresh_lock);
-	str_to_u32_array(buf, 10, param);
+	str_to_u32_array(buf, 10, param, ARRAY_SIZE(param));
 	dispc->core->enhance_set(ctx, ENHANCE_CFG_ID_SCL, param);
 	up(&ctx->refresh_lock);
 

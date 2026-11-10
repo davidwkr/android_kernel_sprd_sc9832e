@@ -47,7 +47,10 @@ static ssize_t reg_read_store(struct device *dev,
 		return -ENXIO;
 	}
 
-	str_to_u32_array(buf, 0, input_param);
+	str_to_u32_array(buf, 0, input_param, ARRAY_SIZE(input_param));
+	/* one read_buf entry per register read */
+	if (input_param[1] > ARRAY_SIZE(read_buf))
+		return -EINVAL;
 
 	reg_stride = regmap_get_reg_stride(regmap);
 
@@ -121,7 +124,7 @@ static ssize_t reg_write_store(struct device *dev,
 		return -ENXIO;
 	}
 
-	len = str_to_u32_array(buf, 16, input_param);
+	len = str_to_u32_array(buf, 16, input_param, ARRAY_SIZE(input_param));
 
 	reg_stride = regmap_get_reg_stride(regmap);
 
