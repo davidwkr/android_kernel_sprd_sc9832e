@@ -527,7 +527,7 @@ struct sprd_adf_device *sprd_adf_create_devices(struct platform_device *pdev,
 			if (ret < 0) {
 				ADF_DEBUG_WARN("create  attr %s failed: %d\n",
 				sprd_adf_device_attrs[j].attr.name, ret);
-				goto error_out0;
+				goto error_out_attrs;
 			}
 		}
 		devs[i].ops = sprd_adf_get_device_ops(i);
@@ -538,12 +538,20 @@ struct sprd_adf_device *sprd_adf_create_devices(struct platform_device *pdev,
 
 	return devs;
 
+error_out_attrs:
+	/* devs[i] itself only got attrs [0, j) created before failing */
+	while (j-- > 0)
+		device_remove_file(&devs[i].base.base.dev,
+				&sprd_adf_device_attrs[j]);
+	adf_device_destroy(&devs[i].base);
+
 error_out0:
-	for (; i >= 0; i--) {
+	/* unwind the fully-initialized devices [0, i) */
+	while (i-- > 0) {
 		ADF_DEBUG_WARN("adf_device_destroy index =%zd;\n", i);
 		adf_device_destroy(&devs[i].base);
 		sprd_adf_destroy_device_private_data(devs[i].data);
-		for (; j >= 0; j--)
+		for (j = 0; j < ARRAY_SIZE(sprd_adf_device_attrs); j++)
 			device_remove_file(&devs[i].base.base.dev,
 				&sprd_adf_device_attrs[j]);
 	}
