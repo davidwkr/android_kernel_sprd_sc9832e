@@ -719,27 +719,24 @@ static int sc2720_charger_start_charge(struct sc2720_charger_info *info)
 		return -EBUSY;
 	}
 
-	ret = regmap_update_bits(info->regmap,
-				 info->base + SC2720_CHG_CFG0,
-				 SC2720_CHG_PD, 0);
-	if (ret) {
-		dev_err(info->dev, "failed to satrt charge\n");
-		return ret;
-	}
-
 	/*
 	 * SC2721: enable the hardware auto-recharge comparator while
 	 * charging, as the 4.4 sprdchg_start_charge() does. The recharge
 	 * level itself is a fixed hardware hysteresis, nothing to program.
+	 * Both bits live in CHG_CFG0 and are written in one update, so a
+	 * failure cannot leave charging enabled behind info->charging.
 	 */
-	if (info->data->is_sc2721) {
+	if (info->data->is_sc2721)
 		ret = regmap_update_bits(info->regmap,
 					 info->base + SC2720_CHG_CFG0,
-					 SC2721_CHG_RECHG_EN,
+					 SC2720_CHG_PD | SC2721_CHG_RECHG_EN,
 					 SC2721_CHG_RECHG_EN);
-		if (ret)
-			dev_err(info->dev, "failed to enable recharge\n");
-	}
+	else
+		ret = regmap_update_bits(info->regmap,
+					 info->base + SC2720_CHG_CFG0,
+					 SC2720_CHG_PD, 0);
+	if (ret)
+		dev_err(info->dev, "failed to satrt charge\n");
 
 	return ret;
 }
@@ -748,22 +745,18 @@ static int sc2720_charger_stop_charge(struct sc2720_charger_info *info)
 {
 	int ret;
 
-	ret = regmap_update_bits(info->regmap,
-				 info->base + SC2720_CHG_CFG0,
-				 SC2720_CHG_PD,
-				 SC2720_CHG_PD);
-	if (ret) {
-		dev_err(info->dev, "failed to stop charge\n");
-		return ret;
-	}
-
-	if (info->data->is_sc2721) {
+	if (info->data->is_sc2721)
 		ret = regmap_update_bits(info->regmap,
 					 info->base + SC2720_CHG_CFG0,
-					 SC2721_CHG_RECHG_EN, 0);
-		if (ret)
-			dev_err(info->dev, "failed to disable recharge\n");
-	}
+					 SC2720_CHG_PD | SC2721_CHG_RECHG_EN,
+					 SC2720_CHG_PD);
+	else
+		ret = regmap_update_bits(info->regmap,
+					 info->base + SC2720_CHG_CFG0,
+					 SC2720_CHG_PD,
+					 SC2720_CHG_PD);
+	if (ret)
+		dev_err(info->dev, "failed to stop charge\n");
 
 	return ret;
 }
@@ -1283,11 +1276,12 @@ static irqreturn_t sc2721_ovp_irq_handler(int irq, void *data)
 	struct sc2720_charger_info *info = data;
 	int fault;
 
-	fault = gpiod_get_value_cansleep(info->ovp_gpiod);
-	if (fault < 0)
-		return IRQ_HANDLED;
-
 	mutex_lock(&info->lock);
+	fault = gpiod_get_value_cansleep(info->ovp_gpiod);
+	if (fault < 0) {
+		mutex_unlock(&info->lock);
+		return IRQ_HANDLED;
+	}
 	info->ovp_fault = !!fault;
 	if (info->ovp_fault && info->charging) {
 		dev_crit(info->dev, "input over-voltage, stopping charge\n");
@@ -1317,11 +1311,12 @@ static irqreturn_t sc2721_cv_irq_handler(int irq, void *data)
 	struct sc2720_charger_info *info = data;
 	int cv;
 
-	cv = gpiod_get_value_cansleep(info->cv_gpiod);
-	if (cv < 0)
-		return IRQ_HANDLED;
-
 	mutex_lock(&info->lock);
+	cv = gpiod_get_value_cansleep(info->cv_gpiod);
+	if (cv < 0) {
+		mutex_unlock(&info->lock);
+		return IRQ_HANDLED;
+	}
 	info->cv_reached = !!cv;
 	mutex_unlock(&info->lock);
 
@@ -1357,11 +1352,16 @@ static int sc2721_init_fault_irqs(struct platform_device *pdev,
 			return ret;
 		}
 
-		ret = gpiod_get_value_cansleep(info->ovp_gpiod);
-		if (ret < 0)
-			return ret;
-
+		/*
+		 * Sample under the lock, as the handler does, so a stale read
+		 * cannot overwrite a fault the irq latched in between.
+		 */
 		mutex_lock(&info->lock);
+		ret = gpiod_get_value_cansleep(info->ovp_gpiod);
+		if (ret < 0) {
+			mutex_unlock(&info->lock);
+			return ret;
+		}
 		info->ovp_fault = !!ret;
 		if (info->ovp_fault && info->charging) {
 			dev_crit(&pdev->dev, "input over-voltage, stopping charge\n");
@@ -1390,16 +1390,35 @@ static int sc2721_init_fault_irqs(struct platform_device *pdev,
 			return ret;
 		}
 
-		ret = gpiod_get_value_cansleep(info->cv_gpiod);
-		if (ret < 0)
-			return ret;
-
 		mutex_lock(&info->lock);
+		ret = gpiod_get_value_cansleep(info->cv_gpiod);
+		if (ret < 0) {
+			mutex_unlock(&info->lock);
+			return ret;
+		}
 		info->cv_reached = !!ret;
 		mutex_unlock(&info->lock);
 	}
 
 	return 0;
+}
+
+/*
+ * Undo the USB notifier: once it is gone no new work can be queued, so
+ * drain any pending work before devm frees info, and stop charging the
+ * work may have started.
+ */
+static void sc2720_charger_unwind(struct sc2720_charger_info *info)
+{
+	usb_unregister_notifier(info->usb_phy, &info->usb_notify);
+	cancel_work_sync(&info->work);
+
+	mutex_lock(&info->lock);
+	if (info->charging) {
+		sc2720_charger_stop_charge(info);
+		info->charging = false;
+	}
+	mutex_unlock(&info->lock);
 }
 
 static int sc2720_charger_probe(struct platform_device *pdev)
@@ -1445,13 +1464,6 @@ static int sc2720_charger_probe(struct platform_device *pdev)
 	if (info->data->is_sc2721)
 		of_property_read_u32(np, "sprd,ovp-microvolt", &info->ovp_uv);
 
-	info->usb_notify.notifier_call = sc2720_charger_usb_change;
-	ret = usb_register_notifier(info->usb_phy, &info->usb_notify);
-	if (ret) {
-		dev_err(&pdev->dev, "failed to register notifier:%d\n", ret);
-		return ret;
-	}
-
 	charger_cfg.drv_data = info;
 	charger_cfg.of_node = np;
 	info->psy_usb = devm_power_supply_register(&pdev->dev,
@@ -1459,8 +1471,15 @@ static int sc2720_charger_probe(struct platform_device *pdev)
 						   &charger_cfg);
 	if (IS_ERR(info->psy_usb)) {
 		dev_err(&pdev->dev, "failed to register power supply\n");
-		usb_unregister_notifier(info->usb_phy, &info->usb_notify);
 		return PTR_ERR(info->psy_usb);
+	}
+
+	/* after psy_usb exists: the work it queues calls power_supply_changed() */
+	info->usb_notify.notifier_call = sc2720_charger_usb_change;
+	ret = usb_register_notifier(info->usb_phy, &info->usb_notify);
+	if (ret) {
+		dev_err(&pdev->dev, "failed to register notifier:%d\n", ret);
+		return ret;
 	}
 
 	if (info->data->is_sc2721) {
@@ -1468,7 +1487,7 @@ static int sc2720_charger_probe(struct platform_device *pdev)
 		if (ret) {
 			dev_err(&pdev->dev, "failed to read cccv calibration: %d\n",
 				ret);
-			usb_unregister_notifier(info->usb_phy, &info->usb_notify);
+			sc2720_charger_unwind(info);
 			return ret;
 		}
 
@@ -1492,7 +1511,7 @@ static int sc2720_charger_probe(struct platform_device *pdev)
 	ret = sc2720_charger_hw_init(info);
 	if (ret) {
 		sc2721_cv_release(info);
-		usb_unregister_notifier(info->usb_phy, &info->usb_notify);
+		sc2720_charger_unwind(info);
 		return ret;
 	}
 
@@ -1505,7 +1524,7 @@ static int sc2720_charger_probe(struct platform_device *pdev)
 		ret = sc2721_init_fault_irqs(pdev, info);
 		if (ret) {
 			sc2721_cv_release(info);
-			usb_unregister_notifier(info->usb_phy, &info->usb_notify);
+			sc2720_charger_unwind(info);
 			return ret;
 		}
 	}
@@ -1520,7 +1539,7 @@ static int sc2720_charger_remove(struct platform_device *pdev)
 	struct sc2720_charger_info *info = platform_get_drvdata(pdev);
 
 	sc2721_cv_release(info);
-	usb_unregister_notifier(info->usb_phy, &info->usb_notify);
+	sc2720_charger_unwind(info);
 
 	return 0;
 }
