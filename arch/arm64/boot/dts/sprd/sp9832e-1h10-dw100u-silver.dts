@@ -101,3 +101,8 @@
 		gpio-key,level-trigger;
 	};
 };
+
+/* stock iommu@20800160 iova pool: 0x70000000 + 0x9600000 (sharkle default 0x8000000) */
+&iommu_dispc {
+	iova-size = <0x09600000>;
+};
