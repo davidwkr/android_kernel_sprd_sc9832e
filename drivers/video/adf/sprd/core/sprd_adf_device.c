@@ -115,14 +115,15 @@ static struct sprd_restruct_config *sprd_adf_restruct_post_config(
 		goto err_out;
 	}
 
-	if (!post->n_bufs || post->n_bufs > SPRD_N_LAYER) {
+	/* n_bufs == 0 is an empty frame, accepted by 4.4 and the dispc flip */
+	if (post->n_bufs > SPRD_N_LAYER) {
 		ADF_DEBUG_WARN("n_bufs %zu exceeds hw layer count %d\n",
 				post->n_bufs, SPRD_N_LAYER);
 		goto err_out;
 	}
 
 	custom_data_size = (size_t)post->custom_data_size;
-	if (custom_data_size < sizeof(struct sprd_adf_post_custom_data) ||
+	if (custom_data_size < FLIP_CUSTOM_DATA_MIN_SIZE ||
 	    (custom_data_size - sizeof(struct sprd_adf_post_custom_data)) /
 	    sizeof(struct sprd_adf_hwlayer_custom_data) < post->n_bufs) {
 		ADF_DEBUG_WARN("data size is ilegal data_size = %zd;\n"
