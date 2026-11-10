@@ -11,11 +11,13 @@
  * GNU General Public License for more details.
  */
 
+#include <linux/ctype.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of_irq.h>
 #include <linux/platform_device.h>
+#include <linux/string.h>
 #include <linux/sysfs.h>
 #include <linux/timer.h>
 #include <linux/timex.h>
@@ -163,6 +165,9 @@ static ssize_t actual_fps_show(struct device *dev,
 			vm.hfront_porch + vm.hactive) *
 			(vm.vsync_len + vm.vback_porch +
 			vm.vfront_porch + vm.vactive);
+	/* vm is filled in when the mode is set, sysfs exists before */
+	if (!total_pixels)
+		return -ENODATA;
 
 	act_fps_int = vm.pixelclock / total_pixels;
 	act_fps_frac = vm.pixelclock % total_pixels;
@@ -244,6 +249,18 @@ static ssize_t wr_regs_show(struct device *dev,
 	return ret;
 }
 
+/* true if buf holds no more than n space-separated values */
+static bool wr_regs_input_ends(const char *buf, u32 n)
+{
+	while (n--) {
+		buf = skip_spaces(buf);
+		while (*buf && !isspace(*buf))
+			buf++;
+	}
+
+	return *skip_spaces(buf) == '\0';
+}
+
 static ssize_t wr_regs_store(struct device *dev,
 	struct device_attribute *attr, const char *buf, size_t count)
 {
@@ -263,7 +280,8 @@ static ssize_t wr_regs_store(struct device *dev,
 		return -ENOMEM;
 
 	/* one value per register, or nothing is written */
-	if (str_to_u32_array(buf, 16, value, length) != length) {
+	if (str_to_u32_array(buf, 16, value, length) != length ||
+	    !wr_regs_input_ends(buf, length)) {
 		kfree(value);
 		return -EINVAL;
 	}

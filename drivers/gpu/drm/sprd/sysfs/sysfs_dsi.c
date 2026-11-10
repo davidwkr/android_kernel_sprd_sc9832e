@@ -381,10 +381,9 @@ static ssize_t work_mode_show(struct device *dev,
 	int ret = 0;
 	int mode;
 
-	if (pm_runtime_suspended(dev->parent))
+	mode = sprd_dsi_get_work_mode_locked(dsi);
+	if (mode < 0)
 		return snprintf(buf, PAGE_SIZE, "dsi was closed\n");
-
-	mode = sprd_dsi_get_work_mode(dsi);
 
 	if (mode == DSI_MODE_CMD)
 		ret = snprintf(buf, PAGE_SIZE, "cmd\n");
