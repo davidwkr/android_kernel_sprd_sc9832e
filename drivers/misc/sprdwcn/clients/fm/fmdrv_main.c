@@ -250,19 +250,37 @@ static int fm_write_cmd(unsigned char subcmd, void *payload,
 		mutex_unlock(&fmdev->mutex);
 		return -ETIMEDOUT;
 	}
-	mutex_unlock(&fmdev->mutex);
 	pr_info("fmdrv wait command have complete\n");
-	/* 0:len; XX XX XX sttaus */
+	/*
+	 * Read the response under the mutex, so another command cannot
+	 * replace it. 0:len; XX XX XX status; the receive tasklet keeps
+	 * len + 1 within com_respbuf.
+	 */
+	if (fmdev->com_respbuf[0] < 4) {
+		pr_err("(fmdrv) %s(): short response for 0x%02X\n",
+		       __func__, subcmd);
+		mutex_unlock(&fmdev->mutex);
+		return -EIO;
+	}
 	if ((fmdev->com_respbuf[4]) != 0) {
 		pr_err("(fmdrv) %s(): Response status not success for 0x%02X\n",
 			__func__, subcmd);
+		mutex_unlock(&fmdev->mutex);
 		return -EFAULT;
 	}
 	pr_info("(fmdrv) %s(): Response status success for 0x%02X: %d\n",
 			__func__, subcmd, fmdev->com_respbuf[4]);
 	/* the event : 04 0e len 01 8C  fc  00(status) rssi snr freq .p->len */
-	if (response != NULL && response_len != NULL)
-		memcpy(response, &(fmdev->com_respbuf[5]), fmdev->com_respbuf[0]-4);
+	if (response != NULL && response_len != NULL) {
+		/* *response_len: capacity in, copied length out */
+		unsigned char rlen = fmdev->com_respbuf[0] - 4;
+
+		if (rlen > *response_len)
+			rlen = *response_len;
+		memcpy(response, &(fmdev->com_respbuf[5]), rlen);
+		*response_len = rlen;
+	}
+	mutex_unlock(&fmdev->mutex);
 
 	return 0;
 }
@@ -308,7 +326,18 @@ static void receive_tasklet(unsigned long arg)
 			p = rx->addr;
 			next_packet_len = rx->len;
 		do{
+			/* 04 type len payload: the packet must be complete */
+			if (next_packet_len < 3 ||
+			    *((rx->addr)+2) + 3 > next_packet_len) {
+				pr_err("fmdrv error: truncated event\n");
+				break;
+			}
 			if ((*((rx->addr)+1)) == 0x0e) {
+				if ((*(rx->addr+2)) + 1 >
+				    sizeof(fmdev->com_respbuf)) {
+					pr_err("fmdrv error: response too long\n");
+					goto next_packet;
+				}
 				memcpy(fmdev->com_respbuf, rx->addr + 2 , (*(rx->addr+2)) + 1 );
 				pr_info("fm RX before commontask_completion=0x%x\n",
 				fmdev->commontask_completion.done);
@@ -319,6 +348,11 @@ static void receive_tasklet(unsigned long arg)
 
 			else if (((*((rx->addr)+1)) == 0xFF) &&
 				((*((rx->addr)+3)) == 0x30)) {
+				if ((*(rx->addr+2)) + 1 >
+				    sizeof(fmdev->seek_respbuf)) {
+					pr_err("fmdrv error: seek event too long\n");
+					goto next_packet;
+				}
 				memcpy(fmdev->seek_respbuf, rx->addr + 2 ,
 				(*(rx->addr+2)) + 1 );
 				/*fmdev->seek_response = rx;*/
@@ -334,7 +368,7 @@ static void receive_tasklet(unsigned long arg)
 			else {
 				pr_err("fmdrv error:unknown event !!!\n");
 			}
-
+next_packet:
 				last_packet_len = *((rx->addr)+2) + 3;
 				pr_info("this packet len is %d\n ", last_packet_len);
 				next_packet_len = next_packet_len - last_packet_len;
@@ -598,6 +632,7 @@ int fm_tune(void *arg)
 	global_freq = parm.freq;
 #endif
 	pr_info("fm ioctl tune 50k/100k freq = %d\n", parm.freq);
+	respond_len = sizeof(respond_buf);
 	ret = fm_write_cmd(FM_TUNE_CMD, &parm.freq, sizeof(parm.freq),
 		respond_buf, &respond_len);
 	if (ret < 0) {
@@ -648,8 +683,12 @@ int fm_seek(void *arg)
 		return -ETIMEDOUT;
 	}
 
+	/* 0:len 1:0x30 2..: data; the tasklet keeps len + 1 <= 12 */
+	if (fmdev->seek_respbuf[0] < 1)
+		return -EIO;
 	memcpy(respond_buf, &(fmdev->seek_respbuf[2]),
-		fmdev->seek_respbuf[0] - 1);
+	       min_t(size_t, fmdev->seek_respbuf[0] - 1,
+		     sizeof(respond_buf)));
 #ifdef SEEK_NEW
 	rx = fmdev->seek_response;
 	if (fmdev->seek_response == NULL)
@@ -737,6 +776,7 @@ int fm_get_volume(void *arg)
 	unsigned char resp_buf[1];
 	int ret = -1;
 
+	res_len = sizeof(resp_buf);
 	ret = fm_write_cmd(FM_GET_VOLUME_CMD, &payload, sizeof(payload),
 		&resp_buf[0], &res_len);
 	if (ret < 0) {
@@ -785,6 +825,7 @@ int fm_scan_all(void *arg)
 		return -EFAULT;
 	}
 
+	respond_len = sizeof(respond_buf);
 	ret = fm_write_cmd(FM_SCAN_ALL_CMD, &parm, sizeof(parm),
 		&respond_buf, &respond_len);
 	if (ret < 0) {
@@ -809,6 +850,7 @@ int fm_rw_reg(void *arg)
 		return -EFAULT;
 	}
 	pr_info("fm ioctl read write reg = %d\n", parm.rw_flag);
+	respond_len = sizeof(parm);
 	ret = fm_write_cmd(FM_READ_WRITE_REG_CMD, &parm, sizeof(parm),
 		&parm, &respond_len);
 	if (ret < 0) {
@@ -937,6 +979,7 @@ int fm_get_audio_mode(void *arg)
 	int ret = -1;
 
 	pr_info("fm ioctl get audio mode\n");
+	res_len = sizeof(resp_buf);
 	ret = fm_write_cmd(FM_GET_AUDIO_MODE, NULL, 0,
 		&resp_buf[0], &res_len);
 	if (ret < 0) {
@@ -960,6 +1003,7 @@ int fm_get_current_bler(void *arg)
 	int ret = -1;
 
 	pr_info("fm ioctl get current BLER\n");
+	res_len = sizeof(resp_buf);
 	ret = fm_write_cmd(DM_GET_CUR_BLER_CMD, NULL, 0,
 		&resp_buf[0], &res_len);
 	if (ret < 0) {
@@ -983,6 +1027,7 @@ int fm_get_cur_snr(void *arg)
 	int ret = -1;
 
 	pr_info("fm ioctl get current SNR\n");
+	res_len = sizeof(resp_buf);
 	ret = fm_write_cmd(FM_GET_SNR_CMD, NULL, 0,
 		&resp_buf[0], &res_len);
 	if (ret < 0) {
@@ -1104,6 +1149,7 @@ int fm_get_seek_criteria(void *arg)
 	int ret = -1;
 
 	pr_info("fm ioctl get_seek_criteria\n");
+	res_len = sizeof(parm);
 	ret = fm_write_cmd(FM_GET_SEEK_CRITERIA_CMD, NULL, 0,
 		&parm, &res_len);
 	if (ret < 0) {
@@ -1125,6 +1171,7 @@ int fm_get_audio_threshold(void *arg)
 	int ret = -1;
 
 	pr_info("fm ioctl get_audio_threshold\n");
+	res_len = sizeof(parm);
 	ret = fm_write_cmd(FM_GET_AUDIO_THRESHOLD_CMD, NULL, 0,
 		&parm, &res_len);
 	if (ret < 0) {
@@ -1148,6 +1195,7 @@ int fm_getrssi(void *arg)
 	unsigned char resp_buf[1];
 	int ret = -1;
 
+	res_len = sizeof(resp_buf);
 	ret = fm_write_cmd(FM_GET_RSSI_CMD, &payload, sizeof(payload),
 		&resp_buf[0], &res_len);
 	if (ret < 0) {
@@ -1302,6 +1350,7 @@ int fm_getcur_pamd(void *arg)
 	return ret;
 #endif
 
+	PAMD_LEN = sizeof(resp_buf);
 	ret = fm_write_cmd(FM_GET_CURPAMD, NULL, 0,
 		&resp_buf[0], &PAMD_LEN);
 	if (ret < 0) {

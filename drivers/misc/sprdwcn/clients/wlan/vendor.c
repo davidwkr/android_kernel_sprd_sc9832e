@@ -44,6 +44,12 @@ static int parse_bucket(struct sprdwl_vif *vif, struct nlattr *bucket_spec,
 
 	index = 0;
 	nla_for_each_nested(attr_bucket, bucket_spec, rem1) {
+		/* config->buckets[] holds MAX_BUCKETS entries */
+		if (index >= MAX_BUCKETS ||
+		    index >= config->num_buckets) {
+			netdev_err(vif->ndev, "too many buckets\n");
+			return -EINVAL;
+		}
 		ret =  nla_parse(bucket, SPRDWL_ATTR_GSCAN_MAX,
 				 nla_data(attr_bucket), nla_len(attr_bucket),
 				 NULL, NULL);
@@ -109,10 +115,19 @@ static int parse_bucket(struct sprdwl_vif *vif, struct nlattr *bucket_spec,
 			    config->buckets[index].max_period,
 			    config->buckets[index].exponent,
 			    config->buckets[index].step_count);
+		if (config->buckets[index].num_channels > MAX_CHANNELS) {
+			netdev_err(vif->ndev, "too many channels\n");
+			return -EINVAL;
+		}
 		num = 0;
 		nla_for_each_nested(channel_attr,
 				    bucket[SPRDWL_ATTR_GSCAN_CHANNEL_SPEC],
 				    rem2) {
+			/* channels[] holds MAX_CHANNELS entries */
+			if (num >= config->buckets[index].num_channels) {
+				netdev_err(vif->ndev, "too many channel specs\n");
+				return -EINVAL;
+			}
 			ret = nla_parse(channel, SPRDWL_ATTR_GSCAN_MAX,
 					nla_data(channel_attr),
 					nla_len(channel_attr), NULL, NULL);
@@ -142,7 +157,15 @@ static int parse_bucket(struct sprdwl_vif *vif, struct nlattr *bucket_spec,
 			nla_get_u8(channel[SPRDWL_ATTR_GSCAN_CHANNEL_PASSIVE]);
 			num++;
 		}
+		if (num != config->buckets[index].num_channels) {
+			netdev_err(vif->ndev, "channel count mismatch\n");
+			return -EINVAL;
+		}
 		index++;
+	}
+	if (index != config->num_buckets) {
+		netdev_err(vif->ndev, "bucket count mismatch\n");
+		return -EINVAL;
 	}
 	return ret;
 }
@@ -221,12 +244,21 @@ static int sprdwl_vendor_gscan_start(struct wiphy *wiphy,
 		    scan_params.report_threshold_percent,
 		    scan_params.report_threshold_num_scans, config.num_buckets);
 
+	/* gscan_buckets_num indexes gscan_res[MAX_BUCKETS] */
+	if (config.num_buckets > MAX_BUCKETS) {
+		netdev_err(vif->ndev, "num buckets %d > %d\n",
+			   config.num_buckets, MAX_BUCKETS);
+		return -EINVAL;
+	}
+	ret = parse_bucket(vif, mattributes[SPRDWL_ATTR_GSCAN_BUCKET_SPEC],
+			   &config);
+	if (ret)
+		return ret;
 	vif->priv->gscan_buckets_num = config.num_buckets;
 	for (index = 0; index < MAX_BUCKETS; index++) {
 		vif->priv->gscan_res[index].num_results = 0;
 		vif->priv->gscan_res[index].scan_id = index + 1;
 	}
-	parse_bucket(vif, mattributes[SPRDWL_ATTR_GSCAN_BUCKET_SPEC], &config);
 
 	slen = sizeof(struct sprdwl_cmd_gscan_set_config);
 	ret = sprdwl_set_gscan_config(vif->priv, vif->mode, (void *)(&config),
@@ -289,9 +321,15 @@ static int sprdwl_vendor_set_country(struct wiphy *wiphy,
 	}
 
 	country_attr = (struct nlattr *)data;
+	/* one attribute holding the code, inside the vendor data */
+	if (!nla_ok(country_attr, len) ||
+	    nla_len(country_attr) < SPRDWL_COUNTRY_CODE_LEN) {
+		wiphy_err(wiphy, "%s invalid country attribute!\n", __func__);
+		return -EINVAL;
+	}
 	country = (char *)nla_data(country_attr);
 
-	if (!country || strlen(country) != SPRDWL_COUNTRY_CODE_LEN) {
+	if (strnlen(country, nla_len(country_attr)) != SPRDWL_COUNTRY_CODE_LEN) {
 		wiphy_err(wiphy, "%s invalid country code!\n", __func__);
 		return -EINVAL;
 	}
@@ -927,19 +965,19 @@ static int sprdwl_vendor_get_cached_gscan_results(struct wiphy *wiphy,
 		if (!(vif->priv->gscan_res + i)->num_results)
 			continue;
 
-		for (j = 0; j <= (vif->priv->gscan_res + i)->num_results; j++) {
+		/* drop expired entries: compact in place, recheck index j */
+		for (j = 0; j < (vif->priv->gscan_res + i)->num_results; ) {
+			struct sprdwl_gscan_cached_results *cr =
+				vif->priv->gscan_res + i;
+
 			if (time_after(jiffies - VENDOR_SCAN_RESULT_EXPIRE,
-				       (unsigned long)
-				       (vif->priv->gscan_res + i)->results[j].ts)) {
-				memcpy((void *)
-				(&(vif->priv->gscan_res + i)->results[j]),
-				(void *)
-				(&(vif->priv->gscan_res + i)->results[j + 1]),
-				sizeof(struct sprdwl_gscan_result)
-				* ((vif->priv->gscan_res + i)->num_results
-				- j - 1));
-				(vif->priv->gscan_res + i)->num_results--;
-				j = 0;
+				       (unsigned long)cr->results[j].ts)) {
+				memmove(&cr->results[j], &cr->results[j + 1],
+					sizeof(struct sprdwl_gscan_result) *
+					(cr->num_results - j - 1));
+				cr->num_results--;
+			} else {
+				j++;
 			}
 		}
 
@@ -1107,7 +1145,7 @@ static int sprdwl_vendor_cached_scan_result(struct sprdwl_vif *vif,
 		netdev_err(vif->ndev, "%s gscan res invalid!\n", __func__);
 
 	if (bucket_id >= priv->gscan_buckets_num || !priv->gscan_res ||
-	    bucket_id > MAX_BUCKETS) {
+	    bucket_id >= MAX_BUCKETS) {
 		netdev_err(vif->ndev, "%s the gscan buffer invalid!\n",
 			   __func__);
 		return -EINVAL;

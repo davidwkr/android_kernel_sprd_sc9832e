@@ -660,6 +660,14 @@ static void sprdwl_set_multicast(struct net_device *ndev)
 	sprdwl_queue_work(vif->priv, work);
 }
 
+static struct net_device_ops sprdwl_netdev_ops;
+
+/* true if ndev is one of this driver's interfaces */
+bool sprdwl_is_sprdwl_ndev(const struct net_device *ndev)
+{
+	return ndev && ndev->netdev_ops == &sprdwl_netdev_ops;
+}
+
 static struct net_device_ops sprdwl_netdev_ops = {
 	.ndo_init = sprdwl_init,
 	.ndo_uninit = sprdwl_uninit,
