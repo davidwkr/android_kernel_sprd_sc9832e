@@ -473,62 +473,44 @@ static int musb_sprd_vbus_notifier(struct notifier_block *nb,
 }
 
 /*
- * Shared by musb_sprd_id_notifier() and the role code, which replays a
- * cable event here that arrived while role_busy deferred it (see below).
+ * Apply an ID cable event; caller holds glue->lock. Returns false when the
+ * event changes nothing (already in that state, or peripheral-only).
  */
-static void musb_sprd_id_handle(struct sprd_glue *glue, bool connect)
+static bool musb_sprd_id_apply_locked(struct sprd_glue *glue, bool connect)
 {
-	unsigned long flags;
+	if (glue->vbus_active == (connect ? 1 : 0) ||
+	    glue->dr_mode == USB_DR_MODE_PERIPHERAL)
+		return false;
 
-	if (connect) {
-		spin_lock_irqsave(&glue->lock, flags);
-		if (glue->vbus_active == 1 || glue->dr_mode == USB_DR_MODE_PERIPHERAL) {
-			spin_unlock_irqrestore(&glue->lock, flags);
-			dev_info(glue->dev,
-				"ignore host connection detected from ID GPIO.\n");
-			return;
-		}
+	glue->vbus_active = connect ? 1 : 0;
+	glue->wq_mode = USB_DR_MODE_HOST;
+	queue_work(system_unbound_wq, &glue->work);
+	return true;
+}
 
-		glue->vbus_active = 1;
-		glue->wq_mode = USB_DR_MODE_HOST;
-		queue_work(system_unbound_wq, &glue->work);
-		spin_unlock_irqrestore(&glue->lock, flags);
-		dev_info(glue->dev,
-			"host connection detected from ID GPIO.\n");
-	} else {
-		spin_lock_irqsave(&glue->lock, flags);
-		if (glue->vbus_active == 0 || glue->dr_mode == USB_DR_MODE_PERIPHERAL) {
-			spin_unlock_irqrestore(&glue->lock, flags);
-			dev_info(glue->dev,
-				"ignore host disconnect detected from ID GPIO.\n");
-			return;
-		}
-
-		glue->vbus_active = 0;
-		glue->wq_mode = USB_DR_MODE_HOST;
-		queue_work(system_unbound_wq, &glue->work);
-		spin_unlock_irqrestore(&glue->lock, flags);
-		dev_info(glue->dev,
-			"host disconnect detected from ID GPIO.\n");
-	}
+static void musb_sprd_id_log(struct sprd_glue *glue, bool connect,
+			     bool applied)
+{
+	dev_info(glue->dev, "%shost %s detected from ID GPIO.\n",
+		 applied ? "" : "ignore ",
+		 connect ? "connection" : "disconnect");
 }
 
 static int musb_sprd_id_notifier(struct notifier_block *nb,
 				unsigned long event, void *data)
 {
 	struct sprd_glue *glue = container_of(nb, struct sprd_glue, id_nb);
-
-#ifdef CONFIG_USB_MUSB_SPRD_ROLE_SYSFS
 	unsigned long flags;
+	bool applied;
 
+	spin_lock_irqsave(&glue->lock, flags);
+#ifdef CONFIG_USB_MUSB_SPRD_ROLE_SYSFS
 	/*
 	 * A role transition owns vbus_active / wq_mode right now (e.g. a
-	 * host shutdown in progress): applying this event here would race
-	 * its own queuing of glue->work. Record it and let the role code
-	 * replay it via musb_sprd_id_handle() once role_busy clears.
+	 * host shutdown in progress). Record the latest event; the role code
+	 * applies it under this lock when it finishes (or drops it on removal).
 	 */
-	spin_lock_irqsave(&glue->lock, flags);
-	if (READ_ONCE(glue->role_busy)) {
+	if (glue->role_busy) {
 		glue->id_pending = true;
 		glue->id_pending_connect = !!event;
 		spin_unlock_irqrestore(&glue->lock, flags);
@@ -537,10 +519,10 @@ static int musb_sprd_id_notifier(struct notifier_block *nb,
 			event ? "connect" : "disconnect");
 		return 0;
 	}
-	spin_unlock_irqrestore(&glue->lock, flags);
 #endif
-
-	musb_sprd_id_handle(glue, !!event);
+	applied = musb_sprd_id_apply_locked(glue, !!event);
+	spin_unlock_irqrestore(&glue->lock, flags);
+	musb_sprd_id_log(glue, !!event, applied);
 	return 0;
 }
 
@@ -1104,7 +1086,7 @@ static int __sprd_musb_role_set(struct sprd_glue *glue, bool host, bool final)
 	struct musb *musb = platform_get_drvdata(glue->musb);
 	unsigned long flags;
 	bool queue = false;
-	bool id_pending, id_connect;
+	bool id_pending, id_connect, applied;
 	int ret = 0;
 	int vbus;
 
@@ -1115,7 +1097,9 @@ static int __sprd_musb_role_set(struct sprd_glue *glue, bool host, bool final)
 	 * Keep recover_work from touching vbus_active / wq_mode behind our
 	 * back: block it first, before any state is read or written.
 	 */
+	spin_lock_irqsave(&glue->lock, flags);
 	WRITE_ONCE(glue->role_busy, true);
+	spin_unlock_irqrestore(&glue->lock, flags);
 	cancel_delayed_work_sync(&glue->recover_work);
 
 	/* may sleep (extcon), so read it before taking the spinlock */
@@ -1227,16 +1211,22 @@ done:
 	/* a recover_work armed meanwhile would restart host */
 	cancel_delayed_work_sync(&glue->recover_work);
 
+	/*
+	 * Apply the last cable event deferred by musb_sprd_id_notifier()
+	 * while we ran, then reopen, both under the lock so a newer event
+	 * cannot slip in between. On removal, drop it and stay closed so the
+	 * notifier queues no more work.
+	 */
 	spin_lock_irqsave(&glue->lock, flags);
-	WRITE_ONCE(glue->role_busy, false);
-	id_pending = glue->id_pending;
+	id_pending = glue->id_pending && !final;
 	id_connect = glue->id_pending_connect;
 	glue->id_pending = false;
+	applied = id_pending && musb_sprd_id_apply_locked(glue, id_connect);
+	if (!final)
+		WRITE_ONCE(glue->role_busy, false);
 	spin_unlock_irqrestore(&glue->lock, flags);
-
-	/* a cable event deferred by musb_sprd_id_notifier() while we ran */
 	if (id_pending)
-		musb_sprd_id_handle(glue, id_connect);
+		musb_sprd_id_log(glue, id_connect, applied);
 
 	return ret;
 }
