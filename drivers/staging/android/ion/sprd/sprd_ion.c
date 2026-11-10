@@ -46,11 +46,15 @@ static struct ion_buffer *get_ion_buffer(int fd, struct dma_buf *dmabuf)
 			       dmabuf);
 			return ERR_PTR(-EBADF);
 		}
-		buffer = dmabuf->priv;
+		/* priv is an ion_buffer only for dma_bufs ION exported */
+		buffer = ion_dma_buf_is_ion(dmabuf) ? dmabuf->priv : NULL;
 		dma_buf_put(dmabuf);
 	} else {
-		buffer = dmabuf->priv;
+		buffer = ion_dma_buf_is_ion(dmabuf) ? dmabuf->priv : NULL;
 	}
+
+	if (!buffer)
+		return ERR_PTR(-EINVAL);
 
 	return buffer;
 }
@@ -67,7 +71,7 @@ void get_ion_user_info(int fd, bool map)
 		return;
 	}
 
-	if (strcmp(dmabuf->exp_name, "ion"))
+	if (!ion_dma_buf_is_ion(dmabuf))
 		goto out;
 
 	buffer = dmabuf->priv;
@@ -336,7 +340,7 @@ int sprd_ion_get_phys_addr_by_db(struct dma_buf *dmabuf,
 	struct sg_table *table = NULL;
 	struct scatterlist *sgl = NULL;
 
-	if (!dmabuf)
+	if (!dmabuf || !ion_dma_buf_is_ion(dmabuf))
 		return -EINVAL;
 
 	buffer = dmabuf->priv;
