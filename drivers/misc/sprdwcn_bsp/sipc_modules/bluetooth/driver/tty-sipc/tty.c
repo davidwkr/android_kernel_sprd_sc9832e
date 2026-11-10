@@ -11,6 +11,8 @@
  * GNU General Public License for more details.
  */
 
+#include <linux/mutex.h>
+#include <linux/vmalloc.h>
 #include <linux/console.h>
 #include <linux/delay.h>
 #include <linux/errno.h>
@@ -76,6 +78,13 @@ struct stty_device {
 
 static bool is_user_debug = false;
 bt_host_data_dump *data_dump = NULL;
+/*
+ * The HCI parser (sitm) and data_dump live as long as the driver; the
+ * parser is reset on the first open. stty_sitm_lock serializes open,
+ * close and the parser in writes.
+ */
+static DEFINE_MUTEX(stty_sitm_lock);
+static int stty_open_count;
 static bool is_dumped = false;
 
 #if 0
@@ -97,10 +106,6 @@ static ssize_t dumpmem_store(struct device *dev,
     if (is_dumped == false) {
 		pr_info("mtty BT start dump cp mem !\n");
         bt_host_data_printf();
-        if (data_dump != NULL) {
-			vfree(data_dump);
-            data_dump = NULL;
-        }
     } else {
         pr_info("mtty BT has dumped cp mem, pls restart phone!\n");
     }
@@ -237,9 +242,6 @@ static int stty_open(struct tty_struct *tty, struct file *filp)
 	struct stty_device *stty = NULL;
 	struct tty_driver *driver = NULL;
 
-    data_dump = (bt_host_data_dump* )vmalloc(sizeof(bt_host_data_dump));
-    memset(data_dump, 0 , sizeof(bt_host_data_dump));
-
 	pr_debug("stty_open\n");
 
 	if (tty == NULL) {
@@ -273,7 +275,10 @@ static int stty_open(struct tty_struct *tty, struct file *filp)
 #endif
 
 	pr_debug("stty_open device success!\n");
-	sitm_ini();
+	mutex_lock(&stty_sitm_lock);
+	if (stty_open_count++ == 0)
+		sitm_ini();
+	mutex_unlock(&stty_sitm_lock);
 #if 0
 	stty_address_init();
 #endif
@@ -301,15 +306,13 @@ static void stty_close(struct tty_struct *tty, struct file *filp)
 	mutex_unlock(&(stty->stat_lock));
 
 	pr_debug("stty_close device success !\n");
-	sitm_cleanup();
+	mutex_lock(&stty_sitm_lock);
+	if (stty_open_count > 0)
+		stty_open_count--;
+	mutex_unlock(&stty_sitm_lock);
 #ifdef CONFIG_ARCH_SCX20
 	rf2351_vddwpa_ctrl_power_enable(0);
 #endif
-
-    if (data_dump != NULL) {
-       vfree(data_dump);
-       data_dump = NULL;
-    }
 }
 
 #if 0
@@ -413,8 +416,13 @@ static int stty_data_transmit(uint8_t *data, size_t count)
 static int stty_write_plus(struct tty_struct *tty,
 	      const unsigned char *buf, int count)
 {
+	int ret;
+
 	BT_VER("stty_write_plus\n");
-	return sitm_write(buf, count, stty_data_transmit);
+	mutex_lock(&stty_sitm_lock);
+	ret = sitm_write(buf, count, stty_data_transmit);
+	mutex_unlock(&stty_sitm_lock);
+	return ret;
 }
 
 static void stty_flush_chars(struct tty_struct *tty)
@@ -609,6 +617,13 @@ static int  stty_probe(struct platform_device *pdev)
 	pr_debug("stty_probe init device addr: 0x%p\n", stty);
 	platform_set_drvdata(pdev, stty);
 
+	/* optional debug ring and the HCI parser, freed in stty_remove() */
+	data_dump = vzalloc(sizeof(bt_host_data_dump));
+	mutex_lock(&stty_sitm_lock);
+	if (sitm_ini())
+		pr_err("%s: no HCI parser\n", __func__);
+	mutex_unlock(&stty_sitm_lock);
+
 	if (sysfs_create_group(&pdev->dev.kobj,
 			&bluetooth_group)) {
 		pr_err("%s failed to create bluetooth tty attributes.\n", __func__);
@@ -636,6 +651,11 @@ static int  stty_remove(struct platform_device *pdev)
 	devm_kfree(&pdev->dev, stty);
 	platform_set_drvdata(pdev, NULL);
 	sysfs_remove_group(&pdev->dev.kobj, &bluetooth_group);
+	mutex_lock(&stty_sitm_lock);
+	sitm_cleanup();
+	mutex_unlock(&stty_sitm_lock);
+	vfree(data_dump);
+	data_dump = NULL;
 	return 0;
 }
 

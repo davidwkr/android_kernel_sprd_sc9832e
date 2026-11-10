@@ -239,8 +239,8 @@ static int sprdwl_nl_get_info_handler(struct sk_buff *skb_2,
 	int ret = 0;
 
 	if (vif) {
+		/* no sprdwl_get_vif() here: pre_doit holds the netdev */
 		memcpy(r_buf, vif->ndev->dev_addr, ETH_ALEN);
-		sprdwl_put_vif(vif);
 		r_len = 6;
 		ret = sprdwl_nl_send_generic(info, SPRDWL_NL_ATTR_CP2AP,
 					     SPRDWL_NL_CMD_GET_INFO, r_len,
