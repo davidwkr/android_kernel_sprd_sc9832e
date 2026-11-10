@@ -115,6 +115,11 @@ static int sprdwl_npi_pre_doit(const struct genl_ops *ops,
 			pr_err("NPI: Could not find ndev\n");
 			return -EFAULT;
 		}
+		/* netdev_priv() is a sprdwl_vif only on our interfaces */
+		if (!sprdwl_is_sprdwl_ndev(ndev)) {
+			dev_put(ndev);
+			return -ENODEV;
+		}
 		vif = netdev_priv(ndev);
 		priv = vif->priv;
 		info->user_ptr[0] = ndev;
@@ -174,6 +179,10 @@ static int sprdwl_nl_npi_handler(struct sk_buff *skb_2, struct genl_info *info)
 
 	s_buf = nla_data(info->attrs[SPRDWL_NL_ATTR_AP2CP]);
 	s_len = nla_len(info->attrs[SPRDWL_NL_ATTR_AP2CP]);
+	if (s_len < sizeof(*hdr)) {
+		kfree(r_buf);
+		return -EINVAL;
+	}
 	if (sprdwl_npi_cmd_is_start(s_buf) && sta_or_p2p_is_opened()) {
 		hdr = kzalloc(sizeof(*hdr), GFP_KERNEL);
 		if (!hdr) {
@@ -197,7 +206,13 @@ static int sprdwl_nl_npi_handler(struct sk_buff *skb_2, struct genl_info *info)
 	sprintf(dbgstr, "[iwnpi][SEND][%d]:", s_len);
 	hdr = (struct sprdwl_npi_cmd_hdr *)s_buf;
 	pr_err("%s type is %d, subtype %d\n", dbgstr, hdr->type, hdr->subtype);
-	sprdwl_npi_send_recv(priv, vif->mode, s_buf, s_len, r_buf, &r_len);
+	ret = sprdwl_npi_send_recv(priv, vif->mode, s_buf, s_len, r_buf,
+				   &r_len);
+	/* r_buf is uninitialized unless a reply was copied into it */
+	if (ret || r_len < sizeof(*hdr)) {
+		kfree(r_buf);
+		return ret ? -EIO : -ENODATA;
+	}
 
 	sprintf(dbgstr, "[iwnpi][RECV][%d]:", r_len);
 	hdr = (struct sprdwl_npi_cmd_hdr *)r_buf;
@@ -238,6 +253,7 @@ static int sprdwl_nl_get_info_handler(struct sk_buff *skb_2,
 }
 
 static struct nla_policy sprdwl_genl_policy[SPRDWL_NL_ATTR_MAX + 1] = {
+	[SPRDWL_NL_ATTR_IFINDEX] = {.type = NLA_U32},
 	[SPRDWL_NL_ATTR_AP2CP] = {.type = NLA_BINARY, .len = 1024},
 	[SPRDWL_NL_ATTR_CP2AP] = {.type = NLA_BINARY, .len = 1024},
 };
@@ -245,11 +261,13 @@ static struct nla_policy sprdwl_genl_policy[SPRDWL_NL_ATTR_MAX + 1] = {
 static struct genl_ops sprdwl_nl_ops[] = {
 	{
 		.cmd = SPRDWL_NL_CMD_NPI,
+		.flags = GENL_ADMIN_PERM,
 		.policy = sprdwl_genl_policy,
 		.doit = sprdwl_nl_npi_handler,
 	},
 	{
 		.cmd = SPRDWL_NL_CMD_GET_INFO,
+		.flags = GENL_ADMIN_PERM,
 		.policy = sprdwl_genl_policy,
 		.doit = sprdwl_nl_get_info_handler,
 	},
