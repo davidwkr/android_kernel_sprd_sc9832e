@@ -1305,8 +1305,9 @@ int sprd_dispc_refresh_restore(struct sprd_dispc *dispc)
 {
 	struct dispc_context *ctx = &dispc->ctx;
 
-	ctx->disable_flip = false;
+	/* cleared under refresh_lock, with the restore that ends it */
 	down(&ctx->refresh_lock);
+	ctx->disable_flip = false;
 
 	if (!ctx->is_inited) {
 		pr_err("dispc is not initialized!\n");

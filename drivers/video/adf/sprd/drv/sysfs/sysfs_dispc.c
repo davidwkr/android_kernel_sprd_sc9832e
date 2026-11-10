@@ -70,16 +70,20 @@ static ssize_t refresh_store(struct device *dev,
 	struct sprd_dispc *dispc = dev_get_drvdata(dev);
 	struct dispc_context *ctx = &dispc->ctx;
 
-
-	ctx->disable_flip = false;
 	ret = kstrtou32(buf, 10, &value);
 	if (ret) {
 		pr_err("Invalid input\n");
 		return -EINVAL;
 	}
 
-	if (value) {
+	/* cleared under refresh_lock, with the restore that ends it */
+	if (!value) {
 		down(&ctx->refresh_lock);
+		ctx->disable_flip = false;
+		up(&ctx->refresh_lock);
+	} else {
+		down(&ctx->refresh_lock);
+		ctx->disable_flip = false;
 
 		if (!ctx->is_inited) {
 			pr_err("dispc is not initialized!\n");
