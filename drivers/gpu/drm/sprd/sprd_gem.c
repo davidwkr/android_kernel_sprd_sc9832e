@@ -202,15 +202,27 @@ struct drm_gem_object *sprd_gem_prime_import_sg_table(struct drm_device *drm,
 
 	DRM_DEBUG("gem = %p\n", &sprd_gem->base);
 
+	if (sprd_ion_is_reserved(-1, attach->dmabuf, &reserved)) {
+		/*
+		 * Not an ION buffer. The iommu maps ION buffers only, so the
+		 * DPU can scan it out only if it is contiguous.
+		 */
+		if (sgtb->nents != 1) {
+			DRM_ERROR("non-ION import with %u entries\n",
+				  sgtb->nents);
+			drm_gem_object_release(&sprd_gem->base);
+			kfree(sprd_gem);
+			return ERR_PTR(-EINVAL);
+		}
+		sprd_gem->need_iommu = false;
+	} else {
+		sprd_gem->need_iommu = !reserved;
+	}
+
 	if (sgtb->nents == 1)
 		sprd_gem->dma_addr = sg_dma_address(sgtb->sgl);
 
 	sprd_gem->sgtb = sgtb;
-
-	if (sprd_ion_is_reserved(-1, attach->dmabuf, &reserved))
-		DRM_ERROR("sprd_ion_is_reserved fail\n");
-	else
-		sprd_gem->need_iommu = !reserved;
 
 	return &sprd_gem->base;
 }

@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Camera of the watches, as in their stock DTs (DM63, DW100U), for the 4.4
+ * camera driver ported to 4.14 (drivers/misc/sprd_camera: dcam_if_r4p0,
+ * isp_r6p11, cpp lite_r3p0, csi r2p0v2), which the stock Android 8.1 camera
+ * HAL uses. The camera power domain is the sharkle.dtsi cam-domain node
+ * (CONFIG_SPRD_CAM_PW_DOMAIN_R5P1).
+ *
+ * The sharkle.dtsi isp and cpp nodes are written for the newer camera driver
+ * (reset bits in syscons); the 4.4 drivers look up sprd,cam-ahb-syscon.
+ *
+ * Main sensor, common to the boards: i2c0 0x20 (400 kHz), reset ap_gpio 45,
+ * power-down ap_gpio 47, on mipi-csi-phy1 and csi0 (dcam0). The board adds
+ * any other sensor. Sensor drivers are in the camera HAL; the kernel powers
+ * the sensor and gives the HAL I2C access through /dev/sprd_sensor.
+ */
+
+&i2c0 {
+	status = "okay";
+	clock-frequency = <400000>;
+
+	sensor_main: sensor-main@20 {
+		compatible = "sprd,sensor-main";
+		reg = <0x20>;
+		clock-names = "clk_src", "sensor_eb",
+			      "clk_96m", "clk_76m8",
+			      "clk_48m", "clk_26m";
+		clocks = <&mm_clk CLK_SENSOR0>, <&mm_gate CLK_SENSOR0_EB>,
+			 <&pll CLK_TWPLL_96M>, <&pll CLK_TWPLL_76M8>,
+			 <&pll CLK_TWPLL_48M>, <&ext_26m>;
+		vddio-supply = <&vddcamio>;
+		vddcama-supply = <&vddcama>;
+		vddcamd-supply = <&vddcamd>;
+		vddcammot-supply = <&vddcammot>;
+		reset-gpios = <&ap_gpio 45 0>;
+		power-down-gpios = <&ap_gpio 47 0>;
+		host = "dcam0";
+
+		port {
+			sensor_main_ep: endpoint {
+				remote-endpoint = <&phy1_ep>;
+			};
+		};
+	};
+};
+
+&mipi_csi_phy1 {
+	status = "okay";
+	sprd,csi = <&csi0>;
+
+	port {
+		phy1_ep: endpoint {
+			remote-endpoint = <&sensor_main_ep>;
+		};
+	};
+};
+
+&csi0 {
+	status = "okay";
+};
+
+&iommu_dcam {
+	status = "okay";
+};
+
+&iommu_isp {
+	status = "okay";
+};
+
+&iommu_cpp {
+	status = "okay";
+};
+
+&dcam {
+	status = "okay";
+};
+
+&isp {
+	sprd,cam-ahb-syscon = <&mm_ahb_regs>;
+	status = "okay";
+};
+
+&cpp {
+	sprd,cam-ahb-syscon = <&mm_ahb_regs>;
+	status = "okay";
+};

@@ -27,6 +27,14 @@ int sprd_ion_get_sg_table(int fd, struct dma_buf *dmabuf,
 int sprd_ion_get_buffer(int fd, struct dma_buf *dmabuf,
 			  void **buf, size_t *size);
 
+int sprd_ion_get_buffer_ref(int fd, struct dma_buf *dmabuf,
+			    void **buf, size_t *size,
+			    struct dma_buf **held);
+
+void sprd_ion_put(struct dma_buf *held);
+
+int sprd_ion_check_phys_addr(struct dma_buf *dmabuf);
+
 int sprd_ion_get_sg(void *buf, struct sg_table **table);
 
 void sprd_ion_set_dma(void *buf, int id);

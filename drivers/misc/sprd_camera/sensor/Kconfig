@@ -1,0 +1,6 @@
+
+config SPRD_CAMERA_CSI_R2P0V2
+    bool "Spreadtrum Camera CSI2 R2P0 Version 2.0"
+    depends on SPRD_CAMERA
+    help
+        This is a CSI conecting synopsys DPHY driver for Spreadtrum SOCs.

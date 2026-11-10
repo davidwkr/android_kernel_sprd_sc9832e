@@ -28,8 +28,6 @@
 #define ISP_BINNING_STATIS_BUF_NUM              4
 #define ISP_EBD_STATIS_BUF_SIZE                 BUF_ALIGN(4400 * 2)
 #define ISP_EBD_STATIS_BUF_NUM                  4
-#define ISP_RAW_STATIS_BUF_SIZE(width, height)  BUF_ALIGN((width) * (height) * 5 / 4)
-#define ISP_RAW_STATIS_BUF_NUM                  4
 
 #define ISP_HIST_STATIS_BUF_NUM                 4
 #define ISP_HIST_ITEMS                          256
@@ -1686,14 +1684,11 @@ enum isp_statis_valid_type {
 	ISP_STATIS_VALID_HIST = (1 << 5),
 	ISP_STATIS_VALID_HIST2 = (1 << 6),
 	ISP_STATIS_VALID_EBD = (1 << 7),
-	ISP_STATIS_VALID_RAW = (1 << 8),
 };
 
 struct isp_statis_buf_input {
 	uint32_t                         buf_size;
 	uint32_t                         buf_num;
-	uint32_t                         width;
-	uint32_t                         height;
 	unsigned long                    phy_addr;
 	unsigned long                    vir_addr;
 	unsigned long                    addr_offset;
@@ -1724,7 +1719,6 @@ enum isp_3a_block_id {
 	DCAM_AEM_BLOCK,
 	DCAM_PDAF_BLOCK,
 	DCAM_EBD_BLOCK,
-	DCAM_RAW_BLOCK,
 };
 
 enum isp_irq_done_id {
@@ -1742,7 +1736,6 @@ enum isp_irq_done_id {
 	IRQ_HIST_STATIS,
 	IRQ_HIST2_STATIS,
 	IRQ_EBD_STATIS,
-	IRQ_RAW_STATIS,
 	IRQ_MAX_DONE,
 };
 

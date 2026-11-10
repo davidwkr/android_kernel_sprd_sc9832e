@@ -82,7 +82,7 @@ ported/re-implemented, MISSING = in neither tree or needs new work.
 | Fuel gauge (`sprd_27xx_fgu`, `gauge-resync`) | yes | mainline-style `sc27xx_fuel_gauge.c` (sc2720/30/31 data; DT lists `sprd,sc2720-fgu` fallback) | DONE compile-only: `sprd,sc2721-fgu` data, optional battery-detect gpio, CV-hold resync (off by default) (`SC2721_FGU_MAP.md`) |
 | USB MUSB, PHY, role | `musb_sprd`, our `USB_MUSB_SPRD_ROLE_SYSFS`, host idle timeout | `musb_sprd.c` (`sprd,sharkle-musb`), `phy-sprd-sharkle.c` (`sprd,sharkle-phy`), `MUSB_DUAL_ROLE` | PRESENT; PORT role sysfs and `host_idle_timeout` |
 | GPU Mali Midgard | out-of-tree kbase, UK ABI 11.13 (`drivers/gpu/arm/midgard`, `mali.ko`) | only DT node `sprd,mali-midgard` (`gpu@60000000`); **no kbase source** | PORT. The stock blob is r21p0 (UK 11.0); r21p0 is being imported and hardened on 4.4 first (branch `drivers/mali-r21p0-cve2`, `devices/MALI_R21P0.md` in the 4.4 tree), 4.14 after that |
-| Camera (DCAM/ISP/CSI, sensors) | `drivers/misc/sprd_camera` | only mipi-csi-phy DT stubs; no camera driver | MISSING in 4.14 (PORT from 4.4 if the watches need it; DM63/DW100U camera use must be confirmed) |
+| Camera (DCAM/ISP/CSI, sensors) | `drivers/misc/sprd_camera` | sharkle variants ported from 4.4 for the stock HAL (`CAMERA_414_PORT.md`); DM63/DW100U ADF boards | PORTED (compile-only) |
 | Touch: CST0xx (DM63), Hynitron `hyn_ts` / CST9217 (DW100U), Goodix | `cst0xx_ts`, `hynitron_ts`, `hynitron_cst9217`, `goodix5`/`goodix_5xxx` | `adaptive-ts` (FocalTech/MStar/dummy), `goodix.c`, `edt-ft5x06`, `chipone`, `stmfts` | CST0xx and CST9217 PORTED (compile only); `hynitron_ts` and Goodix not ported |
 | Sensors: sc7a22, qma6981, och1970, hrs3xxx | `drivers/input/misc/*` (our drivers) | only generic IIO accel drivers and `iio/sprd_hub` sensor hub | PORTED (compile only) |
 | Fingerprint (Goodix TEE, DW100U) | `goodix_fp`, `gf-keys`, netlink 29 | none | PORT |
@@ -168,7 +168,8 @@ Next:
    (`k18/BOOT_414.md`). The DRM path still needs a DRM-capable composer (a newer Android build).
 3. Mali kbase: r21p0 for the stock blob, done on 4.4 (see the 4.4 tree's `devices/MALI_R21P0.md`); the 4.14 port
    (`sp9832e-watch-gpu.dtsi`, with stock DVFS voltage scaling) is merged; next, DM63/DW100U ADF images.
-4. Missing on 4.14: Wi-Fi/BT netdev drivers, deep sleep, camera (needs ION, now present).
+4. Wi-Fi/BT/FM (`WCN_414_PORT.md`), deep sleep (`sp9832e-watch-idle.dtsi`) and the camera
+   (`CAMERA_414_PORT.md`) are ported, compile-only.
 5. The DRM sprd sysfs parser overflow and the rest of its debug sysfs bounds: fixed and merged. Root-only debug
    writes that can crash or misprogram the hardware (DTB reload, writeback dump, DSI transfers vs suspend, clock
    values) are vendor behaviour, accepted.

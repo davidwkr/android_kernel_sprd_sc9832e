@@ -11,10 +11,56 @@
  * devices/stock_lcds_to_dtsi.py (lcd/dm63_stock_lcds_adf.dtsi). The
  * bootloader's lcd_id=ID<hex> selects the node named lcd<hex>; the stock DM63
  * reports ID5300213 (lcd5300213, CO5300 2.13 inch).
+ *
+ * Camera: sp9832e-watch-camera.dtsi plus the stock DM63 sub sensor, i2c0
+ * 0x21, reset ap_gpio 44, power-down ap_gpio 46, on mipi-csi-phy0_m and csi1
+ * (dcam1), with the same clocks and supplies as the main one.
  */
 
 #include "sp9832e-1h10-dm63.dts"
 #include "sp9832e-watch-adf.dtsi"
+#include "sp9832e-watch-camera.dtsi"
+
+&i2c0 {
+	sensor_sub: sensor-sub@21 {
+		compatible = "sprd,sensor-sub";
+		reg = <0x21>;
+		clock-names = "clk_src", "sensor_eb",
+			      "clk_96m", "clk_76m8",
+			      "clk_48m", "clk_26m";
+		clocks = <&mm_clk CLK_SENSOR0>, <&mm_gate CLK_SENSOR0_EB>,
+			 <&pll CLK_TWPLL_96M>, <&pll CLK_TWPLL_76M8>,
+			 <&pll CLK_TWPLL_48M>, <&ext_26m>;
+		vddio-supply = <&vddcamio>;
+		vddcama-supply = <&vddcama>;
+		vddcamd-supply = <&vddcamd>;
+		vddcammot-supply = <&vddcammot>;
+		reset-gpios = <&ap_gpio 44 0>;
+		power-down-gpios = <&ap_gpio 46 0>;
+		host = "dcam1";
+
+		port {
+			sensor_sub_ep: endpoint {
+				remote-endpoint = <&phy0_m_ep>;
+			};
+		};
+	};
+};
+
+&mipi_csi_phy0_m {
+	status = "okay";
+	sprd,csi = <&csi1>;
+
+	port {
+		phy0_m_ep: endpoint {
+			remote-endpoint = <&sensor_sub_ep>;
+		};
+	};
+};
+
+&csi1 {
+	status = "okay";
+};
 
 / {
 	lcds {

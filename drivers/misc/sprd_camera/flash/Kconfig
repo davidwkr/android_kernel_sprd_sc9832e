@@ -1,0 +1,38 @@
+
+config FLASH_SC2721
+	bool "Spreadtrum SC2721 flash Driver"
+	depends on PMIC_SC2721
+	help
+	    new flash driver
+
+config FLASH_RGB_SC2721
+	bool "Spreadtrum SC2721 flash rgb Driver"
+	depends on PMIC_SC2721
+	help
+	    new rgb flash driver
+
+config FLASH_SC2703
+	bool "Spreadtrum SC2703 flash Driver"
+	depends on MFD_SC2703
+	help
+	    new flash driver
+	    
+config ZYT_FLASH_CTRL_BY_GPIO
+    bool "Spreadtrum Camera  GPIO Flash Support"
+    depends on SPRD_CAMERA
+    help
+        This is a gpio flash driver for camera.
+        
+config ZYT_FLASH_CTRL_BY_KPLED
+    bool "Spreadtrum Camera  KPLED Flash Support"
+    depends on SPRD_CAMERA
+    help
+        This is a kpled flash driver for camera.
+        
+config ZYT_FLASH_CTRL_BY_LCD
+    bool "Spreadtrum Camera  LCD Flash Support"
+    depends on SPRD_CAMERA
+    help
+        This is a lcd flash driver for camera.
+
+

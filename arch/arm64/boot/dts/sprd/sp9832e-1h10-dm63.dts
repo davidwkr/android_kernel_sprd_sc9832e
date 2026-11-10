@@ -598,9 +598,9 @@
  * I2C. Frequencies are the stock ones (i2c0 400k, others 100k).
  *
  * i2c0 (stock: camera sensors 0x20/0x21) and i2c4 (stock: disabled, flash
- * ocp8137 0x63, fan54015 0x6a) stay disabled. TODO camera: no 4.14 camera
- * driver, stock sensor-main@20 / sensor-sub@21 with reset gpios 45/44 and
- * power-down gpios 47/46 on ap_gpio.
+ * ocp8137 0x63, fan54015 0x6a) stay disabled here. The camera, with i2c0,
+ * is in the ADF board (sp9832e-1h10-dm63-adf.dts), whose stock camera HAL
+ * the ported 4.4 camera driver serves.
  */
 &i2c1 {
 	status = "okay";
