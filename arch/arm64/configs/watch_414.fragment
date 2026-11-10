@@ -26,3 +26,10 @@ CONFIG_REGULATOR_FIXED_VOLTAGE=y
 # sprd_sharkle_defconfig; only the sensor driver itself was off. See
 # devices/THERMAL_414.md.
 CONFIG_SPRD_THERMAL=y
+
+# AP watchdog, sharkle-wdt node already unconditional in sharkle.dtsi. The
+# driver does not auto-start the countdown at probe (userspace must open
+# /dev/watchdog0 and start it); see devices/THERMAL_414.md for why this is
+# safe with the stock userspace on this image.
+CONFIG_WATCHDOG_CORE=y
+CONFIG_SPRD_WATCHDOG=y
