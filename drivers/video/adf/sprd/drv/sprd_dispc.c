@@ -534,12 +534,31 @@ map_fail:
 	return ret;
 }
 
-void sprd_dispc_iommu_unmap(struct sprd_dispc *dispc,
-			    struct sprd_adf_hwlayer *hwlayer)
+/* refresh_lock held, dispc initialized */
+static void sprd_dispc_iommu_unmap_layer(struct sprd_dispc *dispc,
+					 struct sprd_adf_hwlayer *hwlayer)
 {
 	int i;
 	bool fb_reserved;
 	struct dma_buf *dmabuf;
+
+	for (i = 0; i < hwlayer->n_planes; i++) {
+		dmabuf = hwlayer->base.dma_bufs[i];
+		fb_reserved = false;
+		if (ion_dma_buf_is_ion(dmabuf))
+			sprd_ion_is_reserved(-1, dmabuf, &fb_reserved);
+		if (!fb_reserved && hwlayer->iova_space[i].iova_addr) {
+			sprd_iommu_free_kaddr(&dispc->dev,
+					      &hwlayer->iova_space[i]);
+			memset(&hwlayer->iova_space[i], 0,
+			       sizeof(hwlayer->iova_space[i]));
+		}
+	}
+}
+
+void sprd_dispc_iommu_unmap(struct sprd_dispc *dispc,
+			    struct sprd_adf_hwlayer *hwlayer)
+{
 	struct dispc_context *ctx = &dispc->ctx;
 
 	down(&ctx->refresh_lock);
@@ -558,15 +577,7 @@ void sprd_dispc_iommu_unmap(struct sprd_dispc *dispc,
 	}
 
 	pr_debug("iommu unmap\n");
-	for (i = 0; i < hwlayer->n_planes; i++) {
-		dmabuf = hwlayer->base.dma_bufs[i];
-		fb_reserved = false;
-		if (ion_dma_buf_is_ion(dmabuf))
-			sprd_ion_is_reserved(-1, dmabuf, &fb_reserved);
-		if (!fb_reserved && hwlayer->iova_space[i].iova_addr)
-			sprd_iommu_free_kaddr(&dispc->dev,
-					      &hwlayer->iova_space[i]);
-	}
+	sprd_dispc_iommu_unmap_layer(dispc, hwlayer);
 
 	up(&ctx->refresh_lock);
 }
@@ -678,7 +689,7 @@ static int32_t sprd_dispc_init(struct sprd_dispc *dispc)
 static int32_t sprd_dispc_flip(struct sprd_dispc *dispc,
 		struct sprd_restruct_config *config)
 {
-	int i;
+	int i, ret;
 	static bool logo2animation = true;
 	struct dispc_context *ctx = &dispc->ctx;
 
@@ -691,9 +702,24 @@ static int32_t sprd_dispc_flip(struct sprd_dispc *dispc,
 		return -1;
 	}
 
-	/*do iommu map when buffer is not reserved memory*/
-	for (i = 0; i < config->number_hwlayer; i++)
-		sprd_dispc_iommu_map(dispc, &config->hwlayers[i]);
+	/*
+	 * do iommu map when buffer is not reserved memory. If a layer fails,
+	 * unmap the ones mapped for this frame and do not flip it: the
+	 * hardware would fetch from unmapped or raw-offset addresses. The
+	 * 4.4 ADF core cannot be told, so the display keeps the old frame.
+	 */
+	for (i = 0; i < config->number_hwlayer; i++) {
+		ret = sprd_dispc_iommu_map(dispc, &config->hwlayers[i]);
+		if (ret) {
+			pr_err("dispc: layer %d map failed (%d), frame dropped\n",
+			       i, ret);
+			while (i-- > 0)
+				sprd_dispc_iommu_unmap_layer(dispc,
+						&config->hwlayers[i]);
+			up(&ctx->refresh_lock);
+			return ret;
+		}
+	}
 
 	if (ctx->disable_flip) {
 		pr_debug("dispc flip was disabled\n");
