@@ -403,6 +403,11 @@ static int gf_parse_gpios(struct gf_device *gf)
 	gf->irq_gpio = of_get_named_gpio(np, "goodix,gpio_irq", 0);
 	gf->pwr_gpio = of_get_named_gpio(np, "goodix,gpio_pwr", 0);
 
+	/* the GPIO controller may not be up yet: retry the probe later */
+	if (gf->reset_gpio == -EPROBE_DEFER || gf->irq_gpio == -EPROBE_DEFER ||
+	    gf->pwr_gpio == -EPROBE_DEFER)
+		return -EPROBE_DEFER;
+
 	if (!gpio_is_valid(gf->reset_gpio) || !gpio_is_valid(gf->irq_gpio)) {
 		dev_err(dev, "missing reset/irq gpio in DT\n");
 		return -ENODEV;
@@ -495,6 +500,8 @@ static int gf_probe(struct spi_device *spi)
 	ret = request_threaded_irq(gf->irq, NULL, gf_irq,
 				   IRQF_TRIGGER_RISING | IRQF_ONESHOT,
 				   "goodix_fp_irq", gf);
+	/* the flag outlives free_irq(); the request already applied it */
+	irq_clear_status_flags(gf->irq, IRQ_NOAUTOEN);
 	if (ret)
 		goto err_nl;
 	enable_irq_wake(gf->irq);
