@@ -2043,6 +2043,7 @@ static int kbase_cpu_mmap(struct kbase_va_region *reg, struct vm_area_struct *vm
 
 	map->region = reg;
 	map->start_pfn = reg->start_pfn;
+	map->nr_pages = reg->nr_pages;
 	map->free_on_close = free_on_close;
 	map->kctx = reg->kctx;
 	map->alloc = kbase_mem_phy_alloc_get(reg->cpu_alloc);

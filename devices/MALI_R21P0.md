@@ -242,6 +242,32 @@ Owned-file findings from the review are all accounted for above. The
 devfreq/power-domain findings (platform/sharkle glue) are out of scope for
 this set of commits.
 
+### Later review rounds (3 to 10)
+
+Ten review rounds (gpt-6.1-sol) in all. Rounds 3 to 10 found incomplete fixes and further bugs inherited from
+r21p0 in the JIT, eviction and mapping code; all of these are fixed:
+- Imported user buffers: the cookie mmap that reserves a SAME_VA import maps no pages, and CPU faults on such a
+  mapping return SIGBUS (completes the CVE-2022-36449 fix).
+- JIT ownership: `KBASE_REG_JIT_OWNED`, set at creation and never cleared; user `MEM_FREE`, `MEM_FLAGS_CHANGE`,
+  `MEM_ALIAS` (as a source) and `kbase_vmap_prot()` refuse JIT regions.
+- Eviction: no CPU mmap of `DONT_NEED` regions; reclaim accounting and `DONT_NEED` are set before an allocation is
+  published to the shrinker; `unmake()` and region teardown detach from `evict_list` under `jit_evict_lock` before
+  clearing `alloc->reg`; `kbase_jit_free()` moves the region into the pool in the same `jit_evict_lock` section
+  that makes it evictable; pooled regions are detached from both lists with `list_del_init()`; the shrinker is
+  unregistered before JIT teardown.
+- Kernel mappings: `alloc->kernel_mappings` (from `kbase_vmap_prot()`) blocks `DONT_NEED` and `MEM_COMMIT` while a
+  soft job holds a mapping.
+- CPU mappings keep the region's `start_pfn` and `nr_pages`, so faults and `MEM_FIND_CPU_OFFSET` never read a freed
+  region.
+- Soft-job debug copy: zero, wrapping and oversized buffers are rejected before the page array and GUP.
+- The debugfs memory dump takes a page reference under `jit_evict_lock`, dropped before `vmap()`.
+
+Known, not fixed (not reachable on these watches, or root-only):
+- Replay (`mali_kbase_replay.c`): FBD hierarchy masks can index past the 8 weight entries, and a cyclic job list can
+  loop forever under `jctx.lock`. Replay is disabled on the T820 by its hardware-issue gate.
+- Context debugfs files (`atoms`, JIT statistics, ...) keep an unreferenced `kctx` after the context is destroyed;
+  needs `CONFIG_DEBUG_FS` and root.
+
 ## Platform fixes
 
 Review findings against `backend/gpu/mali_kbase_devfreq.c` and

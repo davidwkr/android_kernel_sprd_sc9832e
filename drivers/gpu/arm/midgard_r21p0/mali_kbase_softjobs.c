@@ -600,15 +600,35 @@ static int kbase_debug_copy_prepare(struct kbase_jd_atom *katom)
 	for (i = 0; i < nr; i++) {
 		u64 addr = user_buffers[i].address;
 		u64 page_addr = addr & PAGE_MASK;
-		u64 end_page_addr = addr + user_buffers[i].size - 1;
-		u64 last_page_addr = end_page_addr & PAGE_MASK;
-		int nr_pages = (last_page_addr-page_addr)/PAGE_SIZE+1;
+		u64 end_page_addr;
+		u64 last_page_addr;
+		u64 nr_pages64;
+		int nr_pages;
 		int pinned_pages;
 		struct kbase_va_region *reg;
 		struct base_external_resource user_extres;
 
 		if (!addr)
 			continue;
+
+		/*
+		 * A zero size gave nr_pages 0, a ZERO_SIZE_PTR page array and
+		 * a GUP that still writes the first entry; a wrapping or huge
+		 * range overflowed the int page count.
+		 */
+		if (!user_buffers[i].size ||
+		    addr + user_buffers[i].size - 1 < addr) {
+			ret = -EINVAL;
+			goto out_cleanup;
+		}
+		end_page_addr = addr + user_buffers[i].size - 1;
+		last_page_addr = end_page_addr & PAGE_MASK;
+		nr_pages64 = (last_page_addr - page_addr) / PAGE_SIZE + 1;
+		if (nr_pages64 > INT_MAX / sizeof(struct page *)) {
+			ret = -EINVAL;
+			goto out_cleanup;
+		}
+		nr_pages = (int)nr_pages64;
 
 		buffers[i].nr_pages = nr_pages;
 		buffers[i].offset = addr & ~PAGE_MASK;

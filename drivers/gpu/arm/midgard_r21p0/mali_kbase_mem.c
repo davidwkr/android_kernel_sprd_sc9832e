@@ -1069,10 +1069,11 @@ static struct kbase_cpu_mapping *kbasep_find_enclosing_cpu_mapping(
 		/* Not from this context! */
 		return NULL;
 
-	vm_pgoff_in_region = vma->vm_pgoff - map->region->start_pfn;
+	/* the region may already be freed: use the values saved at mmap */
+	vm_pgoff_in_region = vma->vm_pgoff - map->start_pfn;
 	vm_off_in_region = vm_pgoff_in_region << PAGE_SHIFT;
 	map_start = vma->vm_start - vm_off_in_region;
-	map_size = map->region->nr_pages << PAGE_SHIFT;
+	map_size = map->nr_pages << PAGE_SHIFT;
 
 	if ((uaddr + size) > (map_start + map_size))
 		/* Not within the CPU mapping */
