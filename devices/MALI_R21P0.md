@@ -283,6 +283,26 @@ findings from the same review are tracked separately (above).
 Both fixes keep the stock `libGLES_mali.so` (r21p0, UK 11.0) ABI: neither
 touches an ioctl or a userspace-visible struct layout.
 
+## GPU voltage scaling
+
+The stock `mali.ko` raises vddcore (the `gpu` supply) before switching to a faster OPP and lowers it after a slower
+one: it imports `regulator_get_voltage` and carries the `upgrade_voltage` messages. The r21p0 glue has that code under
+`CONFIG_ADJUST_VOLTAGE`, which nothing defined, so 680 MHz ran at 900 mV. The platform Kbuild now defines it
+(stock table: 256-600 MHz at 900 mV, 680 MHz at 950 mV). On top of the stock code:
+
+- At init the rail's real voltage is read and raised to the default OPP's if lower; a failed raise fails the probe.
+- A failed clock rate/parent change keeps `freq_cur`, skips the voltage decrease and returns the error to devfreq.
+- On clock-on, a failed restore of `freq_cur` falls back to the default OPP (TWPLL 384 MHz, the lowest voltage);
+  a failed switch to the default parent fails clock-on.
+- A failed voltage decrease leaves `cur_voltage` at the real, higher value, so the next lower transition retries.
+
+Known, accepted (same ordering as stock, GPU idle, needs a failing or unusual regulator state):
+- Probe enables the GPU clocks at the default 384 MHz before the regulator is acquired and checked.
+- Clock-on enables the clocks before switching to the default parent: after devfreq lowered the OPP while the
+  clocks were off, the old parent (up to 680 MHz) can run for about 300 us at the lower voltage.
+- The legacy `CONFIG_MALI_MIDGARD_DVFS` path writes `freq_next` without the semaphore; the watches build
+  `CONFIG_MALI_DEVFREQ`.
+
 ## Open items
 
 - **Hardware bring-up is untested** (offline-only task: no device access).
