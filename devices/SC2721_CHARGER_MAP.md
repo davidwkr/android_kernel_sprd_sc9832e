@@ -101,9 +101,12 @@ same method as `devices/k18/DTS_414.md` / `devices/dm63/DTS_414.md` ("Charging")
 4. **OVP value and OVP/CV interrupts**: the OVP value (`sprd,ovp-microvolt`, ovp-stop) was already ported. This
    branch adds the two PMIC EIC interrupts, `chg-ovi-gpios` and `chg-cv-gpios` (both optional in the driver, so units
    without the property still probe):
-   - `sc2721_ovp_irq_handler()`: reads the gpio, latches `info->ovp_fault`. While a fault is latched,
-     `POWER_SUPPLY_PROP_HEALTH` reports `POWER_SUPPLY_HEALTH_OVERVOLTAGE` and `sc2720_charger_set_status()` refuses
-     `STATUS=1` (`-EBUSY`). If the fault asserts while already charging, the handler itself calls
+   - `sc2721_ovp_irq_handler()`: reads the gpio under `info->lock`, latches `info->ovp_fault`. While a fault is
+     latched, `POWER_SUPPLY_PROP_HEALTH` reports `POWER_SUPPLY_HEALTH_OVERVOLTAGE` (even if a failed stop left
+     `info->charging` set) and `sc2720_charger_start_charge()` refuses to start (`-EBUSY`); every caller (the USB
+     work and `set_status()`) holds `info->lock`, so the check cannot race the handler. The initial gpio state is
+     read under the same lock after the irq is requested, and a gpio read error fails probe instead of counting as
+     a fault. If the fault asserts while already charging, the handler itself calls
      `sc2720_charger_stop_charge()` immediately, not waiting for `charger-manager`'s next poll
      (`cm-poll-interval` 15 s) — the hardware OVP comparator has already disconnected the input by then, this is
      software catching up to the same state. `charger-manager`'s existing `cm_check_charge_health()` (unchanged)
@@ -115,6 +118,12 @@ same method as `devices/k18/DTS_414.md` / `devices/dm63/DTS_414.md` ("Charging")
      never acted on either (`sprdchg_get_cccvstate()` is only read for a debug log, C:926-933).
    - `ovp-restart` (5800 mV, both boards): not a separate register in either tree, the OVP comparator's hysteresis
      is fixed in hardware; nothing to program.
+   - Start/stop write `CHG_PD` and `RECHG_EN` in one masked `CHG_CFG0` update, and `info->charging` is cleared
+     only after a stop succeeds (`set_status()` returns the error), so a failed write retries on the next
+     `STATUS=0` or unplug instead of leaving charging on behind the driver's back.
+   - Probe and remove: the USB notifier is registered only after `psy_usb` exists; on a later probe failure and on
+     remove it is unregistered, `info->work` is drained with `cancel_work_sync()`, and any charge the work started
+     is stopped, before devm frees `info`.
 5. **Fast charge**: confirmed `fast-charger@900` (`sprd,sc2721-fchg`) is `status = "disabled"` in the stock DT of
    every board this tree ports (K18, DM63; also checked MT107/DM82/DW100U in passing, same). Stock never raises the
    input above 5 V on these products, so no fast-charge protection code is needed; the 4.14 port must simply not

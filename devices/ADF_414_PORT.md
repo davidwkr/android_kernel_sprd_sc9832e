@@ -220,10 +220,54 @@ reference data, not yet `#include`d anywhere.
 | `drivers/video/adf/` + `drivers/gpu/drm/`, `ADF_SPRD=y`/`DRM_SPRD=n` | 0 errors |
 | `drivers/gpu/drm/`, default config (`DRM_SPRD=y`, ADF unset) | 0 errors — DRM build unaffected |
 | Merged config `sprd_sharkle_defconfig` + `watch_414.fragment` + `watch_414_adf.fragment`, `olddefconfig` | `CONFIG_ADF=y`, `CONFIG_ADF_SPRD=y`, `CONFIG_DISP_LITE_R2P0=y`, `CONFIG_SPRD_PANEL_NOTIFIER=y`, `CONFIG_DRM_SPRD` unset — no Kconfig recursive-dependency warning |
-| Full `Image` link with the merged config above | see commit message / final report for the outcome |
+| Full `Image` link with the merged config above | links, 0 errors (also after the review hardening below, and on the merged `kernel-4.14`: `Image`, modules and 38 dtbs in both the DRM and the ADF configuration) |
 
 All builds: `ARCH=arm64`, the project's `aarch64-linux-gnu-` cross compiler,
 out-of-tree (`O=/tmp/...`, deleted after use).
+
+## Review hardening
+
+Ten review rounds (gpt-6.1-sol) after the initial port. Most findings are bugs inherited unchanged from the 4.4 vendor
+driver; the 4.4 tree still has them (see "Open items").
+
+Userspace-reachable memory safety:
+- `post_config`: no double free when `sync_file_create()` fails after the post is queued (the post owns `bufs` and
+  `custom_data` by then).
+- Copied posts (`adf_device_post()`) take their own acquire-fence reference; the simple-post ioctl drops its imports.
+- Custom data must cover `n_bufs` layers; `n_bufs` is capped at the 4 hardware layers (an empty post is still
+  accepted, as in 4.4).
+- Crop and scanout extent: `start_x/y` >= 0 and `start + crop` and `start + dst` within the buffer (these cores have
+  no scaler: the dispc fetches `dst_w` x `dst_h` from the crop origin).
+- Non-ION dma-bufs never reach the ION-specific helpers in the dispc IOMMU map/unmap.
+- Panel sysfs parsers (`hporch`, `vporch`, `esd_return`) are bounded to the destination array; the DT
+  `esd-return-code` count and the ESD/ID DCS reads are bounded to their 4-entry buffers.
+- 32-bit `ADF_POST_CONFIG` converts into kernel memory and writes the fence fd to the caller before installing it.
+
+Fences and the post worker:
+- Every accepted post reserves its own sequence number, comparisons are wrap-safe, and a rejected post gives its
+  number back.
+- The software timeline is refcounted separately from the device, so a fence fd outliving the device is safe.
+- Completion is claimed once per dispatched post (`post_gen`/`signaled_gen` under `signal_lock`), so the dispc
+  fence-signal irq and the worker cannot both advance the timeline, and a late irq cannot run ahead of the posts.
+
+Flip failures (the post op returns `int`):
+- Error: the previous onscreen post stays mapped and the failed one is freed.
+- `-ETIMEDOUT` (update-done or stop-done timeout, a flip on a stopped DPI controller): the hardware may scan either
+  config, so both are kept; the old one moves to `stale_posts` and is freed only after a later flip succeeds.
+- At 4 stale posts new posts fail without touching the hardware (the display freezes instead of leaking).
+  `sprd_dispc_run()` and `refresh_restore()` call `adf_device_scanout_restarted()`, which allows one probe flip.
+- The boot logo is freed only after the first update latched; `config_saved` only ever points at a config that
+  reached the hardware.
+
+Configuration:
+- `drivers/video/adf/sprd/` is built only with `CONFIG_ADF_SPRD`.
+- Only single-dispc pipes are supported; the double-dispc `sprd,display-mode` values are refused (no board sets it).
+
+Accepted on purpose:
+- A failed flip still advances the timeline, so the onscreen post's release fence can fire while it is displayed
+  (userspace may redraw it early: a visual glitch; ADF keeps its buffers and mappings).
+- IOMMU unmap is skipped while the dispc is uninitialized (it writes display-MMU registers in the display power
+  domain, which can hang the bus), as in 4.4. A post retired while suspended leaks its IOVA range and ION pin.
 
 ## Open items (need a unit, or more work)
 
@@ -247,3 +291,7 @@ out-of-tree (`O=/tmp/...`, deleted after use).
 - The 4.4 `adf_sysfs.c`/`adf_fops.c` prototypes flagged `-Wmissing-prototypes`
   were not touched either, for the same reason: this port's job is API
   compatibility with the 4.4 ABI, not a general vendor-code lint pass.
+- The memory-safety fixes in "Review hardening" are not in the 4.4 tree, which has the same bugs; they need a
+  backport to `security-backports`.
+- The DRM sprd driver (`drivers/gpu/drm/sprd`, already in `kernel-4.14`) has its own unbounded copy of the sysfs
+  array parser (`disp_lib.c`, nine callers in `sysfs/`): same fix still to do.

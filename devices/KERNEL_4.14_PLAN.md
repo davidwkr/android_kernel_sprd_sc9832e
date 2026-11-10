@@ -78,10 +78,10 @@ ported/re-implemented, MISSING = in neither tree or needs new work.
 | GNSS (GE2, `gnss_common_ctl`, our `gnss_engine_state`, retry limits) | yes | `sprdwcn/platform/gnss` with `sprd,integrate_gnss`, `gnss_dump` | PORT of our GNSS fail-path/power tweaks onto the new driver; basic support PRESENT |
 | SIPC / modem | `sprd,sipc-v1`, sblock/swcn_blk/sipx/spool + our peer checks | `drivers/soc/sprd/modem/sipc` and `sipc_v2`, `SPRD_SIPC_*` set in defconfig | PRESENT; PORT our `security/sipc-peer` hardening |
 | SC2721 PMIC core, regulators, ADC, EFUSE, RTC, EIC, BLTC/LED, 7sreset | `sprd,sc2721-*` | `sc2721-regulator.c`, `sc2721.dtsi`, `mfd/sprd-sc27xx-spi.c`, `sc27xx-*` drivers | PRESENT (DT compatibles differ: stock uses `sprd,sc2721-*`, 4.14 uses `sprd,sc27xx-*` with `sc2721-*` second) |
-| SC2721 charger (`sprd_2721_charge`, chg-timer, fchg, chg-wdt, `batt_idle`, CV tweak) | yes | only `sc2720_charger`, `sc2731_charger`, `sc2730_fast_charger`; **no sc2721 charger** | DONE compile-only: `sprd,sc2721-charger` in `sc2720_charger.c` with CV override, input OVP, adapter current cap (`SC2721_CHARGER_MAP.md`); chg-timer, fchg, ITERM/recharge, OVP/CV interrupts still PORT |
+| SC2721 charger (`sprd_2721_charge`, chg-timer, fchg, chg-wdt, `batt_idle`, CV tweak) | yes | only `sc2720_charger`, `sc2731_charger`, `sc2730_fast_charger`; **no sc2721 charger** | DONE compile-only: `sprd,sc2721-charger` in `sc2720_charger.c` with CV override, input OVP, adapter current cap (`SC2721_CHARGER_MAP.md`); charge safety (recharge, OVP/CV interrupts, OVP latch, failed-stop handling) DONE compile-only (`SC2721_CHARGER_MAP.md` section 5); fchg and chg-wdt are disabled in every stock DT checked |
 | Fuel gauge (`sprd_27xx_fgu`, `gauge-resync`) | yes | mainline-style `sc27xx_fuel_gauge.c` (sc2720/30/31 data; DT lists `sprd,sc2720-fgu` fallback) | DONE compile-only: `sprd,sc2721-fgu` data, optional battery-detect gpio, CV-hold resync (off by default) (`SC2721_FGU_MAP.md`) |
 | USB MUSB, PHY, role | `musb_sprd`, our `USB_MUSB_SPRD_ROLE_SYSFS`, host idle timeout | `musb_sprd.c` (`sprd,sharkle-musb`), `phy-sprd-sharkle.c` (`sprd,sharkle-phy`), `MUSB_DUAL_ROLE` | PRESENT; PORT role sysfs and `host_idle_timeout` |
-| GPU Mali Midgard | out-of-tree kbase, UK ABI 11.13 (`drivers/gpu/arm/midgard`, `mali.ko`) | only DT node `sprd,mali-midgard` (`gpu@60000000`); **no kbase source** | PORT kbase (4.4 source against the 4.14 API: DRM/ion/dma-buf/timer API changes); userspace blob compatibility must be kept |
+| GPU Mali Midgard | out-of-tree kbase, UK ABI 11.13 (`drivers/gpu/arm/midgard`, `mali.ko`) | only DT node `sprd,mali-midgard` (`gpu@60000000`); **no kbase source** | PORT. The stock blob is r21p0 (UK 11.0); r21p0 is being imported and hardened on 4.4 first (branch `drivers/mali-r21p0-cve2`, `devices/MALI_R21P0.md` in the 4.4 tree), 4.14 after that |
 | Camera (DCAM/ISP/CSI, sensors) | `drivers/misc/sprd_camera` | only mipi-csi-phy DT stubs; no camera driver | MISSING in 4.14 (PORT from 4.4 if the watches need it; DM63/DW100U camera use must be confirmed) |
 | Touch: CST0xx (DM63), Hynitron `hyn_ts` / CST9217 (DW100U), Goodix | `cst0xx_ts`, `hynitron_ts`, `hynitron_cst9217`, `goodix5`/`goodix_5xxx` | `adaptive-ts` (FocalTech/MStar/dummy), `goodix.c`, `edt-ft5x06`, `chipone`, `stmfts` | CST0xx and CST9217 PORTED (compile only); `hynitron_ts` and Goodix not ported |
 | Sensors: sc7a22, qma6981, och1970, hrs3xxx | `drivers/input/misc/*` (our drivers) | only generic IIO accel drivers and `iio/sprd_hub` sensor hub | PORTED (compile only) |
@@ -90,7 +90,7 @@ ported/re-implemented, MISSING = in neither tree or needs new work.
 | Watchdog | sprd wdt | `sprd_wdt.c` exists, but `CONFIG_WATCHDOG_CORE` is not set in defconfig, `SPRD_WATCHDOG` off | PRESENT (enable) |
 | Thermal | `sprd_*_thm`, sc27xx tsensor | many `sprd_*_thm`, `sc27xx_tsensor_thermal`, cpu cooling | PRESENT (DT thermal zones for the watch SKUs to check) |
 | Audio (VBC/codec sc2721) | yes | `sound/soc/sprd` with `vbc-rxpx-codec-sc27xx`, `audiosipc` | PRESENT (DT differs, `sprd-sound-sharkl.dtsi`) |
-| ION | yes | `ION`, `ION_SPRD` | PRESENT; our `security/ion-lifetime` fixes to re-check |
+| ION | yes | `ION`, `ION_SPRD` | PRESENT; legacy (pre-4.12) ioctl ABI shim for the stock libion/libmemion added, PHYS gate optional (`ION_414_LEGACY.md`) |
 | VSP/JPG | `sprd_vsp/jpg` | `sprd_vsp`, `sprd_jpg`, both with sharkle compatibles | PRESENT |
 | Security backports (stable, CIP, UNISOC bulletins) | 4.4.302+ | 4.14.336 (all 4.14.y stable releases applied, see `KERNEL_4.14_STABLE.md`); 2019 BSP base | DONE for stable; `android-4.14-stable` audited (`ANDROID_4.14_AUDIT.md`), 14 of the top 15 picks plus an f_accessory sync applied; UNISOC bulletins still to audit |
 
@@ -153,13 +153,23 @@ panels and the DPU 18-bit DPI bus (MT108 display chain still disabled until a fi
 panel). Charger safety on all boards: CV capped to the battery maximum, every current capped to the adapter
 current, input OVP, CV floor fallback for high efuse calibrations.
 
+Merged into `kernel-4.14` on 2026-11-10 (compile only, each reviewed until no findings remained):
+`kernel-4.14-ion-legacy` (`ION_414_LEGACY.md`), `kernel-4.14-charge-safety` (`SC2721_CHARGER_MAP.md` section 5),
+`kernel-4.14-thermal-wdt` (`THERMAL_414.md`) and `kernel-4.14-adf` (`ADF_414_PORT.md`). The merged tree builds
+`Image`, modules and 38 dtbs with 0 errors both with `watch_414.fragment` (DRM display) and with
+`watch_414.fragment` + `watch_414_adf.fragment` (ADF display, `DRM_SPRD` off).
+
 Next:
 1. First boot of the DM63 on 4.14 (needs the user's OK to flash): console, USB, eMMC, then display. The first
    charge must be attended (see `dm63/DTS_414.md`).
-2. Userspace: the Android 8.1 vendor hwcomposer/gralloc use ADF; on 4.14 DRM a DRM-capable composer is needed,
-   which ties a 4.14 kernel to a newer Android build (GSI with a DRM HWC) rather than the stock vendor image.
-3. Mali kbase port (needs the kbase source tarballs).
-4. AOD on DRM, WCN/GNSS tweaks, SIPC hardening, the remaining stock panels, ports for the parts without a
+2. Userspace: the Android 8.1 vendor hwcomposer/gralloc use ADF. The ADF port now exists (`ADF_414_PORT.md`), so
+   the stock vendor image can in principle run on 4.14 once a board is wired for it: the K18 ADF board DTS
+   (dispc/dsi/dphy in the ADF binding, the `lcd_icna3311_oled148_adf.dtsi` panel) is not done yet. The DRM path
+   still needs a DRM-capable composer (a newer Android build).
+3. Mali kbase: r21p0 for the stock blob, on 4.4 first (see the 4.4 tree's `devices/MALI_R21P0.md`), then 4.14.
+4. Missing on 4.14: Wi-Fi/BT netdev drivers, deep sleep, camera (needs ION, now present).
+5. The DRM sprd sysfs parser overflow (see `ADF_414_PORT.md`, open items).
+6. AOD on DRM, WCN/GNSS tweaks, SIPC hardening, the remaining stock panels, ports for the parts without a
    4.14 driver (BetterLife touch, bd1xxx heart rate, msp891, af6837).
 
 ## 7. Driver port status (branch `kernel-4.14-ports`)

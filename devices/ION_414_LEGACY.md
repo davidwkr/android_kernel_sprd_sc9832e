@@ -55,15 +55,13 @@ wired into the existing `ion_fops` in `ion.c`:
   still present verbatim in `include/uapi/linux/sprd_ion.h` on this branch
   (only the `enum ION_SPRD_CUSTOM_CMD` dispatch values were removed
   upstream; they are restored, same numeric values, in `ion_legacy.c`).
-* `ION_SPRD_CUSTOM_MAP_KERNEL`/`UNMAP_KERNEL` reuse the existing exported
-  `sprd_ion_map_kernel()`/`sprd_ion_unmap_kernel()` helpers in
-  `sprd/sprd_ion.c`. `MAP_KERNEL` maps, reads `buffer->size`, and
-  immediately unmaps again before returning — the kernel VA is zeroed in
-  the struct handed back to userspace (a kernel pointer is unusable there
-  and would leak kernel layout; this matches the hardened behaviour already
-  present in the 4.4 `security-backports` branch). `UNMAP_KERNEL`
-  consequently has nothing persistent left to tear down and only validates
-  the fd.
+* `ION_SPRD_CUSTOM_MAP_KERNEL`/`UNMAP_KERNEL`: `MAP_KERNEL` only returns
+  the buffer size, with the kernel VA zeroed (a kernel pointer is unusable
+  in userspace and would leak kernel layout; this matches the hardened
+  behaviour of the 4.4 `security-backports` branch). It no longer maps and
+  unmaps through the `sprd_ion_map_kernel()` helpers, and it rejects
+  dma-bufs not exported by ION. `UNMAP_KERNEL` has nothing to tear down and
+  only validates the fd.
 * `ION_SPRD_CUSTOM_FENCE_CREATE`/`FENCE_SIGNAL`/`FENCE_DUP` are **not**
   implemented: the 4.4 `security-backports` sprd driver itself no longer
   handles them (falls to `default: return -ENOTTY`), and the vendor binary
@@ -172,10 +170,16 @@ in `ion.c`/`ion_system_heap.c`/`sprd_ion.c`), and links into a full
   pinned across the two calls (see above); this matches the already
   neutered (kaddr-zeroing) 4.4 `security-backports` behaviour, not the
   original unhardened upstream ION.
-* `ION_IOC_PHY` (the native 4.14 path) carries no uid/permission gate in
-  this tree, unlike the 4.4 `security-backports` branch's
-  `sprd_ion_phys_allowed()` check on `ION_SPRD_CUSTOM_PHYS`. The legacy
-  shim added here does not add one either, since doing so would be
-  inconsistent (the same capability is already reachable unrestricted via
-  the native `ION_IOC_PHY` ioctl in this tree) and porting that hardening
-  is a separate, pre-existing gap outside this task's scope.
+* Physical address queries: `CONFIG_SPRD_ION_RESTRICT_PHYS` (default `n`)
+  gates both the legacy `ION_SPRD_CUSTOM_PHYS` command and the native
+  `ION_IOC_PHY` the same way, like the 4.4 `sprd_ion_phys_allowed()`: app
+  uids (app id >= 10000, secondary users and isolated uids included) get
+  `-EPERM` unless listed in the `sprd_ion.phys_allow_uids=a,b,...` boot
+  parameter (up to 8). It is off by default because the stock camera HAL
+  needs PHYS; which uid it runs as must be checked on a unit before
+  enabling it.
+* `ion_phys()` rejects dma-bufs not exported by ION (it used to cast any
+  fd's `priv` to `struct ion_buffer`).
+* Error paths: a handle whose number cannot be copied back to userspace
+  (`ALLOC`/`IMPORT`) is dropped again, and `MAP`/`SHARE` reserve the fd
+  and install it only after the copy succeeds, so a fault leaks neither.
