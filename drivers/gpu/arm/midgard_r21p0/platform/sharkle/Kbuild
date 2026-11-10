@@ -25,3 +25,8 @@ mali-y += $(MALI_PLATFORM_DIR)/mali_kbase_config_sharkle.o
 # generic kbdev->clock ("clk_mali") path. Only defined when this Kbuild is
 # included, i.e. only when CONFIG_MALI_PLATFORM_NAME="sharkle".
 ccflags-y += -DMALI_PLATFORM_SHARKLE
+# DVFS raises vddcore ("gpu" supply) before a faster OPP and lowers it after
+# a slower one, as the stock mali.ko does (it imports regulator_get_voltage
+# and has the upgrade_voltage path); without it 680 MHz runs at the
+# previous voltage. A failed raise keeps the old frequency.
+ccflags-y += -DCONFIG_ADJUST_VOLTAGE
