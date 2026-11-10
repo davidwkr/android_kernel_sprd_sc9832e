@@ -524,6 +524,12 @@ err_fence:
 	mutex_unlock(&dev->post_lock);
 
 err_buf:
+	/* cfg->state is only non-NULL once validate() has succeeded; free it
+	 * here so a post that fails after validate() (e.g. fence allocation
+	 * failure) doesn't leak the driver-private state it allocated. */
+	if (cfg->state)
+		dev->ops->state_free(dev, cfg->state);
+
 	for (i = 0; i < n_bufs; i++)
 		adf_buffer_mapping_cleanup(&mappings[i], &bufs[i]);
 
