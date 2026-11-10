@@ -25,3 +25,12 @@ CONFIG_SPRD_CAMERA_DCAM_IF_R4P0=y
 CONFIG_SPRD_CAMERA_ISP_R6P11=y
 CONFIG_SPRD_CAMERA_CPP_LITE_R3P0=y
 CONFIG_SPRD_CAMERA_CSI_R2P0V2=y
+
+# MT108 LCD backlight: the SC2721 RGB LED (stock BACKLIGHT_SC2721_RGBLED=y).
+# Binds only where the sprd,sc2721-bltc-rgb node is okay (MT108 ADF dts).
+CONFIG_BACKLIGHT_SC2721_RGBLED=y
+
+# pwm-backlight off, as in every stock config: on the stock system the
+# panels use the OLED backlight or (MT108) the SC2721 RGB LED backlight,
+# and a pwm-backlight would register the same "sprd_backlight" name.
+# CONFIG_BACKLIGHT_PWM is not set

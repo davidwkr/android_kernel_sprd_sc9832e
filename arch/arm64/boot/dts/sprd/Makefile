@@ -5,10 +5,13 @@ dtb-$(CONFIG_ARCH_SPRD) += sc9836-openphone.dtb \
 			   sp9832e-1h10-dm63.dtb	\
 			   sp9832e-1h10-dm63-adf.dtb	\
 			   sp9832e-1h10-mt107.dtb	\
+			   sp9832e-1h10-mt107-adf.dtb	\
 			   sp9832e-1h10-mt108.dtb	\
+			   sp9832e-1h10-mt108-adf.dtb	\
 			   sp9832e-1h10-k18.dtb	\
 			   sp9832e-1h10-k18-adf.dtb	\
 			   sp9832e-1h10-dm82.dtb	\
+			   sp9832e-1h10-dm82-adf.dtb	\
 			   sp9832e-1h10-dw100u-silver.dtb	\
 			   sp9832e-1h10-dw100u-silver-adf.dtb	\
 			   sp9832e-1h10-dw100u-v13m.dtb	\
