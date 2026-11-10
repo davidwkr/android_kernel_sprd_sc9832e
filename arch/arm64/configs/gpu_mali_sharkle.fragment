@@ -1,0 +1,14 @@
+# Mali Midgard GPU (ARM T820, sprd "sharkle" platform glue), r21p0 to match
+# the stock libGLES_mali.so DDK compatibility check (UK version 11.0, see
+# devices/MALI_R21P0.md). Module, like stock: the ramdisk insmods mali.ko.
+# K18 and DM63 only for now (confirmed GPU on both from the reconstructed
+# stock DTS gpu@60000000 node); add other boards here once their DT and
+# ramdisk are checked the same way.
+CONFIG_MALI_MIDGARD=m
+CONFIG_MALI_PLATFORM_NAME="sharkle"
+# devfreq-based DVFS (stock's choice, confirmed from the stock mali.ko's own
+# symbol table: it has kbase_devfreq_* backend functions, not a
+# CONFIG_MALI_MIDGARD_DVFS in-driver polling thread). Uses the gpu node's
+# "operating-points" table; CONFIG_PM_DEVFREQ and a governor are already on
+# for every watch board.
+CONFIG_MALI_DEVFREQ=y
