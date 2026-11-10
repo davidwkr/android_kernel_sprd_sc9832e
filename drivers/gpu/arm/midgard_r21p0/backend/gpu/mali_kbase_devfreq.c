@@ -118,7 +118,11 @@ kbase_devfreq_target(struct device *dev, unsigned long *target_freq, u32 flags)
 	}
 #endif
 
+#ifdef MALI_PLATFORM_SHARKLE
 	err = kbase_platform_set_freq(freq);
+#else
+	err = clk_set_rate(kbdev->clock, freq);
+#endif
 	if (err) {
 		dev_err(dev, "Failed to set clock %lu (target %lu)\n",
 				freq, *target_freq);
@@ -311,11 +315,20 @@ int kbase_devfreq_init(struct kbase_device *kbdev)
 	struct devfreq_dev_profile *dp;
 	int err;
 
+#ifdef MALI_PLATFORM_SHARKLE
 	/* Sharkle has no "clk_mali" clock in the devicetree; frequency
 	 * control goes through the platform's own kbase_platform_set_freq()
 	 * (see platform/sharkle), not kbdev->clock, so don't require it here.
 	 */
 	kbdev->current_freq = kbase_platform_get_init_freq();
+#else
+	if (!kbdev->clock) {
+		dev_err(kbdev->dev, "Clock not available for devfreq\n");
+		return -ENODEV;
+	}
+
+	kbdev->current_freq = clk_get_rate(kbdev->clock);
+#endif
 	kbdev->current_nominal_freq = kbdev->current_freq;
 
 	dp = &kbdev->devfreq_profile;
