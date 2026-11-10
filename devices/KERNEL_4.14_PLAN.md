@@ -174,8 +174,8 @@ Next:
    writes that can crash or misprogram the hardware (DTB reload, writeback dump, DSI transfers vs suspend, clock
    values) are vendor behaviour, accepted.
 6. Open: AOD on DRM, the remaining stock panels (WCN/GNSS tweaks and SIPC hardening are ported). Parts
-   without a 4.14 driver: BetterLife touch and bd1xxx are ported; msp891 and af6837 have no source in either tree
-   (stock binaries only).
+   without a 4.14 driver: BetterLife touch and bd1xxx are ported; af6837 and msp891 have no source anywhere and
+   were written new from the stock interface (`AF6837_INTERFACE.md`, `MSP891_INTERFACE.md`).
 
 ## 7. Driver port status (branch `kernel-4.14-ports`)
 
