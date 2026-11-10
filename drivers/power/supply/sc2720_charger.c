@@ -1066,7 +1066,8 @@ static int sc2720_charger_usb_get_property(struct power_supply *psy,
 		break;
 
 	case POWER_SUPPLY_PROP_HEALTH:
-		if (info->charging) {
+		/* a latched OVP must show even if a failed stop left charging set */
+		if (info->charging && !info->ovp_fault) {
 			val->intval = 0;
 		} else {
 			ret = sc2720_charger_get_health(info, &health);
