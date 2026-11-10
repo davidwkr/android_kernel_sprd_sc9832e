@@ -20,6 +20,7 @@
 #include <linux/uaccess.h>
 
 #include "ion.h"
+#include "ion_legacy.h"
 
 union ion_ioctl_arg {
 	struct ion_allocation_data allocation;
@@ -99,6 +100,9 @@ long ion_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	case ION_IOC_PHY:
 	{
 		int fd = data.phy.fd;
+
+		if (!ion_phys_allowed())
+			return -EPERM;
 
 		ret = ion_phys(fd, (unsigned long *)&data.phy.addr,
 			      (size_t *)&data.phy.len);

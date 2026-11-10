@@ -49,3 +49,24 @@ config ION_SPRD
 	help
 	  Choose this option if you wish to use ion on an Spreadtrum chip.
 	  Provides a ION driver that registers some base heaps.
+
+config SPRD_ION_RESTRICT_PHYS
+	bool "Restrict ION physical address queries to non-app callers"
+	depends on ION_SPRD
+	default n
+	help
+	  The legacy ION_SPRD_CUSTOM_PHYS custom command and ION_IOC_PHY
+	  return the physical address of any dma-buf the caller can import,
+	  which gives an ordinary app a physical address oracle (useful for
+	  DMA-based attacks). With this option both return -EPERM to callers
+	  whose app id (uid % 100000, so secondary users and isolated uids
+	  are included) is >= 10000 (Android AID_APP), unless the caller has
+	  CAP_SYS_RAWIO or its full uid is listed in the
+	  sprd_ion.phys_allow_uids boot parameter. Callers with an app id
+	  below 10000 (root, system, media, cameraserver, camera,
+	  graphics ...) are not affected, so the stock vendor HALs are
+	  expected to keep working. Each denial logs the comm and uid (rate
+	  limited). Same policy as the 4.4 tree's option of this name.
+	  Trade-off: any app-uid process that legitimately uses these calls
+	  breaks unless allow-listed. Not verified on hardware. If unsure,
+	  say N.
