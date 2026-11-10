@@ -40,6 +40,7 @@
 #include <linux/sched/task.h>
 
 #include "ion.h"
+#include "ion_legacy.h"
 
 static struct ion_device *internal_dev;
 
@@ -513,6 +514,12 @@ int ion_phys(int fd, unsigned long *phys_addr, size_t *size)
 	return ret;
 }
 
+bool ion_dma_buf_is_ion(struct dma_buf *dmabuf)
+{
+	return dmabuf->ops == &dma_buf_ops;
+}
+EXPORT_SYMBOL(ion_dma_buf_is_ion);
+
 struct dma_buf *ion_new_alloc(size_t len, unsigned int heap_id_mask,
 			      unsigned int flags)
 {
@@ -712,9 +719,11 @@ int ion_debug_heap_show_printk(struct ion_heap *heap,
 
 static const struct file_operations ion_fops = {
 	.owner          = THIS_MODULE,
-	.unlocked_ioctl = ion_ioctl,
+	.open           = ion_legacy_open,
+	.release        = ion_legacy_release,
+	.unlocked_ioctl = ion_ioctl_dispatch,
 #ifdef CONFIG_COMPAT
-	.compat_ioctl	= ion_ioctl,
+	.compat_ioctl	= ion_compat_ioctl_dispatch,
 #endif
 };
 

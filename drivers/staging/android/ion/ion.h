@@ -250,6 +250,16 @@ int ion_alloc(size_t len,
 int ion_phys(int fd, unsigned long *phys_addr, size_t *size);
 
 /**
+ * ion_dma_buf_is_ion - true if dmabuf was exported by this ion driver
+ * @dmabuf:		the dma-buf to check
+ *
+ * Used by the legacy ioctl ABI compat shim to reject ION_IOC_IMPORT of a
+ * dma-buf fd that did not come from ion.
+ */
+struct dma_buf;
+bool ion_dma_buf_is_ion(struct dma_buf *dmabuf);
+
+/**
  * ion_heap_init_shrinker
  * @heap:		the heap
  *
