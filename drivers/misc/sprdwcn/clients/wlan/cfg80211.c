@@ -948,11 +948,20 @@ void sprdwl_sched_scan_done(struct sprdwl_vif *vif, bool abort)
 	if (priv->sched_scan_vif && priv->sched_scan_vif == vif) {
 		spin_lock_bh(&priv->sched_scan_lock);
 		if (priv->sched_scan_request) {
-			cfg80211_sched_scan_results(vif->wdev.wiphy, 0);
-			netdev_info(priv->sched_scan_vif->ndev,
-				    "%s report result\n", __func__);
-			priv->sched_scan_request = NULL;
-			priv->sched_scan_vif = NULL;
+			/*
+			 * The scheduled scan stays active in cfg80211 after
+			 * reporting results: keep its state until stop. On
+			 * abort (interface down/removed, under RTNL) cfg80211
+			 * stops it itself, so only drop the state.
+			 */
+			if (!abort) {
+				cfg80211_sched_scan_results(vif->wdev.wiphy, 0);
+				netdev_info(priv->sched_scan_vif->ndev,
+					    "%s report result\n", __func__);
+			} else {
+				priv->sched_scan_request = NULL;
+				priv->sched_scan_vif = NULL;
+			}
 		}
 		spin_unlock_bh(&priv->sched_scan_lock);
 	}
@@ -1592,7 +1601,7 @@ void sprdwl_report_connection(struct sprdwl_vif *vif, u8 *bssid,
 	struct sprdwl_priv *priv = vif->priv;
 	struct wiphy *wiphy = priv->wiphy;
 	struct ieee80211_supported_band *band;
-	struct ieee80211_channel *channel;
+	struct ieee80211_channel *channel = NULL;
 	struct ieee80211_mgmt *mgmt;
 	struct cfg80211_bss *bss = NULL;
 	struct timespec ts;
@@ -1686,12 +1695,21 @@ void sprdwl_report_connection(struct sprdwl_vif *vif, u8 *bssid,
 		 status_code == SPRDWL_ROAM_SUCCESS) {
 		struct cfg80211_roam_info roam_info = {
 			.bss = bss,
+			.bssid = bssid,
 			.req_ie = req_ie,
 			.req_ie_len = req_ie_len,
 			.resp_ie = resp_ie,
 			.resp_ie_len = resp_ie_len,
 		};
 
+		/* without a beacon cfg80211 looks the BSS up by bssid and
+		 * channel
+		 */
+		if (!bss && !channel)
+			channel = ieee80211_get_channel(wiphy,
+				ieee80211_channel_to_frequency(channel_num,
+							NL80211_BAND_2GHZ));
+		roam_info.channel = channel;
 		cfg80211_roamed(vif->ndev, &roam_info, GFP_KERNEL);
 	} else {
 		netdev_err(vif->ndev, "%s sm_state (%d), status code (%d)!\n",
