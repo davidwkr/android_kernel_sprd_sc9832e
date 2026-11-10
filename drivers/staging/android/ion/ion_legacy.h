@@ -8,6 +8,10 @@
 #define _ION_LEGACY_H
 
 #include <linux/fs.h>
+#include <linux/types.h>
+
+/* CONFIG_SPRD_ION_RESTRICT_PHYS policy, shared by the legacy and native paths */
+bool ion_phys_allowed(void);
 
 int ion_legacy_open(struct inode *inode, struct file *file);
 int ion_legacy_release(struct inode *inode, struct file *file);

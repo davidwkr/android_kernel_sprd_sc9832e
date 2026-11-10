@@ -36,6 +36,62 @@
 #include "ion.h"
 #include "ion_legacy.h"
 
+#ifdef CONFIG_SPRD_ION_RESTRICT_PHYS
+#include <linux/capability.h>
+#include <linux/cred.h>
+#include <linux/ctype.h>
+#include <linux/moduleparam.h>
+#include <linux/sched.h>
+#include <linux/uidgid.h>
+
+#define SPRD_ION_AID_APP		10000
+#define SPRD_ION_AID_USER_OFFSET	100000
+
+/*
+ * Full uids (>= 10000) that may query physical addresses. Read-only after
+ * boot: set on the kernel command line as sprd_ion.phys_allow_uids=a,b
+ * (same parameter name as the 4.4 tree).
+ */
+#ifdef MODULE_PARAM_PREFIX
+#undef MODULE_PARAM_PREFIX
+#endif
+#define MODULE_PARAM_PREFIX "sprd_ion."
+static unsigned int phys_allow_uids[8];
+static unsigned int phys_allow_nr;
+module_param_array(phys_allow_uids, uint, &phys_allow_nr, 0444);
+MODULE_PARM_DESC(phys_allow_uids,
+		 "app-range uids allowed to query ION physical addresses");
+
+bool ion_phys_allowed(void)
+{
+	unsigned int uid = from_kuid(&init_user_ns, current_euid());
+	/* app id within the Android user: secondary users add 100000 * N */
+	unsigned int appid = uid % SPRD_ION_AID_USER_OFFSET;
+	unsigned int i, n = min_t(unsigned int, phys_allow_nr,
+				  ARRAY_SIZE(phys_allow_uids));
+	char comm[TASK_COMM_LEN];
+
+	if (appid < SPRD_ION_AID_APP || capable(CAP_SYS_RAWIO))
+		return true;
+	for (i = 0; i < n; i++)
+		if (phys_allow_uids[i] == uid)
+			return true;
+	get_task_comm(comm, current);
+	for (i = 0; comm[i]; i++)
+		if (!isprint(comm[i]))
+			comm[i] = '?';
+	pr_err_ratelimited("%s: ION physical address query denied comm=%.*s pid=%d uid=%u\n",
+			   __func__, TASK_COMM_LEN - 1, comm,
+			   task_pid_nr(current), uid);
+	return false;
+}
+#else
+bool ion_phys_allowed(void)
+{
+	return true;
+}
+#endif
+
 typedef int ion_user_handle_t;
 
 struct ion_allocation_data_legacy {
@@ -487,6 +543,8 @@ long ion_ioctl_dispatch(struct file *filp, unsigned int cmd, unsigned long arg)
 
 		switch (data.cmd) {
 		case ION_SPRD_CUSTOM_PHYS_LEGACY:
+			if (!ion_phys_allowed())
+				return -EPERM;
 			return legacy_custom_phys(sub_arg);
 		case ION_SPRD_CUSTOM_MSYNC_LEGACY:
 			return legacy_custom_msync(sub_arg);
@@ -615,6 +673,8 @@ long ion_compat_ioctl_dispatch(struct file *filp, unsigned int cmd,
 
 		switch (data32.cmd) {
 		case ION_SPRD_CUSTOM_PHYS_LEGACY:
+			if (!ion_phys_allowed())
+				return -EPERM;
 			return legacy_custom_phys_compat(sub_arg);
 		case ION_SPRD_CUSTOM_MSYNC_LEGACY:
 			return legacy_custom_msync_compat(sub_arg);
