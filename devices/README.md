@@ -36,7 +36,7 @@ Related: [`../TODO.md`](../TODO.md) (work plan), [`../KERNEL_TWEAKS.md`](../KERN
 | SoC | UNISOC SL8541E (SC9832E family, "SharkLE"), 4x Cortex-A53 (`CPU part 0xd03`), up to 1.4 GHz |
 | CPU frequencies | 768, 900, 1100, 1300, 1400 MHz; stock governor `interactive`; UNISOC CPU hotplug governor (`/sys/devices/system/cpu/cpuhotplug`) |
 | CPU idle states | `WFI`, `core_pd`, `cluster_pd` |
-| GPU | Mali (Midgard), `mali.ko` from the ramdisk |
+| GPU | Mali (Midgard) T820, `mali.ko` from the ramdisk; r21p0 rebuild for K18/DM63 in [`MALI_R21P0.md`](MALI_R21P0.md) |
 | DT compatible | `"sprd,sp9832e-1h10", "sprd,sc9832e"`, model `Spreadtrum SL8541e Board` |
 | Android | 8.1 (vendor BSP, non-VNDK `/vendor`), `ro.boot.hardware = sl8541e_1h10`, platform `sp9832e` |
 | Stock kernel | 4.4.83, GCC 4.9, `CONFIG_HZ=100`, `NO_HZ_IDLE`, `PM_AUTOSLEEP`, `PM_WAKELOCKS` |
