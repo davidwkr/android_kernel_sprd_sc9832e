@@ -679,7 +679,19 @@ static int32_t sprd_dispc_flip(struct sprd_dispc *dispc,
 	config_saved = config;
 	ret = 0;
 
-	if (unlikely(logo2animation)) {
+	/*
+	 * update shadow registers and run if it is not in ESD Recovery. A
+	 * timeout means the hw may still scan either config: -ETIMEDOUT tells
+	 * ADF to keep the previous one alive too.
+	 */
+	if (!ctx->is_stopped || (dispc->ctx.if_type == SPRD_DISPC_IF_EDPI))
+		ret = dispc->core->run(ctx);
+
+	/*
+	 * The boot logo is not an ADF post: free it only once an update has
+	 * latched, so a timed-out first flip cannot leave it scanned.
+	 */
+	if (unlikely(logo2animation) && !ret) {
 		/*free logo buffer*/
 		if (ctx->logo_vaddr) {
 			pr_info("unmap logo buffer dma pages\n");
@@ -693,14 +705,6 @@ static int32_t sprd_dispc_flip(struct sprd_dispc *dispc,
 
 		logo2animation = false;
 	}
-
-	/*
-	 * update shadow registers and run if it is not in ESD Recovery. A
-	 * timeout means the hw may still scan either config: -ETIMEDOUT tells
-	 * ADF to keep the previous one alive too.
-	 */
-	if (!ctx->is_stopped || (dispc->ctx.if_type == SPRD_DISPC_IF_EDPI))
-		ret = dispc->core->run(ctx);
 	up(&ctx->refresh_lock);
 
 	return ret == -ETIMEDOUT ? ret : 0;
@@ -774,6 +778,8 @@ static int32_t sprd_dispc_suspend(struct sprd_dispc *dispc)
 
 	sprd_adf_fence_signal(dispc->adf);
 	sprd_dispc_uninit(dispc);
+	/* nothing is scanned out anymore: release timed-out posts */
+	sprd_adf_scanout_stopped(dispc->adf);
 
 	up(&ctx->refresh_lock);
 

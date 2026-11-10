@@ -110,6 +110,23 @@ void sprd_adf_fence_signal(struct device *dev)
 }
 
 /**
+ * sprd_adf_scanout_stopped - tell ADF the display controller stopped
+ *
+ * @dev: the adf device ptr
+ */
+void sprd_adf_scanout_stopped(struct device *dev)
+{
+	struct sprd_adf_context *ctx;
+
+	ctx = dev_get_drvdata(dev);
+	if (!ctx) {
+		ADF_DEBUG_WARN("Get sprd_adf_context fail\n");
+		return;
+	}
+	adf_device_scanout_stopped(&ctx->devices[0].base);
+}
+
+/**
  * sprd_adf_create_attachments - creat adf interface and
  * overlayengine relationship
  *

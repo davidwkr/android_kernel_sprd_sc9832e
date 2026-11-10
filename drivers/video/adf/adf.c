@@ -126,6 +126,13 @@ void adf_post_timeline_signaled(struct adf_device *dev)
 
 EXPORT_SYMBOL(adf_post_timeline_signaled);
 
+/*
+ * Beyond this many posts kept alive by timed-out updates, the hardware is
+ * treated as wedged: new posts fail without being flipped until a post
+ * succeeds or the driver reports scanout stopped.
+ */
+#define ADF_MAX_STALE_POSTS 4
+
 static void adf_post_retire_stale(struct adf_device *dev)
 {
 	struct adf_pending_post *post, *next;
@@ -134,7 +141,31 @@ static void adf_post_retire_stale(struct adf_device *dev)
 		list_del(&post->head);
 		adf_post_cleanup(dev, post);
 	}
+	dev->n_stale = 0;
 }
+
+static void adf_stale_work_func(struct kthread_work *work)
+{
+	struct adf_device *dev =
+			container_of(work, struct adf_device, stale_work);
+
+	adf_post_retire_stale(dev);
+}
+
+/**
+ * adf_device_scanout_stopped - the hardware no longer reads any buffer
+ *
+ * @dev: the device
+ *
+ * For drivers whose post op can return -ETIMEDOUT: call once the display
+ * controller is stopped or powered down, so the posts kept alive by timed
+ * out updates can be released. Runs the release on the post worker.
+ */
+void adf_device_scanout_stopped(struct adf_device *dev)
+{
+	kthread_queue_work(&dev->post_worker, &dev->stale_work);
+}
+EXPORT_SYMBOL(adf_device_scanout_stopped);
 
 static void adf_post_work_func(struct kthread_work *work)
 {
@@ -164,7 +195,10 @@ static void adf_post_work_func(struct kthread_work *work)
 		dev->post_gen++;
 		spin_unlock_irqrestore(&dev->signal_lock, flags);
 
-		err = dev->ops->post(dev, &post->config, post->state);
+		if (dev->n_stale >= ADF_MAX_STALE_POSTS)
+			err = -EBUSY;
+		else
+			err = dev->ops->post(dev, &post->config, post->state);
 
 		/*
 		 * Advanced even if the flip failed, so this post's own fences
@@ -189,9 +223,11 @@ static void adf_post_work_func(struct kthread_work *work)
 			 * previous one: keep both until a later post succeeds.
 			 */
 			dev_warn(&dev->base.dev, "flip timed out\n");
-			if (dev->onscreen)
+			if (dev->onscreen) {
 				list_add_tail(&dev->onscreen->head,
 						&dev->stale_posts);
+				dev->n_stale++;
+			}
 			dev->onscreen = post;
 			continue;
 		}
@@ -641,6 +677,7 @@ int adf_device_init(struct adf_device *dev, struct device *parent,
 		goto err;
 	}
 	kthread_init_work(&dev->post_work, adf_post_work_func);
+	kthread_init_work(&dev->stale_work, adf_stale_work_func);
 
 	ret = adf_device_sysfs_init(dev);
 	if (ret < 0)

@@ -284,8 +284,13 @@ int sprd_adf_device_flip(struct sprd_adf_interface *adf_intf,
 	for (index = 0; index < num_dev; index++) {
 		dispc = pipe->sdev[index];
 		ret = dispc->ctrl->flip(dispc, config);
+		/*
+		 * Once one controller took this config, a later failure leaves
+		 * the switch partial: report it as ambiguous so ADF keeps both
+		 * the old and the new post alive.
+		 */
 		if (ret)
-			return ret;
+			return index ? -ETIMEDOUT : ret;
 	}
 
 	return 0;

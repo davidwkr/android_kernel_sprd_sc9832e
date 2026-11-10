@@ -18,6 +18,7 @@
 
 void sprd_adf_report_vsync(struct device *dev, u32 flags);
 void sprd_adf_fence_signal(struct device *dev);
+void sprd_adf_scanout_stopped(struct device *dev);
 void sprd_adf_adapter_shutdown(struct platform_device *pdev);
 struct sprd_adf_context *sprd_adf_context_create(struct platform_device *pdev);
 void sprd_adf_context_destroy(struct sprd_adf_context *ctx);
