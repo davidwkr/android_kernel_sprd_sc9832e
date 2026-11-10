@@ -63,3 +63,9 @@ CONFIG_MALI_DEVFREQ=y
 CONFIG_SPRDWL_NG=m
 CONFIG_SPRD_BT_TTY_SIPC=m
 CONFIG_SPRD_FM_SIPC=m
+
+# DW100U Goodix fingerprint HAL interface (drivers/input/fingerprint/goodix,
+# node in sp9832e-1h10-dw100u.dtsi); probes only where the node exists. It
+# uses netlink protocol 29, which nothing else claims here (no IODEBUG).
+CONFIG_INPUT_FINGERPRINT=y
+CONFIG_GOODIX_TEE_FINGERPRINT=y

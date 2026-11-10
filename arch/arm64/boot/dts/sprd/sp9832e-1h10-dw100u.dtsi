@@ -674,11 +674,22 @@
 };
 
 /*
- * TODO not mapped: stock spi@70a00000 with goodix_fp_ree@0 (goodix,
- * fingerprintree, spi-max-frequency 10 MHz, irq ap_gpio 154, reset ap_gpio
- * 155). The Goodix fingerprint driver is not ported on 4.14; the spi
- * controller stays disabled.
+ * Fingerprint, as in the stock DTs of both units: spi@70c00000 (spi2) with
+ * goodix_fp_ree@0, irq ap_gpio 154, reset ap_gpio 155, no power gpio. The
+ * driver (drivers/input/fingerprint/goodix) is the interface of the stock
+ * Goodix TEE fingerprint HAL.
  */
+&spi2 {
+	status = "okay";
+
+	goodix_fp_ree@0 {
+		compatible = "goodix,fingerprintree";
+		reg = <0>;
+		spi-max-frequency = <10000000>;
+		goodix,gpio_irq = <&ap_gpio 154 GPIO_ACTIVE_HIGH>;
+		goodix,gpio_reset = <&ap_gpio 155 GPIO_ACTIVE_HIGH>;
+	};
+};
 
 /*
  * Display: CO5300 AMOLED. The silver unit reports lcd_id ID5300204 (2.04 inch,
