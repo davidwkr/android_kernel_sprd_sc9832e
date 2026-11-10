@@ -20,6 +20,7 @@
 #include <linux/timer.h>
 #include <linux/timex.h>
 #include <linux/rtc.h>
+#include <linux/slab.h>
 
 #include "disp_lib.h"
 #include "sprd_dpu.h"
@@ -173,6 +174,16 @@ static ssize_t actual_fps_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(actual_fps);
 
+/*
+ * regs_offset/wr_regs work on the dpu register block: word-aligned offset,
+ * length in words, all inside the mapped size.
+ */
+static bool dpu_regs_range_ok(struct dpu_context *ctx, u32 offset, u32 length)
+{
+	return !(offset & 3) && offset < ctx->base_size &&
+	       length <= (ctx->base_size - offset) / 4;
+}
+
 static ssize_t regs_offset_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -192,8 +203,13 @@ static ssize_t regs_offset_store(struct device *dev,
 	struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct sprd_dpu *dpu = dev_get_drvdata(dev);
+	u32 req[2] = {};
 
-	str_to_u32_array(buf, 16, dpu->ctx.base_offset);
+	str_to_u32_array(buf, 16, req, ARRAY_SIZE(req));
+	if (!dpu_regs_range_ok(&dpu->ctx, req[0], req[1]))
+		return -EINVAL;
+	dpu->ctx.base_offset[0] = req[0];
+	dpu->ctx.base_offset[1] = req[1];
 
 	return count;
 }
@@ -209,9 +225,12 @@ static ssize_t wr_regs_show(struct device *dev,
 	unsigned int offset = dpu->ctx.base_offset[0];
 	unsigned int length = dpu->ctx.base_offset[1];
 
+	if (!dpu_regs_range_ok(&dpu->ctx, offset, length))
+		return -EINVAL;
+
 	for (i = 0; i < length; i++) {
 		reg = readl((void __iomem *)(dpu->ctx.base + offset));
-		ret += snprintf(buf + ret, PAGE_SIZE, "%x ", reg);
+		ret += scnprintf(buf + ret, PAGE_SIZE - ret, "%x ", reg);
 	}
 
 	return ret;
@@ -226,11 +245,14 @@ static ssize_t wr_regs_store(struct device *dev,
 	uint32_t *value;
 	uint32_t i;
 
-	value = kzalloc(length * 4, GFP_KERNEL);
+	if (!dpu_regs_range_ok(&dpu->ctx, temp, length))
+		return -EINVAL;
+
+	value = kcalloc(length, sizeof(*value), GFP_KERNEL);
 	if (!value)
 		return -ENOMEM;
 
-	str_to_u32_array(buf, 16, value);
+	str_to_u32_array(buf, 16, value, length);
 
 	for (i = 0; i < length; i++) {
 		writel(value[i], (void __iomem *)(dpu->ctx.base + temp));
@@ -395,6 +417,25 @@ static const struct attribute_group dpu_group = {
 #define BIN_ATTR_WO(_name, _size) BIN_ATTR(_name, S_IWUSR, NULL,\
 					_name##_write, _size)
 
+/*
+ * enhance_get() writes the whole table, but kernfs may hand a bin read a
+ * buffer of only count bytes: fetch into a full-size copy and return the
+ * requested slice. Called with refresh_lock held.
+ */
+static int dpu_enhance_get_slice(struct sprd_dpu *dpu, int id, size_t size,
+				 char *buf, loff_t off, size_t count)
+{
+	u8 *tbl = kzalloc(size, GFP_KERNEL);
+
+	if (!tbl)
+		return -ENOMEM;
+	dpu->core->enhance_get(&dpu->ctx, id, tbl);
+	memcpy(buf, tbl + off, count);
+	kfree(tbl);
+
+	return 0;
+}
+
 static ssize_t ltm_read(struct file *fp, struct kobject *kobj,
 			struct bin_attribute *attr, char *buf,
 			loff_t off, size_t count)
@@ -402,6 +443,7 @@ static ssize_t ltm_read(struct file *fp, struct kobject *kobj,
 	struct device *dev = container_of(kobj, struct device, kobj);
 	struct sprd_dpu *dpu = dev_get_drvdata(dev);
 	struct dpu_context *ctx = &dpu->ctx;
+	int ret;
 
 	if (!dpu->core->enhance_get)
 		return -EIO;
@@ -418,10 +460,11 @@ static ssize_t ltm_read(struct file *fp, struct kobject *kobj,
 		up(&ctx->refresh_lock);
 		return -EINVAL;
 	}
-	dpu->core->enhance_get(ctx, ENHANCE_CFG_ID_LTM, buf);
+	ret = dpu_enhance_get_slice(dpu, ENHANCE_CFG_ID_LTM,
+				    attr->size, buf, off, count);
 	up(&ctx->refresh_lock);
 
-	return count;
+	return ret ? ret : count;
 }
 
 static ssize_t ltm_write(struct file *fp, struct kobject *kobj,
@@ -436,7 +479,7 @@ static ssize_t ltm_write(struct file *fp, struct kobject *kobj,
 		return -EIO;
 
 	/* I need to get my data in one piece */
-	if (off != 0)
+	if (off != 0 || count != attr->size)
 		return -EINVAL;
 
 	down(&ctx->refresh_lock);
@@ -454,6 +497,7 @@ static ssize_t gamma_read(struct file *fp, struct kobject *kobj,
 	struct device *dev = container_of(kobj, struct device, kobj);
 	struct sprd_dpu *dpu = dev_get_drvdata(dev);
 	struct dpu_context *ctx = &dpu->ctx;
+	int ret;
 
 	if (!dpu->core->enhance_get)
 		return -EIO;
@@ -470,10 +514,11 @@ static ssize_t gamma_read(struct file *fp, struct kobject *kobj,
 		up(&ctx->refresh_lock);
 		return -EINVAL;
 	}
-	dpu->core->enhance_get(ctx, ENHANCE_CFG_ID_GAMMA, buf);
+	ret = dpu_enhance_get_slice(dpu, ENHANCE_CFG_ID_GAMMA,
+				    attr->size, buf, off, count);
 	up(&ctx->refresh_lock);
 
-	return count;
+	return ret ? ret : count;
 }
 
 static ssize_t gamma_write(struct file *fp, struct kobject *kobj,
@@ -504,7 +549,7 @@ static ssize_t slp_lut_show(struct device *dev,
 {
 	struct sprd_dpu *dpu = dev_get_drvdata(dev);
 	struct dpu_context *ctx = &dpu->ctx;
-	u32 data[256];
+	u32 data[256] = {};
 	int ret = 0;
 	int i;
 
@@ -522,7 +567,7 @@ static ssize_t slp_lut_show(struct device *dev,
 	up(&ctx->refresh_lock);
 
 	for (i = 0; i < 256; i++)
-		ret += snprintf(buf + ret, PAGE_SIZE,
+		ret += scnprintf(buf + ret, PAGE_SIZE - ret,
 			"0x%x: 0x%x\n",
 			i, data[i]);
 
@@ -537,6 +582,7 @@ static ssize_t slp_read(struct file *fp, struct kobject *kobj,
 	struct device *dev = container_of(kobj, struct device, kobj);
 	struct sprd_dpu *dpu = dev_get_drvdata(dev);
 	struct dpu_context *ctx = &dpu->ctx;
+	int ret;
 
 	if (!dpu->core->enhance_get)
 		return -EIO;
@@ -553,10 +599,11 @@ static ssize_t slp_read(struct file *fp, struct kobject *kobj,
 		up(&ctx->refresh_lock);
 		return -EINVAL;
 	}
-	dpu->core->enhance_get(ctx, ENHANCE_CFG_ID_SLP, buf);
+	ret = dpu_enhance_get_slice(dpu, ENHANCE_CFG_ID_SLP,
+				    attr->size, buf, off, count);
 	up(&ctx->refresh_lock);
 
-	return count;
+	return ret ? ret : count;
 }
 
 static ssize_t slp_write(struct file *fp, struct kobject *kobj,
@@ -589,6 +636,7 @@ static ssize_t cm_read(struct file *fp, struct kobject *kobj,
 	struct device *dev = container_of(kobj, struct device, kobj);
 	struct sprd_dpu *dpu = dev_get_drvdata(dev);
 	struct dpu_context *ctx = &dpu->ctx;
+	int ret;
 
 	if (!dpu->core->enhance_get)
 		return -EIO;
@@ -605,10 +653,11 @@ static ssize_t cm_read(struct file *fp, struct kobject *kobj,
 		up(&ctx->refresh_lock);
 		return -EINVAL;
 	}
-	dpu->core->enhance_get(ctx, ENHANCE_CFG_ID_CM, buf);
+	ret = dpu_enhance_get_slice(dpu, ENHANCE_CFG_ID_CM,
+				    attr->size, buf, off, count);
 	up(&ctx->refresh_lock);
 
-	return count;
+	return ret ? ret : count;
 }
 
 static ssize_t cm_write(struct file *fp, struct kobject *kobj,
@@ -641,6 +690,7 @@ static ssize_t epf_read(struct file *fp, struct kobject *kobj,
 	struct device *dev = container_of(kobj, struct device, kobj);
 	struct sprd_dpu *dpu = dev_get_drvdata(dev);
 	struct dpu_context *ctx = &dpu->ctx;
+	int ret;
 
 	if (!dpu->core->enhance_get)
 		return -EIO;
@@ -657,10 +707,11 @@ static ssize_t epf_read(struct file *fp, struct kobject *kobj,
 		up(&ctx->refresh_lock);
 		return -EINVAL;
 	}
-	dpu->core->enhance_get(ctx, ENHANCE_CFG_ID_EPF, buf);
+	ret = dpu_enhance_get_slice(dpu, ENHANCE_CFG_ID_EPF,
+				    attr->size, buf, off, count);
 	up(&ctx->refresh_lock);
 
-	return count;
+	return ret ? ret : count;
 }
 
 static ssize_t epf_write(struct file *fp, struct kobject *kobj,
@@ -716,6 +767,7 @@ static ssize_t hsv_read(struct file *fp, struct kobject *kobj,
 	struct device *dev = container_of(kobj, struct device, kobj);
 	struct sprd_dpu *dpu = dev_get_drvdata(dev);
 	struct dpu_context *ctx = &dpu->ctx;
+	int ret;
 
 	if (!dpu->core->enhance_get)
 		return -EIO;
@@ -732,10 +784,11 @@ static ssize_t hsv_read(struct file *fp, struct kobject *kobj,
 		up(&ctx->refresh_lock);
 		return -EINVAL;
 	}
-	dpu->core->enhance_get(ctx, ENHANCE_CFG_ID_HSV, buf);
+	ret = dpu_enhance_get_slice(dpu, ENHANCE_CFG_ID_HSV,
+				    attr->size, buf, off, count);
 	up(&ctx->refresh_lock);
 
-	return count;
+	return ret ? ret : count;
 }
 
 static ssize_t hsv_write(struct file *fp, struct kobject *kobj,
@@ -799,7 +852,7 @@ static ssize_t scl_store(struct device *dev,
 		return -EIO;
 
 	down(&ctx->refresh_lock);
-	str_to_u32_array(buf, 10, param);
+	str_to_u32_array(buf, 10, param, ARRAY_SIZE(param));
 	dpu->core->enhance_set(ctx, ENHANCE_CFG_ID_SCL, param);
 	up(&ctx->refresh_lock);
 
@@ -814,6 +867,7 @@ static ssize_t lut3d_read(struct file *fp, struct kobject *kobj,
 	struct device *dev = container_of(kobj, struct device, kobj);
 	struct sprd_dpu *dpu = dev_get_drvdata(dev);
 	struct dpu_context *ctx = &dpu->ctx;
+	int ret;
 
 	if (!dpu->core->enhance_get)
 		return -EIO;
@@ -830,10 +884,11 @@ static ssize_t lut3d_read(struct file *fp, struct kobject *kobj,
 		up(&ctx->refresh_lock);
 		return -EINVAL;
 	}
-	dpu->core->enhance_get(ctx, ENHANCE_CFG_ID_LUT3D, buf);
+	ret = dpu_enhance_get_slice(dpu, ENHANCE_CFG_ID_LUT3D,
+				    attr->size, buf, off, count);
 	up(&ctx->refresh_lock);
 
-	return count;
+	return ret ? ret : count;
 }
 
 static ssize_t lut3d_write(struct file *fp, struct kobject *kobj,
@@ -926,13 +981,13 @@ static ssize_t status_show(struct device *dev,
 	dpu->core->enhance_get(ctx, ENHANCE_CFG_ID_ENABLE, &en);
 	up(&ctx->refresh_lock);
 
-	ret += snprintf(buf + ret, PAGE_SIZE, "0x%08x\n", en);
-	ret += snprintf(buf + ret, PAGE_SIZE, "scl: %d\n", !!(en & BIT(0)));
-	ret += snprintf(buf + ret, PAGE_SIZE, "epf: %d\n", !!(en & BIT(1)));
-	ret += snprintf(buf + ret, PAGE_SIZE, "hsv: %d\n", !!(en & BIT(2)));
-	ret += snprintf(buf + ret, PAGE_SIZE, "cm: %d\n", !!(en & BIT(3)));
-	ret += snprintf(buf + ret, PAGE_SIZE, "slp: %d\n", !!(en & BIT(4)));
-	ret += snprintf(buf + ret, PAGE_SIZE, "gamma: %d\n", !!(en & BIT(5)));
+	ret += scnprintf(buf + ret, PAGE_SIZE - ret, "0x%08x\n", en);
+	ret += scnprintf(buf + ret, PAGE_SIZE - ret, "scl: %d\n", !!(en & BIT(0)));
+	ret += scnprintf(buf + ret, PAGE_SIZE - ret, "epf: %d\n", !!(en & BIT(1)));
+	ret += scnprintf(buf + ret, PAGE_SIZE - ret, "hsv: %d\n", !!(en & BIT(2)));
+	ret += scnprintf(buf + ret, PAGE_SIZE - ret, "cm: %d\n", !!(en & BIT(3)));
+	ret += scnprintf(buf + ret, PAGE_SIZE - ret, "slp: %d\n", !!(en & BIT(4)));
+	ret += scnprintf(buf + ret, PAGE_SIZE - ret, "gamma: %d\n", !!(en & BIT(5)));
 
 	return ret;
 }
