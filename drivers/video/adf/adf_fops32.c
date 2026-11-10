@@ -12,6 +12,8 @@
  *
  */
 
+#include <linux/fdtable.h>
+#include <linux/sched.h>
 #include <linux/uaccess.h>
 #include <video/adf.h>
 
@@ -23,6 +25,7 @@ long adf_compat_post_config(struct file *file,
 {
 	struct adf_post_config32 cfg32;
 	struct adf_post_config __user *cfg;
+	__s32 complete_fence_fd;
 	int ret;
 
 	if (copy_from_user(&cfg32, arg, sizeof(cfg32)))
@@ -47,9 +50,22 @@ long adf_compat_post_config(struct file *file,
 	if (ret < 0)
 		return ret;
 
-	if (copy_in_user(&arg->complete_fence, &cfg->complete_fence,
-			sizeof(cfg->complete_fence)))
+	/*
+	 * By the time adf_file_ioctl() returns success, the native ioctl has
+	 * already run fd_install() for the completion fence fd: it is live
+	 * in this process's fd table whether or not the copy below succeeds.
+	 * If put_user() fails, close the fd ourselves instead of returning
+	 * -EFAULT with an fd installed that userspace was never told the
+	 * number of and can therefore never close.
+	 */
+	if (get_user(complete_fence_fd, &cfg->complete_fence))
 		return -EFAULT;
+
+	if (put_user(complete_fence_fd, &arg->complete_fence)) {
+		if (complete_fence_fd >= 0)
+			__close_fd(current->files, complete_fence_fd);
+		return -EFAULT;
+	}
 
 	return 0;
 }
