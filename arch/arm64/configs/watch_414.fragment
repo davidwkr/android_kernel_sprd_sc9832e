@@ -17,3 +17,36 @@ CONFIG_FUEL_GAUGE_SC27XX=y
 # DM63 display: the CO5300 panel driver needs a "power" supply, the board
 # DTS gives it a fixed regulator without enable gpio (sprd,generic-mipi-panel).
 CONFIG_REGULATOR_FIXED_VOLTAGE=y
+
+# Thermal protection. cpu_thm/gpu_thm (sprd,sharkle-thermal, nvmem calibration
+# cells already in sharkle.dtsi) and the IPA cluster0-cooling path used by the
+# cpu-thmzone cooling-map in sp9832e-mach.dtsi (SPRD_CPU_COOLING,
+# SPRD_CPU_COOLING_DEVICE, SPRD_DEDICATE_THERMAL, GENERIC_ADC_THERMAL for the
+# board NTC, THERMAL_GOV_POWER_ALLOCATOR) are all already on in
+# sprd_sharkle_defconfig; only the sensor driver itself was off. See
+# devices/THERMAL_414.md.
+CONFIG_SPRD_THERMAL=y
+
+# Crown: stock rotary-encoder node already in the DM63/DM82/MT107/MT108 4.14
+# DTS (K18 and the DW100U variants have no crown and no node).
+CONFIG_INPUT_GPIO_ROTARY_ENCODER=y
+
+# AP watchdog, sharkle-wdt node already unconditional in sharkle.dtsi. The
+# driver does not auto-start the countdown at probe (userspace must open
+# /dev/watchdog0 and start it); see devices/THERMAL_414.md for why this is
+# safe with the stock userspace on this image.
+CONFIG_WATCHDOG_CORE=y
+CONFIG_SPRD_WATCHDOG=y
+
+# TRUSTY: DT node already wired in sp9832e-1h10-dw100u.dtsi, shared by all
+# sp9832e-1h10-* boards.
+CONFIG_TRUSTY=y
+
+# USB gadget configfs functions used by stock.
+CONFIG_USB_CONFIGFS_ACM=y
+CONFIG_USB_CONFIGFS_ECM=y
+CONFIG_USB_CONFIGFS_ECM_SUBSET=y
+CONFIG_USB_CONFIGFS_EEM=y
+CONFIG_USB_CONFIGFS_F_HID=y
+CONFIG_USB_CONFIGFS_NCM=y
+CONFIG_USB_CONFIGFS_OBEX=y
