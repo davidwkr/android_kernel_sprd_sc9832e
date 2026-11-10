@@ -710,6 +710,15 @@ static int sc2720_charger_start_charge(struct sc2720_charger_info *info)
 {
 	int ret;
 
+	/*
+	 * Every caller holds info->lock, so this cannot race the OVP irq
+	 * handler latching a fault.
+	 */
+	if (info->ovp_fault) {
+		dev_warn(info->dev, "input over-voltage, not starting charge\n");
+		return -EBUSY;
+	}
+
 	ret = regmap_update_bits(info->regmap,
 				 info->base + SC2720_CHG_CFG0,
 				 SC2720_CHG_PD, 0);
@@ -1267,7 +1276,7 @@ static void sc2721_cv_release(struct sc2720_charger_info *info)
  * this interrupt only gives software visibility and a defence-in-depth stop
  * so the state the driver believes in does not drift from the hardware.
  * Latches info->ovp_fault, which POWER_SUPPLY_PROP_HEALTH reports and which
- * sc2720_charger_set_status() refuses to charge through until it clears.
+ * sc2720_charger_start_charge() refuses to charge through until it clears.
  */
 static irqreturn_t sc2721_ovp_irq_handler(int irq, void *data)
 {
@@ -1348,7 +1357,18 @@ static int sc2721_init_fault_irqs(struct platform_device *pdev,
 			return ret;
 		}
 
-		info->ovp_fault = !!gpiod_get_value_cansleep(info->ovp_gpiod);
+		ret = gpiod_get_value_cansleep(info->ovp_gpiod);
+		if (ret < 0)
+			return ret;
+
+		mutex_lock(&info->lock);
+		info->ovp_fault = !!ret;
+		if (info->ovp_fault && info->charging) {
+			dev_crit(&pdev->dev, "input over-voltage, stopping charge\n");
+			sc2720_charger_stop_charge(info);
+			info->charging = false;
+		}
+		mutex_unlock(&info->lock);
 	}
 
 	info->cv_gpiod = devm_gpiod_get_optional(&pdev->dev, "chg-cv", GPIOD_IN);
@@ -1370,7 +1390,13 @@ static int sc2721_init_fault_irqs(struct platform_device *pdev,
 			return ret;
 		}
 
-		info->cv_reached = !!gpiod_get_value_cansleep(info->cv_gpiod);
+		ret = gpiod_get_value_cansleep(info->cv_gpiod);
+		if (ret < 0)
+			return ret;
+
+		mutex_lock(&info->lock);
+		info->cv_reached = !!ret;
+		mutex_unlock(&info->lock);
 	}
 
 	return 0;
