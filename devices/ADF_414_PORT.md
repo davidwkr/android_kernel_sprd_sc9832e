@@ -285,6 +285,15 @@ Accepted on purpose:
 - IOMMU unmap is skipped while the dispc is uninitialized (it writes display-MMU registers in the display power
   domain, which can hang the bus), as in 4.4. A post retired while suspended leaks its IOVA range and ION pin.
 
+## AOD (`sprd_aod_idle`)
+
+Ported unchanged from 4.4 (`CONFIG_SPRD_AOD_IDLE=y` in `watch_414_adf.fragment`): `/sys/kernel/aod_idle/`, panel
+idle mode (DCS 0x38/0x39) with its own brightness, double-tap wake from `cst0xx_ts` (DM63) or `hyn_ts` (DW100U).
+Known, accepted while the watches run with the panel ESD check off (stock `need-check-esd = 0` on DM63 and DW100U):
+an AOD transaction holds the DSI runtime-PM reference, so ESD recovery running at the same time would not
+power-cycle the panel; and the init guard refuses AOD for any enabled ESD mode with register 0x0a, including the
+TE-wait mode that reads no register. Revisit both if a panel enables ESD.
+
 ## Open items (need a unit, or more work)
 
 - **Nothing has run on a watch.** Everything above is a compile-time check.
