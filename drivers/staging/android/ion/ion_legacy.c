@@ -433,7 +433,6 @@ static int legacy_custom_map_kernel(void __user *arg_user)
 {
 	struct ion_kmap_data data;
 	struct dma_buf *dmabuf;
-	void *vaddr;
 
 	if (copy_from_user(&data, arg_user, sizeof(data)))
 		return -EFAULT;
@@ -448,14 +447,12 @@ static int legacy_custom_map_kernel(void __user *arg_user)
 		return -EINVAL;
 	}
 
-	vaddr = sprd_ion_map_kernel(dmabuf, 0);
-	if (IS_ERR(vaddr)) {
-		dma_buf_put(dmabuf);
-		return PTR_ERR(vaddr);
-	}
-
+	/*
+	 * No mapping is made: the result userspace sees is only the size,
+	 * with kaddr 0, so mapping and unmapping again bought nothing (and
+	 * tied this built-in shim to the ION_SPRD module's symbols).
+	 */
 	data.size = dmabuf->size;
-	sprd_ion_unmap_kernel(dmabuf, 0);
 	dma_buf_put(dmabuf);
 	data.kaddr = 0;
 
@@ -647,7 +644,6 @@ static int legacy_custom_map_kernel_compat(void __user *arg_user)
 {
 	struct compat_ion_kmap_data_legacy data32;
 	struct dma_buf *dmabuf;
-	void *vaddr;
 
 	if (copy_from_user(&data32, arg_user, sizeof(data32)))
 		return -EFAULT;
@@ -662,14 +658,12 @@ static int legacy_custom_map_kernel_compat(void __user *arg_user)
 		return -EINVAL;
 	}
 
-	vaddr = sprd_ion_map_kernel(dmabuf, 0);
-	if (IS_ERR(vaddr)) {
-		dma_buf_put(dmabuf);
-		return PTR_ERR(vaddr);
-	}
-
+	/*
+	 * No mapping is made: the result userspace sees is only the size,
+	 * with kaddr 0, so mapping and unmapping again bought nothing (and
+	 * tied this built-in shim to the ION_SPRD module's symbols).
+	 */
 	data32.size = dmabuf->size;
-	sprd_ion_unmap_kernel(dmabuf, 0);
 	dma_buf_put(dmabuf);
 	data32.kaddr = 0;
 

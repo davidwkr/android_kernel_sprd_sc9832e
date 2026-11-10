@@ -502,6 +502,11 @@ int ion_phys(int fd, unsigned long *phys_addr, size_t *size)
 
 	dmabuf = dma_buf_get(fd);
 	if (!IS_ERR_OR_NULL(dmabuf)) {
+		/* priv is only an ion_buffer for ion's own exporter */
+		if (dmabuf->ops != &dma_buf_ops) {
+			dma_buf_put(dmabuf);
+			return -EINVAL;
+		}
 		buffer = (struct ion_buffer *)(dmabuf->priv);
 
 		*phys_addr = sg_phys(buffer->sg_table->sgl);
