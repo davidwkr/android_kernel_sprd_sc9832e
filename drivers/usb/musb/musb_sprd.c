@@ -14,6 +14,7 @@
   * GNU General Public License for more details.
   */
 
+#include <linux/atomic.h>
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/dma-mapping.h>
@@ -79,6 +80,14 @@ struct sprd_glue {
 	u32		usb_pub_slp_poll_offset;
 	u32		usb_pub_slp_poll_mask;
 	bool		suspending;
+#ifdef CONFIG_USB_MUSB_SPRD_ROLE_SYSFS
+	struct mutex		role_lock;
+	bool			role_busy;	/* role transition running */
+	bool			role_stopping;	/* glue is being removed */
+	struct delayed_work	idle_work;	/* host mode idle timeout */
+	atomic_t		ndev;		/* devices below our root hub */
+	bool			idle_failed;	/* idle switch failed: no more idle switches until a role write */
+#endif
 };
 
 static int boot_charging;
@@ -312,6 +321,11 @@ static int sprd_musb_recover(struct musb *musb)
 {
 	struct sprd_glue *glue = dev_get_drvdata(musb->controller->parent);
 
+#ifdef CONFIG_USB_MUSB_SPRD_ROLE_SYSFS
+	/* recover_work restarts host mode: not while a role change runs */
+	if (READ_ONCE(glue->role_busy))
+		return 0;
+#endif
 	if (is_host_active(musb) && glue->dr_mode == USB_DR_MODE_HOST)
 		schedule_delayed_work(&glue->recover_work,
 			msecs_to_jiffies(MUSB_RECOVER_TIMEOUT));
@@ -532,9 +546,12 @@ static int musb_sprd_resume_child(struct device *dev, void *data)
 {
 	int ret;
 
+	/* returns 1 if already active: that is not an error */
 	ret = pm_runtime_get_sync(dev);
-	if (ret) {
+	if (ret < 0) {
 		dev_err(dev, "musb child device enters resume failed!!!\n");
+		/* get_sync() took a reference even though it failed */
+		pm_runtime_put_noidle(dev);
 		return ret;
 	}
 
@@ -589,12 +606,20 @@ static void sprd_musb_recover_work(struct work_struct *work)
 	struct musb *musb = platform_get_drvdata(glue->musb);
 
 	dev_info(glue->dev, "try to recover musb controller\n");
+#ifdef CONFIG_USB_MUSB_SPRD_ROLE_SYSFS
+	if (READ_ONCE(glue->role_busy))
+		return;
+#endif
 	if (!glue->vbus_active || !is_host_active(musb))
 		return;
 	glue->vbus_active = 0;
 	glue->wq_mode = USB_DR_MODE_HOST;
 	schedule_work(&glue->work);
 	msleep(300);
+#ifdef CONFIG_USB_MUSB_SPRD_ROLE_SYSFS
+	if (READ_ONCE(glue->role_busy))
+		return;		/* a role change owns the state now */
+#endif
 	glue->vbus_active = 1;
 	glue->wq_mode = USB_DR_MODE_HOST;
 	schedule_work(&glue->work);
@@ -922,10 +947,475 @@ static ssize_t current_speed_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(current_speed);
 
+#ifdef CONFIG_USB_MUSB_SPRD_ROLE_SYSFS
+/*
+ * Userspace role switch.  None of the boards in this tree have an ID pin,
+ * so nothing ever starts host mode on its own.  The helpers below do what
+ * the extcon ID notifier (musb_sprd_id_notifier()) does for a HOST_CONN /
+ * HOST_DISCONN event (set vbus_active and wq_mode, kick glue->work); the
+ * work item then does the real switch, including the VBUS regulator
+ * (musb_sprd_set_otg_en()) and the "musb-sprd" wakeup source.
+ *
+ *   echo host   > role   start host mode (needs an externally powered
+ *                        OTG adapter or hub unless the board has a VBUS
+ *                        regulator; see host_without_vbus below)
+ *   echo device > role   stop host mode, back to normal cable detection
+ */
+static struct sprd_glue *role_glue;
+static struct kobject *role_kobj;
+
+/*
+ * Host mode idle timeout.  There is no ID pin, so nothing tells us the
+ * OTG adapter was pulled; without this the VBUS regulator and the wakeup
+ * source stay on until someone writes "device".  Seconds with no device
+ * enumerated below our root hub; 0 = off.  Read when the timer is armed.
+ * /sys/module/musb_sprd/parameters/host_idle_timeout (or built-in name).
+ *
+ * Lock order (outermost first), idle_work never nests the other way:
+ *   role_lock -> glue->lock (spin);  role_lock -> flush of glue->work
+ *   idle_work (runs without locks) -> role_lock
+ * The USB notifier takes no lock (only non-sync mod/cancel_delayed_work),
+ * so it cannot deadlock with the hub thread's device lock.  Anyone that
+ * waits for idle_work (cancel_delayed_work_sync) must NOT hold role_lock:
+ * the device switch does it before taking the lock, role_exit() after
+ * dropping it.  Stale firings are harmless: the work re-checks everything
+ * under role_lock.
+ */
+static unsigned int host_idle_timeout = 300;
+module_param(host_idle_timeout, uint, 0644);
+MODULE_PARM_DESC(host_idle_timeout,
+		 "Seconds in host mode with no USB device before returning to device mode (0 = off)");
+
+/*
+ * None of the DTs in this tree give the musb node a "vbus-supply", so
+ * glue->vbus is NULL on every board: host mode would start with VBUS at
+ * 0 V. "host" is refused (-EOPNOTSUPP) without a regulator unless this is
+ * set, for use with a self-powered hub or an OTG adapter with its own
+ * supply. The gate applies to the manual sysfs "host" write only. The
+ * automatic paths (extcon ID notifier, recover_work) are stock behaviour
+ * when the hardware itself detects an OTG adapter, which decides VBUS,
+ * and are left alone. recover_work is blocked by role_busy during a role
+ * change, so neither it nor the rollback ever enters host from a "device"
+ * write; the rollback only undoes a "host" write that got past this gate.
+ */
+static bool host_without_vbus;
+module_param(host_without_vbus, bool, 0644);
+MODULE_PARM_DESC(host_without_vbus,
+		 "Allow the role switch to enter host mode although no VBUS regulator is known (external power needed)");
+
+static void musb_sprd_set_otg_en(struct sprd_glue *glue, int enable)
+{
+	int ret;
+
+	if (!glue->vbus)
+		return;
+
+	ret = enable ? regulator_enable(glue->vbus) : regulator_disable(glue->vbus);
+	if (ret)
+		dev_err(glue->dev, "failed to %s vbus: %d\n",
+			enable ? "enable" : "disable", ret);
+}
+
+static void sprd_musb_idle_arm(struct sprd_glue *glue)
+{
+	unsigned int t = READ_ONCE(host_idle_timeout);
+
+	if (t && !READ_ONCE(glue->idle_failed))
+		mod_delayed_work(system_wq, &glue->idle_work,
+				 msecs_to_jiffies(t * 1000UL));
+}
+
+/*
+ * NOTE: the extcon notifiers and sprd_musb_recover_work() write
+ * vbus_active / dr_mode without glue->lock (pre-existing).  The role code
+ * takes the lock for its own accesses but cannot make those atomic.
+ *
+ * NOTE: in host mode the board's own VBUS regulator drives VBUS, so the
+ * VBUS extcon cannot tell an external charger from our own 5 V.  Do not
+ * plug a charger while in host mode; write "device" first.
+ */
+/* caller holds glue->role_lock; "final" = removal: no cable re-detection */
+static int __sprd_musb_role_set(struct sprd_glue *glue, bool host, bool final)
+{
+	struct musb *musb = platform_get_drvdata(glue->musb);
+	unsigned long flags;
+	bool queue = false;
+	int ret = 0;
+	int vbus;
+
+	if (!musb)
+		return -ENODEV;
+
+	/*
+	 * Keep recover_work from touching vbus_active / wq_mode behind our
+	 * back: block it first, before any state is read or written.
+	 */
+	WRITE_ONCE(glue->role_busy, true);
+	cancel_delayed_work_sync(&glue->recover_work);
+
+	/* may sleep (extcon), so read it before taking the spinlock */
+	vbus = glue->edev ? !!extcon_get_state(glue->edev, EXTCON_USB) : 0;
+
+	spin_lock_irqsave(&glue->lock, flags);
+	if (host) {
+		if (glue->vbus_active && glue->dr_mode == USB_DR_MODE_HOST &&
+		    glue->wq_mode == USB_DR_MODE_HOST &&
+		    (glue->wake_lock.active || glue->power_always_on))
+			ret = 0;		/* already host */
+		else if (glue->vbus_active)
+			ret = -EBUSY;		/* cable attached or switching */
+		else if (vbus)
+			ret = -EBUSY;		/* someone else drives VBUS */
+		else {
+			glue->vbus_active = true;
+			glue->wq_mode = USB_DR_MODE_HOST;
+			/* stale after a charge-only unplug: would make the
+			 * teardown work skip its shutdown */
+			glue->charging_mode = false;
+			atomic_set(&glue->ndev, 0);
+			queue = true;
+		}
+	} else if (glue->dr_mode == USB_DR_MODE_HOST ||
+		   (glue->vbus_active && glue->wq_mode == USB_DR_MODE_HOST)) {
+		glue->vbus_active = false;
+		glue->wq_mode = USB_DR_MODE_HOST;
+		queue = true;
+	}
+	spin_unlock_irqrestore(&glue->lock, flags);
+
+	if (!queue)
+		goto done;
+
+	schedule_work(&glue->work);
+	/* return when the switch is done, so "device; adb" works */
+	flush_work(&glue->work);
+
+	if (host) {
+		spin_lock_irqsave(&glue->lock, flags);
+		/* power_always_on boards never take the wakeup source in
+		 * host mode (see sprd_musb_work()): accept either signal */
+		ret = (glue->dr_mode == USB_DR_MODE_HOST &&
+		       (glue->wake_lock.active || glue->power_always_on) &&
+		       !pm_runtime_suspended(glue->dev)) ? 0 : -EIO;
+		spin_unlock_irqrestore(&glue->lock, flags);
+		if (ret) {
+			/* the work item failed half way: undo it */
+			spin_lock_irqsave(&glue->lock, flags);
+			glue->vbus_active = false;
+			glue->wq_mode = USB_DR_MODE_HOST;
+			spin_unlock_irqrestore(&glue->lock, flags);
+			schedule_work(&glue->work);
+			flush_work(&glue->work);
+			musb_sprd_set_otg_en(glue, 0);
+			spin_lock_irqsave(&glue->lock, flags);
+			glue->dr_mode = USB_DR_MODE_UNKNOWN;
+			spin_unlock_irqrestore(&glue->lock, flags);
+			if (glue->wake_lock.active)
+				__pm_relax(&glue->wake_lock);
+		} else if (!atomic_read(&glue->ndev)) {
+			sprd_musb_idle_arm(glue);
+		}
+		goto done;
+	}
+
+	/* the work item skips these on some of its early-exit paths */
+	musb_sprd_set_otg_en(glue, 0);
+	if (glue->dr_mode == USB_DR_MODE_HOST) {
+		if (!pm_runtime_suspended(glue->dev)) {
+			ret = -EIO;
+			goto done;
+		}
+		/* already suspended: nothing left to shut down */
+		spin_lock_irqsave(&glue->lock, flags);
+		glue->dr_mode = USB_DR_MODE_UNKNOWN;
+		spin_unlock_irqrestore(&glue->lock, flags);
+	}
+	if (glue->wake_lock.active)
+		__pm_relax(&glue->wake_lock);
+
+	/*
+	 * A charger or PC plugged in during host mode was ignored by the
+	 * vbus notifier (vbus_active was already set).  Poll for VBUS after
+	 * the regulator went off; if it is still there something else
+	 * drives it, so pick device mode up as the notifier would.
+	 */
+	if (!final && !glue->role_stopping && glue->edev) {
+		int i;
+
+		for (i = 0; i < 100 && extcon_get_state(glue->edev, EXTCON_USB); i++)
+			msleep(10);
+		if (extcon_get_state(glue->edev, EXTCON_USB)) {
+			spin_lock_irqsave(&glue->lock, flags);
+			glue->vbus_active = true;
+			glue->wq_mode = USB_DR_MODE_PERIPHERAL;
+			spin_unlock_irqrestore(&glue->lock, flags);
+			MUSB_DEV_MODE(musb);
+			schedule_work(&glue->work);
+			flush_work(&glue->work);
+		}
+	}
+done:
+	/* a recover_work armed meanwhile would restart host */
+	cancel_delayed_work_sync(&glue->recover_work);
+	WRITE_ONCE(glue->role_busy, false);
+	return ret;
+}
+
+static int sprd_musb_role_set(struct sprd_glue *glue, bool host)
+{
+	int ret;
+
+	if (host && !glue->vbus && !READ_ONCE(host_without_vbus)) {
+		dev_warn(glue->dev, "host mode refused: no VBUS regulator (see host_without_vbus)\n");
+		return -EOPNOTSUPP;
+	}
+
+	/* before role_lock: idle_work takes it */
+	if (!host)
+		cancel_delayed_work_sync(&glue->idle_work);
+	mutex_lock(&glue->role_lock);
+	WRITE_ONCE(glue->idle_failed, false);	/* explicit write: start over */
+	ret = glue->role_stopping ? -ENODEV :
+	      __sprd_musb_role_set(glue, host, false);
+	mutex_unlock(&glue->role_lock);
+	return ret;
+}
+
+static void sprd_musb_idle_work(struct work_struct *work)
+{
+	struct sprd_glue *glue = container_of(work, struct sprd_glue,
+					      idle_work.work);
+	unsigned long flags;
+	bool host;
+	int ret;
+
+	mutex_lock(&glue->role_lock);
+	if (glue->role_stopping || glue->idle_failed ||
+	    !READ_ONCE(host_idle_timeout) ||
+	    atomic_read(&glue->ndev) > 0) {
+		mutex_unlock(&glue->role_lock);
+		return;
+	}
+	spin_lock_irqsave(&glue->lock, flags);
+	host = glue->dr_mode == USB_DR_MODE_HOST;
+	spin_unlock_irqrestore(&glue->lock, flags);
+	if (host) {
+		struct musb *musb = platform_get_drvdata(glue->musb);
+		bool connected = false;
+
+		/* a device may be enumerating (ADD comes last), or ndev drifted */
+		if (musb) {
+			spin_lock_irqsave(&musb->lock, flags);
+			connected = musb->port1_status & USB_PORT_STAT_CONNECTION;
+			spin_unlock_irqrestore(&musb->lock, flags);
+		}
+		if (connected) {
+			sprd_musb_idle_arm(glue);
+			mutex_unlock(&glue->role_lock);
+			return;
+		}
+		dev_info(glue->dev, "host mode idle, back to device mode\n");
+		ret = __sprd_musb_role_set(glue, false, false);
+		if (ret) {
+			/*
+			 * Same state as a failed manual "device" (VBUS
+			 * regulator off, wakeup source kept, host still
+			 * recorded).  Do not try to restore host from here:
+			 * the work item may have switched the hardware to
+			 * device mode already, a VBUS rise would race the
+			 * extcon notifier (not serialized by role_lock), and
+			 * a retry would drop the runtime-PM references
+			 * again.  Left for the user: "device" retries,
+			 * "host" needs "device" first.
+			 */
+			dev_warn(glue->dev, "idle switch failed: %d, not retried\n",
+				 ret);
+			/* under role_lock: stops re-arms and a pending work */
+			WRITE_ONCE(glue->idle_failed, true);
+			cancel_delayed_work(&glue->idle_work);
+		}
+	}
+	mutex_unlock(&glue->role_lock);
+}
+
+/* devices of our root hub; runs in the hub thread: no locks, no sleeping */
+static int sprd_musb_usb_notify(struct notifier_block *nb,
+				unsigned long action, void *data)
+{
+	struct usb_device *udev = data;
+	struct sprd_glue *glue = READ_ONCE(role_glue);
+
+	/* USB_BUS_ADD/REMOVE carry a struct usb_bus, not a usb_device */
+	if (action != USB_DEVICE_ADD && action != USB_DEVICE_REMOVE)
+		return NOTIFY_DONE;
+
+	if (!glue || !glue->musb || !udev->parent ||
+	    udev->bus->controller != &glue->musb->dev)
+		return NOTIFY_DONE;
+
+	if (action == USB_DEVICE_ADD) {
+		atomic_inc(&glue->ndev);
+		cancel_delayed_work(&glue->idle_work);
+	} else if (action == USB_DEVICE_REMOVE) {
+		/* a hub's children are removed first, so this reaches 0 */
+		if (atomic_dec_if_positive(&glue->ndev) == 0 &&
+		    READ_ONCE(glue->dr_mode) == USB_DR_MODE_HOST)
+			sprd_musb_idle_arm(glue);
+	}
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block sprd_musb_usb_nb = {
+	.notifier_call = sprd_musb_usb_notify,
+};
+
+static ssize_t sprd_musb_role_show_common(struct sprd_glue *glue, char *buf)
+{
+	unsigned long flags;
+	enum usb_dr_mode cur, next;
+	const char *name;
+
+	spin_lock_irqsave(&glue->lock, flags);
+	cur = glue->dr_mode;
+	next = glue->wq_mode;
+	spin_unlock_irqrestore(&glue->lock, flags);
+
+	switch (cur) {
+	case USB_DR_MODE_UNKNOWN:
+		name = "idle";
+		break;
+	case USB_DR_MODE_HOST:
+		name = "host";
+		break;
+	case USB_DR_MODE_PERIPHERAL:
+		name = "device";
+		break;
+	default:
+		name = "unknown";
+		break;
+	}
+
+	return scnprintf(buf, PAGE_SIZE, "%s (current=%u next=%u)\n",
+			 name, cur, next);
+}
+
+static ssize_t sprd_musb_role_store_common(struct sprd_glue *glue,
+					   const char *buf, size_t count)
+{
+	bool host;
+	int ret;
+
+	if (sysfs_streq(buf, "host"))
+		host = true;
+	else if (sysfs_streq(buf, "device"))
+		host = false;
+	else
+		return -EINVAL;
+
+	ret = sprd_musb_role_set(glue, host);
+	if (ret)
+		dev_warn(glue->dev, "role change to '%s' failed: %d\n",
+			 host ? "host" : "device", ret);
+	return ret ? ret : count;
+}
+
+/* /sys/devices/.../20200000.usb/role */
+static ssize_t role_show(struct device *dev, struct device_attribute *attr,
+			 char *buf)
+{
+	return sprd_musb_role_show_common(dev_get_drvdata(dev), buf);
+}
+
+static ssize_t role_store(struct device *dev, struct device_attribute *attr,
+			  const char *buf, size_t count)
+{
+	return sprd_musb_role_store_common(dev_get_drvdata(dev), buf, count);
+}
+static DEVICE_ATTR_RW(role);
+
+/* /sys/kernel/otg_role/role: same interface as the out-of-tree otg_role.ko */
+static ssize_t otg_role_show(struct kobject *kobj,
+			     struct kobj_attribute *attr, char *buf)
+{
+	return sprd_musb_role_show_common(role_glue, buf);
+}
+
+static ssize_t otg_role_store(struct kobject *kobj,
+			      struct kobj_attribute *attr,
+			      const char *buf, size_t count)
+{
+	return sprd_musb_role_store_common(role_glue, buf, count);
+}
+static struct kobj_attribute otg_role_attr =
+	__ATTR(role, 0644, otg_role_show, otg_role_store);
+
+static void sprd_musb_role_init(struct sprd_glue *glue)
+{
+	/* all state first: the attributes may be used the moment they exist */
+	mutex_init(&glue->role_lock);
+	glue->role_busy = false;
+	glue->role_stopping = false;
+	atomic_set(&glue->ndev, 0);
+	glue->idle_failed = false;
+	INIT_DELAYED_WORK(&glue->idle_work, sprd_musb_idle_work);
+	role_glue = glue;
+	usb_register_notify(&sprd_musb_usb_nb);
+
+	if (device_create_file(glue->dev, &dev_attr_role))
+		dev_warn(glue->dev, "failed to create role attribute\n");
+
+	role_kobj = kobject_create_and_add("otg_role", kernel_kobj);
+	if (!role_kobj)
+		return;
+	if (sysfs_create_file(role_kobj, &otg_role_attr.attr)) {
+		kobject_put(role_kobj);
+		role_kobj = NULL;
+	}
+}
+
+static void sprd_musb_role_exit(struct sprd_glue *glue)
+{
+	if (role_glue != glue)
+		return;
+
+	/* refuse new changes, wait for the running one */
+	mutex_lock(&glue->role_lock);
+	glue->role_stopping = true;
+	mutex_unlock(&glue->role_lock);
+
+	/* no new arming, then wait for a running idle_work (it needs
+	 * role_lock, which we do not hold here) */
+	usb_unregister_notify(&sprd_musb_usb_nb);
+	cancel_delayed_work_sync(&glue->idle_work);
+
+	device_remove_file(glue->dev, &dev_attr_role);
+	if (role_kobj) {
+		sysfs_remove_file(role_kobj, &otg_role_attr.attr);
+		kobject_put(role_kobj);
+		role_kobj = NULL;
+	}
+	role_glue = NULL;
+
+	/* leave host mode (VBUS regulator off), then drain everything that
+	 * can still touch the glue before the child is destroyed */
+	mutex_lock(&glue->role_lock);
+	__sprd_musb_role_set(glue, false, true);
+	cancel_delayed_work_sync(&glue->recover_work);
+	cancel_work_sync(&glue->work);
+	mutex_unlock(&glue->role_lock);
+}
+#else
+static inline void sprd_musb_role_init(struct sprd_glue *glue) {}
+static inline void sprd_musb_role_exit(struct sprd_glue *glue) {}
+#endif /* CONFIG_USB_MUSB_SPRD_ROLE_SYSFS */
+
 static struct attribute *musb_sprd_attrs[] = {
 	&dev_attr_maximum_speed.attr,
 	&dev_attr_current_speed.attr,
 	&dev_attr_musb_hostenable.attr,
+#ifdef CONFIG_USB_MUSB_SPRD_ROLE_SYSFS
+	&dev_attr_role.attr,
+#endif
 	NULL
 };
 ATTRIBUTE_GROUPS(musb_sprd);
@@ -1090,6 +1580,8 @@ static int musb_sprd_probe(struct platform_device *pdev)
 	pm_runtime_enable(dev);
 	musb_sprd_detect_cable(glue);
 
+	sprd_musb_role_init(glue);
+
 	return 0;
 
 err_extcon_vbus:
@@ -1116,6 +1608,7 @@ static int musb_sprd_remove(struct platform_device *pdev)
 	 *  - Peripheral mode: peripheral is deactivated (or never-activated)
 	 *  - OTG mode: both roles are deactivated (or never-activated)
 	 */
+	sprd_musb_role_exit(glue);
 	if (musb->dma_controller)
 		musb_dma_controller_destroy(musb->dma_controller);
 	sysfs_remove_groups(&glue->dev->kobj, musb_sprd_groups);
