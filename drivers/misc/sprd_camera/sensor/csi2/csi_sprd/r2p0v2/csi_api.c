@@ -39,12 +39,17 @@ static struct csi_dt_node_info *s_csi_dt_info_p[SPRD_SENSOR_ID_MAX];
 
 static struct csi_dt_node_info *csi_get_dt_node_data(int sensor_id)
 {
+	if (sensor_id < 0 || sensor_id >= SPRD_SENSOR_ID_MAX) {
+		pr_err("fail to get dt node, sensor_id %d error\n", sensor_id);
+		return NULL;
+	}
+
 	return s_csi_dt_info_p[sensor_id];
 }
 
 static int csi_mipi_clk_enable(int sensor_id)
 {
-	struct csi_dt_node_info *dt_info = s_csi_dt_info_p[sensor_id];
+	struct csi_dt_node_info *dt_info = csi_get_dt_node_data(sensor_id);
 	int ret = 0;
 
 	if (!dt_info || !dt_info->mipi_gate_clk || !dt_info->csi_eb_clk ||
@@ -186,6 +191,11 @@ static enum csi_error_t csi_api_init(unsigned int bps_per_lane,
 	enum csi_error_t e = SUCCESS;
 	struct csi_dt_node_info *dt_info = csi_get_dt_node_data(sensor_id);
 
+	if (!dt_info) {
+		pr_err("fail to get dt info, sensor_id %d\n", sensor_id);
+		return ERR_OUT_OF_BOUND;
+	}
+
 	do {
 		pr_info("sensor id %d\n", sensor_id);
 		csi_phy_power_down(&dt_info->phy, dt_info->id, 0);
@@ -248,6 +258,11 @@ int csi_api_open(int bps_per_lane, int phy_id, int lane_num, int sensor_id)
 
 	struct csi_dt_node_info *dt_info = csi_get_dt_node_data(sensor_id);
 
+	if (!dt_info) {
+		pr_err("fail to get dt info, sensor_id %d\n", sensor_id);
+		return -EINVAL;
+	}
+
 	ret = csi_ahb_reset(&dt_info->phy, dt_info->id);
 	if (unlikely(ret))
 		goto EXIT;
@@ -280,6 +295,11 @@ uint8_t csi_api_close(uint32_t phy_id, int sensor_id)
 {
 	int ret = 0;
 	struct csi_dt_node_info *dt_info = csi_get_dt_node_data(sensor_id);
+
+	if (!dt_info) {
+		pr_err("fail to get dt info, sensor_id %d\n", sensor_id);
+		return -EINVAL;
+	}
 
 	ret = csi_close(sensor_id);
 	csi_phy_power_down(&dt_info->phy, dt_info->id, 1);

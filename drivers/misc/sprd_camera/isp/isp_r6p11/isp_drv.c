@@ -3633,33 +3633,39 @@ static int isp_enable_clk(void)
 		ret = clk_set_parent(isp0_clk, isp0_clk_parent);
 		if (ret) {
 			pr_info("isp0_clk_parent error.\n");
-			clk_set_parent(isp0_clk, isp0_clk_default);
-			clk_disable_unprepare(isp0_clk);
-			goto exit;
+			goto err_parent;
 		}
 
 		ret = clk_prepare_enable(isp0_clk);
 		if (ret) {
 			pr_info("isp0_clk error.\n");
-			clk_set_parent(isp0_clk, isp0_clk_default);
-			clk_disable_unprepare(isp0_clk);
-			goto exit;
+			goto err_parent;
 		}
 
 		/*isp enable*/
 		ret = clk_prepare_enable(isp0_eb);
 		if (ret) {
 			pr_info("isp0_eb error.\n");
-			goto exit;
+			goto err_clk;
 		}
 
 		ret = clk_prepare_enable(isp0_axi_eb);
 		if (ret) {
 			pr_info("isp0_axi_eb error.\n");
-			goto exit;
+			goto err_eb;
 		}
 	} else
 		pr_info("ISP clock already enabled\n");
+	goto exit;
+
+	/* undo only the completed stages, and the count, so a retry starts over */
+err_eb:
+	clk_disable_unprepare(isp0_eb);
+err_clk:
+	clk_disable_unprepare(isp0_clk);
+err_parent:
+	clk_set_parent(isp0_clk, isp0_clk_default);
+	atomic_dec(&isp_enable_lock);
 
 exit:
 	pr_info("isp enable clk done, %d\n",
@@ -3910,7 +3916,7 @@ static int isp_block_buf_alloc(struct isp_pipe_dev *dev)
 			pr_err("can't alloc lsc buf, ret %d\n", ret);
 			return -EPERM;
 		}
-		isp_gen_buf_hw_map(&isp_k_param->lsc_buf_info);
+		ret = isp_gen_buf_hw_map(&isp_k_param->lsc_buf_info);
 		if (ret) {
 			pr_err("iid%d can't map lsc buf, ret %d\n",
 			       iid, ret);
@@ -4022,28 +4028,28 @@ int sprd_isp_module_en(void *isp_handle, enum isp_id iid)
 		if (ret) {
 			pr_err("iid%d fail to power on cam sys %d\n",
 			       iid, ret);
-			goto exit;
+			goto err_users;
 		}
 
 		ret = sprd_cam_domain_eb();
 		if (ret) {
 			pr_err("fail to sprd camera enable domain iid%d %d\n",
 			       iid, ret);
-			goto exit;
+			goto err_pw;
 		}
 
 		ret = isp_enable_clk();
 		if (ret) {
 			pr_err("fail to iid%d enable isp clk %d\n",
 			       iid, ret);
-			goto exit;
+			goto err_domain;
 		}
 
 		ret = sprd_isp_reset(dev);
 		if (ret) {
 			pr_err("fail to iid%d reset isp %d\n",
 			       iid, ret);
-			goto exit;
+			goto err_clk;
 		}
 
 		if (cctx_desc) {
@@ -4051,7 +4057,7 @@ int sprd_isp_module_en(void *isp_handle, enum isp_id iid)
 			if (ret) {
 				pr_err("fail to iid%d init cctx_desc %d\n",
 				       iid, ret);
-				goto exit;
+				goto err_clk;
 			}
 		}
 
@@ -4059,14 +4065,34 @@ int sprd_isp_module_en(void *isp_handle, enum isp_id iid)
 		if (ret) {
 			pr_err("fail to alloc block buf iid%d %d\n",
 			       iid, ret);
-			isp_block_buf_free(dev);
+			goto err_buf;
 		}
 
 		ret = isp_irq_request(&s_isp_pdev->dev, &s_isp_irq[iid], dev);
-		if (ret)
+		if (ret) {
 			pr_err("fail to install isp IRQ iid%d %d\n",
 			       iid, ret);
+			goto err_buf;
+		}
 	}
+	goto exit;
+
+	/*
+	 * Undo the first enable, so that a retry initialises again and a
+	 * later disable does not release what was never acquired.
+	 */
+err_buf:
+	isp_block_buf_free(dev);
+	if (cctx_desc)
+		cctx_desc->intf->deinit_cctx(cctx_desc, iid);
+err_clk:
+	isp_disable_clk();
+err_domain:
+	sprd_cam_domain_disable();
+err_pw:
+	sprd_cam_pw_off();
+err_users:
+	atomic_dec(&s_isp_users[iid]);
 
 exit:
 	mutex_unlock(&isp_module_sema[iid]);
