@@ -262,6 +262,14 @@ int ion_share_dma_buf_fd(struct ion_client *client, struct ion_handle *handle);
  */
 struct ion_handle *ion_import_dma_buf(struct ion_client *client, int fd);
 
+/**
+ * ion_dma_buf_is_ion - true if dmabuf was exported by this ion driver
+ * @dmabuf:	the dma-buf
+ *
+ * Callers that cast dmabuf->priv to struct ion_buffer must check this first.
+ */
+bool ion_dma_buf_is_ion(struct dma_buf *dmabuf);
+
 struct ion_client *ion_client_get(int fd);
 void ion_client_put(struct ion_client *client);
 
