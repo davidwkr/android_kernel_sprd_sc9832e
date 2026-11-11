@@ -2398,6 +2398,15 @@ void *kbase_vmap_prot(struct kbase_context *kctx, u64 gpu_addr, size_t size,
 	if (reg->flags & KBASE_REG_JIT)
 		goto out_unlock;
 
+	/* Imported user buffers are backed by GUP-pinned pages owned by the
+	 * external-resource tracking (current_mapping_usage_count), not by the
+	 * references taken here. That tracking can unpin and release the pages
+	 * at any time, so refuse to vmap them rather than leave a kernel
+	 * mapping that outlives its backing pages (CVE-2022-36449).
+	 */
+	if (reg->gpu_alloc->type == KBASE_MEM_TYPE_IMPORTED_USER_BUF)
+		goto out_unlock;
+
 	/* check access permissions can be satisfied
 	 * Intended only for checking KBASE_REG_{CPU,GPU}_{RD,WR}
 	 */
