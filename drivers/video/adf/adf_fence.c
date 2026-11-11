@@ -123,6 +123,7 @@ static const struct dma_fence_ops adf_sw_fence_ops = {
 	.get_driver_name = adf_sw_fence_get_driver_name,
 	.get_timeline_name = adf_sw_fence_get_timeline_name,
 	.enable_signaling = adf_sw_fence_enable_signaling,
+	.wait = dma_fence_default_wait,
 	.release = adf_sw_fence_release,
 };
 
