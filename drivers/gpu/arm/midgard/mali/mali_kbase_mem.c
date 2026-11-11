@@ -1043,12 +1043,10 @@ void kbase_free_alloced_region(struct kbase_va_region *reg)
 {
 	if (!(reg->flags & KBASE_REG_FREE)) {
 		struct kbase_context *kctx = kbase_reg_flags_to_kctx(reg);
+		bool on_evict_list;
 
 		if (WARN_ON(!kctx))
 			return;
-
-
-		mutex_lock(&kctx->jit_evict_lock);
 
 		/*
 		 * The physical allocation should have been removed from the
@@ -1056,10 +1054,17 @@ void kbase_free_alloced_region(struct kbase_va_region *reg)
 		 * case of abnormal process termination or the app leaking the
 		 * memory kbase_mem_free_region is not called so it can still be
 		 * on the list at termination time of the region tracker.
+		 *
+		 * Detach it from the list under jit_evict_lock before
+		 * alloc->reg is cleared below: the shrinker dereferences
+		 * alloc->reg for every allocation on that list.
 		 */
-		if (!list_empty(&reg->gpu_alloc->evict_node)) {
-			mutex_unlock(&kctx->jit_evict_lock);
+		mutex_lock(&kctx->jit_evict_lock);
+		on_evict_list = !list_empty(&reg->gpu_alloc->evict_node);
+		list_del_init(&reg->gpu_alloc->evict_node);
+		mutex_unlock(&kctx->jit_evict_lock);
 
+		if (on_evict_list) {
 			/*
 			 * Unlink the physical allocation before unmaking it
 			 * evictable so that the allocation isn't grown back to
@@ -1082,8 +1087,6 @@ void kbase_free_alloced_region(struct kbase_va_region *reg)
 						   KBASE_MEM_TYPE_NATIVE);
 				kbase_mem_evictable_unmake(reg->gpu_alloc);
 			}
-		} else {
-			mutex_unlock(&kctx->jit_evict_lock);
 		}
 
 		/*

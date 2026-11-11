@@ -709,6 +709,15 @@ int kbase_mem_evictable_make(struct kbase_mem_phy_alloc *gpu_alloc)
 	kbase_mem_shrink_cpu_mapping(kctx, gpu_alloc->reg,
 			0, gpu_alloc->nents);
 
+	/*
+	 * Finish the reclaim accounting and mark the region before the
+	 * shrinker can see the allocation: once it is on the eviction list the
+	 * shrinker may free the backing (and drop alloc->nents) at any time,
+	 * so accounting done afterwards would subtract the wrong page count.
+	 */
+	kbase_mem_evictable_mark_reclaim(gpu_alloc);
+	gpu_alloc->reg->flags |= KBASE_REG_DONT_NEED;
+
 	mutex_lock(&kctx->jit_evict_lock);
 	/* This allocation can't already be on a list. */
 	WARN_ON(!list_empty(&gpu_alloc->evict_node));
@@ -719,9 +728,6 @@ int kbase_mem_evictable_make(struct kbase_mem_phy_alloc *gpu_alloc)
 	 */
 	list_add(&gpu_alloc->evict_node, &kctx->evict_list);
 	mutex_unlock(&kctx->jit_evict_lock);
-	kbase_mem_evictable_mark_reclaim(gpu_alloc);
-
-	gpu_alloc->reg->flags |= KBASE_REG_DONT_NEED;
 	return 0;
 }
 
