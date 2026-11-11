@@ -142,8 +142,11 @@ kbase_devfreq_target(struct device *dev, unsigned long *target_freq, u32 flags)
 	}
 #endif
 
-	//err = clk_set_rate(kbdev->clock, freq);
+#ifdef MALI_PLATFORM_HAS_SET_FREQ
 	err = kbase_platform_set_freq(freq);
+#else
+	err = clk_set_rate(kbdev->clock, freq);
+#endif
 	if (err) {
 		/*dev_err(dev, "Failed to set clock %lu (target %lu)\n",
 				freq, *target_freq);*/
@@ -380,15 +383,20 @@ int kbase_devfreq_init(struct kbase_device *kbdev)
 	extern int gpu_upthreshold;
 	extern int gpu_downdifferential;
 #endif
-	/*
+#ifdef MALI_PLATFORM_HAS_SET_FREQ
+	/* The platform has no "clk_mali" clock in the devicetree; frequency
+	 * control goes through its own kbase_platform_set_freq(), not
+	 * kbdev->clock, so don't require it here.
+	 */
+	kbdev->current_freq = kbase_platform_get_init_freq();
+#else
 	if (!kbdev->clock) {
 		dev_err(kbdev->dev, "Clock not available for devfreq\n");
 		return -ENODEV;
 	}
 
 	kbdev->current_freq = clk_get_rate(kbdev->clock);
-	*/
-	kbdev->current_freq = kbase_platform_get_init_freq();
+#endif
 	kbdev->current_nominal_freq = kbdev->current_freq;
 
 	dp = &kbdev->devfreq_profile;
