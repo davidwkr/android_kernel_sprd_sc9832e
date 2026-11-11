@@ -2906,17 +2906,20 @@ static int kbase_jit_grow(struct kbase_context *kctx,
 	struct tagged_addr *gpu_pages;
 	struct kbase_sub_alloc *prealloc_sas[2] = { NULL, NULL };
 	int i;
-
-	if (info->commit_pages > reg->nr_pages) {
-		/* Attempted to grow larger than maximum size */
-		return -EINVAL;
-	}
+	bool unmade = false;
 
 	kbase_gpu_vm_lock(kctx);
 
 	/* Make the physical backing no longer reclaimable */
 	if (!kbase_mem_evictable_unmake(reg->gpu_alloc))
 		goto update_failed;
+	unmade = true;
+
+	if (info->commit_pages > reg->nr_pages) {
+		/* Attempted to grow larger than maximum size */
+		ret = -EINVAL;
+		goto update_failed;
+	}
 
 	/* Already sufficiently backed, nothing to allocate */
 	if (reg->gpu_alloc->nents >= info->commit_pages)
@@ -2979,8 +2982,11 @@ retry:
 		spin_unlock(&kctx->mem_partials_lock);
 		kbase_gpu_vm_unlock(kctx);
 
-		if (kbase_mem_pool_grow(pool, pool_delta))
-			goto update_failed_unlocked;
+		if (kbase_mem_pool_grow(pool, pool_delta)) {
+			/* Restoring the pooled state needs reg_lock */
+			kbase_gpu_vm_lock(kctx);
+			goto update_failed;
+		}
 
 		kbase_gpu_vm_lock(kctx);
 		spin_lock(&kctx->mem_partials_lock);
@@ -3037,9 +3043,26 @@ done:
 	reg->initial_commit = info->commit_pages;
 	reg->extent = info->extent;
 
-update_failed:
 	kbase_gpu_vm_unlock(kctx);
-update_failed_unlocked:
+	goto out;
+
+update_failed:
+	/* Put the region back in the pool in the state kbase_jit_free() leaves
+	 * it. Publish the pool membership first: once the region is on the
+	 * eviction list the shrinker may lose its backing and move it to the
+	 * destroy list, which must not be undone by a later move to the pool.
+	 * reg_lock is held until the region is reclaimable again so nothing
+	 * sees it between unmake and make.
+	 */
+	mutex_lock(&kctx->jit_evict_lock);
+	list_move(&reg->jit_node, &kctx->jit_pool_head);
+	mutex_unlock(&kctx->jit_evict_lock);
+
+	if (unmade)
+		kbase_mem_evictable_make(reg->gpu_alloc);
+	kbase_gpu_vm_unlock(kctx);
+
+out:
 	for (i = 0; i != ARRAY_SIZE(prealloc_sas); ++i)
 		kfree(prealloc_sas[i]);
 
@@ -3190,10 +3213,10 @@ struct kbase_va_region *kbase_jit_allocate(struct kbase_context *kctx,
 			/*
 			 * An update to an allocation from the pool failed,
 			 * chances are slim a new allocation would fair any
-			 * better so return the allocation to the pool and
-			 * return the function with failure.
+			 * better so fail. kbase_jit_grow() has already
+			 * returned the allocation to the pool.
 			 */
-			goto update_failed_unlocked;
+			goto out_unlocked;
 		}
 	} else {
 		/* No suitable JIT allocation was found so create a new one */
@@ -3227,10 +3250,6 @@ struct kbase_va_region *kbase_jit_allocate(struct kbase_context *kctx,
 
 	return reg;
 
-update_failed_unlocked:
-	mutex_lock(&kctx->jit_evict_lock);
-	list_move(&reg->jit_node, &kctx->jit_pool_head);
-	mutex_unlock(&kctx->jit_evict_lock);
 out_unlocked:
 	return NULL;
 }
