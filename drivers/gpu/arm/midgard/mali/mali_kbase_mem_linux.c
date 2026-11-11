@@ -1802,6 +1802,13 @@ static int kbase_cpu_vm_fault(struct vm_fault *vmf)
 	if (map->alloc->reg && (map->alloc->reg->flags & KBASE_REG_DONT_NEED))
 		goto locked_bad_fault;
 
+	/* Never insert the pinned pages of an imported user buffer: the PTEs
+	 * would outlive the pin once the external resource is released
+	 * (CVE-2022-36449). The importer already has the host mapping.
+	 */
+	if (map->alloc->type == KBASE_MEM_TYPE_IMPORTED_USER_BUF)
+		goto locked_bad_fault;
+
 	/* insert all valid pages from the fault location */
 	i = rel_pgoff;
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0))
@@ -1921,6 +1928,12 @@ static int kbase_cpu_mmap(struct kbase_context *kctx,
 		BUG_ON(kaddr);
 		vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
 	}
+
+	/* A cookie mmap of an imported user buffer only reserves its SAME_VA
+	 * GPU address: map no pages (see kbase_cpu_vm_fault()).
+	 */
+	if (reg->cpu_alloc->type == KBASE_MEM_TYPE_IMPORTED_USER_BUF)
+		nr_pages = 0;
 
 	if (!kaddr) {
 		unsigned long addr = vma->vm_start + aligned_offset;
