@@ -1364,10 +1364,12 @@ u64 kbase_mem_alias(struct kbase_context *kctx, u64 *flags, u64 stride,
 	if (!nents)
 		goto bad_nents;
 
-	if (nents > (U64_MAX / PAGE_SIZE) / stride)
+	if (nents > (U64_MAX / PAGE_SIZE) / stride) {
 		/* 64-bit address range is the max; avoid overflowing the
 		 * multiplication below (CVE-2022-20186) */
+		KBASE_LOG_REFUSAL(kctx, "MEM_ALIAS with stride * nents overflowing the address range");
 		goto bad_size;
+	}
 
 	/* calculate the number of pages this alias will cover */
 	*num_pages = nents * stride;
@@ -1461,10 +1463,14 @@ u64 kbase_mem_alias(struct kbase_context *kctx, u64 *flags, u64 stride,
 
 			/* check against the alloc's size, avoiding an
 			 * overflowing addition (CVE-2022-20186) */
-			if (ai[i].offset > alloc->nents)
+			if (ai[i].offset > alloc->nents) {
+				KBASE_LOG_REFUSAL(kctx, "MEM_ALIAS with an offset beyond the aliased allocation");
 				goto bad_handle; /* beyond end */
-			if (ai[i].length > alloc->nents - ai[i].offset)
+			}
+			if (ai[i].length > alloc->nents - ai[i].offset) {
+				KBASE_LOG_REFUSAL(kctx, "MEM_ALIAS with offset + length beyond the aliased allocation");
 				goto bad_handle; /* beyond end */
+			}
 
 			reg->gpu_alloc->imported.alias.aliased[i].alloc = kbase_mem_phy_alloc_get(alloc);
 			reg->gpu_alloc->imported.alias.aliased[i].length = ai[i].length;
