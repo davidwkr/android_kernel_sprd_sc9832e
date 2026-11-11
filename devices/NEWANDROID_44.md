@@ -1,6 +1,6 @@
 # Android 10-13 GSI on the 4.4 kernel
 
-Opt-in kernel config for booting an Android 10-13 "ab" GSI on the 4.4.83 SPRD tree (with the
+Opt-in kernel config for booting an Android 10-13 "ab" GSI on the 4.4.302 SPRD tree (with the
 first-stage ramdisk done elsewhere). It is not part of any device config: the committed
 `arch/arm64/configs/*_defconfig` and the default `scripts/watch_build.sh` output are the
 stock-8.1 builds and do not change. **Untested**: nothing here was booted on a watch; it was
@@ -43,8 +43,17 @@ cpusets, `UID_SYS_STATS`, `CPU_FREQ_TIMES`) is already in the watch configs.
 ## Limits
 
 - Android 10-13 on 4.4 is an upgrade-device case, not a supported GKI/launch kernel. Android's
-  own kernel requirements start at 4.9 for these releases; expect `netd` to stay on xt_qtaguid and
-  skip the BPF traffic-accounting path (it is only used on 4.9+).
+  own kernel requirements start at 4.9 (Q), 4.14 (R), 4.19 (S) and 5.10 (T) for launch devices;
+  this config only meets the retained Pie 4.4 base requirements (4.4.107+).
+- Networking: Android 10-11 `netd` stays on xt_qtaguid below 4.9. Android 12-13 do not: AOSP
+  removed the `mBpfEnabled` checks and the legacy socket-tagging fallback, so traffic-controller
+  initialization tries the BPF setup and fails on 4.4. An Android 12-13 GSI needs legacy-kernel
+  networking patches (phh/TrebleDroid carry one that tolerates the failure); `CGROUP_BPF=y` does
+  not supply the missing ABI. Per-UID data accounting and firewalling on 12-13 are unverified
+  until a patched GSI is identified and tested. [I: from review, not checked against source]
+- Encryption is legacy fscrypt v1 (no v2 policies, no metadata encryption): keep `/data`
+  unencrypted or v1-only. Overlayfs is off (no overlay remount workflows; boot unaffected).
+  Ramdisks must be gzip (LZ4 decompression is off).
 - **Android 14 does not work with this kernel.** Its network BPF loader (`netbpfload` /
   Mainline `NetBpfLoad`) and the connectivity module's programs require 4.14 (and map/program
   types 4.4 lacks, e.g. `LRU_HASH`, `CGROUP_SOCK_ADDR`), so the network stack cannot start. Staying

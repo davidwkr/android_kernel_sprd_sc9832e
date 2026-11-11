@@ -9,8 +9,9 @@
 
 # eBPF programs attached to cgroups (BPF_PROG_ATTACH, BPF_CGROUP_INET_INGRESS/EGRESS). Listed in
 # this tree's kernel/configs/android-base.config; netd/bpfloader use it for per-UID traffic
-# accounting and firewalling. The 4.4 backport is in kernel/bpf/cgroup.c. Android 10-13 netd
-# only takes the BPF path on kernels >= 4.9 and stays on xt_qtaguid here (see the doc).
+# accounting and firewalling. The 4.4 backport is in kernel/bpf/cgroup.c. Android 10-11 netd
+# stays on xt_qtaguid below 4.9; Android 12-13 netd needs a GSI with legacy-kernel networking
+# patches, this option alone is not enough (see the doc).
 CONFIG_CGROUP_BPF=y
 
 # "schedtune" cgroup controller: libprocessgroup (Android 10+ cgroups.json / task_profiles)
