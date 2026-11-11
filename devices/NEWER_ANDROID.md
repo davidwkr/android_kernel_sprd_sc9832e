@@ -28,8 +28,8 @@ Spoofing the kernel version does not help: the BPF loader then picks programs th
 
 | Route | Kernel | Vendor | System-as-root | Status |
 |---|---|---|---|---|
-| A. GSI on the stock vendor | our 4.14 (`config/gsi-414`, GSI DT variants without the DT fstab) | stock 8.1, vndklite | first-stage ramdisk (`tools/firststage-ramdisk`) + vendor patch (`devices/vendor-gsi-patch`) | in progress |
-| B. Android 10-13 on 4.4 | our 4.4 + `watch_newandroid.fragment` (`config/newandroid-44`) | stock 8.1, vndklite | same ramdisk and vendor patch | in progress |
+| A. GSI on the stock vendor | our 4.14 (`config/gsi-414`, GSI DT variants without the DT fstab) | stock 8.1, vndklite | first-stage ramdisk (`tools/firststage-ramdisk`) + vendor patch (`devices/vendor-gsi-patch`) | reviewed, boot images built, not flashed |
+| B. Android 10-13 on 4.4 | our 4.4 + `watch_newandroid.fragment` (`config/newandroid-44`) | stock 8.1, vndklite | same ramdisk and vendor patch | reviewed, kernels built, not flashed |
 | C. VNDK29 package | its 4.4.147 (KernelSU, no source) or ours with Mali r28p0 | Android 10 VNDK 29 (DW99) | its own first-stage ramdisk | reference only: `SL8541E_VNDK29_PACKAGE.md` |
 | D. HMD Key | GKI 5.15 + HMD vendor modules | HMD Android 14 | repack for the watch U-Boot | reference only: `HMD_KEY_A14_REFERENCE.md` |
 | E. Android 11 A-only GSI | 4.4 | stock 8.1 | none needed (A-only build) | candidate, not downloaded |
@@ -37,6 +37,30 @@ Spoofing the kernel version does not help: the BPF loader then picks programs th
 The first-stage `init` for routes A and B comes from the official HMD Key `init_boot.img` generic ramdisk
 (static 32-bit ARM, Android 14, sha256 `4434efcb3719827f8b306be762434c12427a6b35c21f7cc6616e4c6c73f493b5`),
 not from the third-party package.
+
+## Route A boot images (2026-11-11)
+
+Packed locally with `scripts/gsi_bootimg.sh` (branch `tools/firststage-ramdisk`) from the `config/gsi-414` kernel
+(4.14.336) and `-gsi` DTBs, the HMD Android 14 first-stage `init` and the ramdisk fstab, on the stock boot
+header (id check OK, AVB hash stale: unlocked watches only). Not committed, in `~/.cache/gsi-boot-a14/`:
+
+| Watch | Image | sha256 |
+|---|---|---|
+| DM63 | `dm63_414_gsi_a14.img` | `da7b06c9ce38d603cef7948c39271693b86474c795f169db54acf1be8ff4477d` |
+| DW100U silver | `dw100u-silver_414_gsi_a14.img` | `f372ca456cc01f383f6017caecad309f9a9b506ddebdb9563f90820a670cc117` |
+
+Before a test boot: full backup of boot, system and vendor; vendor patch with `scripts/vendor_gsi_patch.sh`
+(vendor backup first, dry run by default); a copy of the GSI with `/productinfo` added by
+`scripts/gsi_add_mountpoints.sh` (label read from the watch's `nonplat_file_contexts`); `persist.sys.vndk=27`.
+
+Constraints found in review:
+- The Android 14 first-stage `init` needs `/second_stage_resources` in the GSI root: present from Android 12;
+  Android 10-11 GSIs need it added with `gsi_add_mountpoints.sh`.
+- Android 12-13 on 4.4: `netd` no longer falls back to xt_qtaguid; the GSI needs legacy-kernel networking
+  patches (`devices/NEWANDROID_44.md`).
+- Android 14 app freezer: the GSI's task profiles write `cgroup.freeze` (v2); 4.14 has the v1 freezer only, so
+  adapt the profiles or disable the freezer (`devices/GSI_414.md`).
+- The vendor fstab drops `encryptable=footer` (FDE is gone since Android 12): `/data` stays unencrypted.
 
 ## Android 14 GSI chosen
 
