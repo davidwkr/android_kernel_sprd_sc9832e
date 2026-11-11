@@ -1,0 +1,15 @@
+config SPRD_GSP
+	bool "SPRD GSP driver"
+	depends on ARCH_SPRD
+	depends on ION_SPRD
+	depends on SYNC_FILE
+	depends on SPRD_IOMMU
+	# binds the same sprd,gsp-lite_r2p0-sharkle node
+	depends on !DRM_SPRD_GSP
+	---help---
+	  GSP is hardware which not only can compose multiple layers
+	  but also can transform and scale layers.
+
+	  This is the 4.4 driver of the Android 8.1 stock userspace (/dev/gsp,
+	  used by gsp.sp9832e.so), cut down to the sharkle lite_r2p0 core.
+	  Say N if the DRM GSP driver is used instead.

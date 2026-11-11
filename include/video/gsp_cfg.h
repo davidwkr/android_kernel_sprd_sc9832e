@@ -14,21 +14,20 @@
 #define _VIDEO_GSP_CFG_H
 
 #include <linux/dma-buf.h>
-#include <linux/dma-direction.h>
+#include <linux/types.h>
 #include <linux/ioctl.h>
 #include <linux/list.h>
 #include <uapi/video/gsp_cfg.h>
 
 struct gsp_buf {
 	size_t size;
+	/* reference held from get to put */
 	struct dma_buf *dmabuf;
+	/* the ion_buffer of dmabuf, what the sprd iommu maps */
+	void *ion_buf;
+	unsigned long iova;
 	int is_iova;
-};
-
-struct gsp_buf_map {
-	struct dma_buf_attachment *attachment;
-	struct sg_table *table;
-	enum dma_data_direction dir;
+	bool mapped;
 };
 
 struct gsp_mem_data {
@@ -36,7 +35,6 @@ struct gsp_mem_data {
 	u32 uv_offset;
 	u32 v_offset;
 	struct gsp_buf buf;
-	struct gsp_buf_map map;
 };
 
 struct gsp_layer {
