@@ -46,3 +46,7 @@ CONFIG_PID_NS=y
 CONFIG_ANDROID_TIMED_OUTPUT=y
 CONFIG_SPRD_VIBRATOR=y
 # CONFIG_INPUT_SC27XX_VIBRA is not set
+
+# The stock hwcomposer/gsp HAL blend and scale with the GSP through /dev/gsp
+# (drivers/media/gsp, the 4.4 driver; the DRM one is off with DRM_SPRD)
+CONFIG_SPRD_GSP=y
