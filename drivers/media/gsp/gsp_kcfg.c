@@ -49,6 +49,8 @@ void gsp_kcfg_reinit(struct gsp_kcfg *kcfg)
 	kcfg->async = false;
 	kcfg->last = false;
 	kcfg->status = 0;
+	kcfg->tail = NULL;
+	kcfg->batch_status = 0;
 	memset(&kcfg->data, 0, sizeof(kcfg->data));
 }
 
@@ -235,6 +237,22 @@ void gsp_kcfg_cleanup(struct gsp_kcfg *kcfg, int status)
 	data->wait_cnt = 0;
 
 	gsp_sync_fence_signal(data, status);
+}
+
+int gsp_kcfg_batch_status(struct gsp_kcfg *kcfg, int status)
+{
+	struct gsp_kcfg *tail = kcfg->tail;
+
+	if (!tail)
+		return status;
+
+	if (kcfg != tail) {
+		if (status && !tail->batch_status)
+			tail->batch_status = status;
+		return status;
+	}
+
+	return tail->batch_status ? tail->batch_status : status;
 }
 
 void gsp_kcfg_complete(struct gsp_kcfg *kcfg, int status)

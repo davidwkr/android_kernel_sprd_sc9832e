@@ -239,6 +239,7 @@ static int gsp_dev_submit(struct gsp_core *core, struct gsp_kcfg **kcfgs,
 	}
 
 	for (i = 0; i < cnt; i++) {
+		kcfgs[i]->tail = last;
 		gsp_kcfg_get(kcfgs[i]);
 		gsp_workqueue_push(&core->wq, kcfgs[i]);
 	}

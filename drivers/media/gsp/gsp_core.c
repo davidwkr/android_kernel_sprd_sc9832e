@@ -131,7 +131,7 @@ static void gsp_core_finish(struct gsp_core *core, struct gsp_kcfg *kcfg,
 	synchronize_irq(core->irq);
 
 	gsp_kcfg_iommu_unmap(kcfg);
-	gsp_kcfg_cleanup(kcfg, status);
+	gsp_kcfg_cleanup(kcfg, gsp_kcfg_batch_status(kcfg, status));
 	gsp_kcfg_complete(kcfg, status);
 
 	/* disable core must be invoked after iommu unmap */
@@ -525,7 +525,8 @@ void gsp_core_deinit(struct gsp_core *core)
 	core->kworker = NULL;
 
 	while ((kcfg = gsp_workqueue_pull(&core->wq))) {
-		gsp_kcfg_cleanup(kcfg, -ECANCELED);
+		gsp_kcfg_cleanup(kcfg,
+				 gsp_kcfg_batch_status(kcfg, -ECANCELED));
 		gsp_kcfg_complete(kcfg, -ECANCELED);
 		gsp_kcfg_put(kcfg);
 	}

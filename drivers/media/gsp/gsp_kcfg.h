@@ -51,6 +51,14 @@ struct gsp_kcfg {
 
 	struct gsp_core *bind_core;
 
+	/*
+	 * The last kcfg of the ioctl, which carries the release fence: the
+	 * ones before it hand it their first error, as the core ends them
+	 * before it, in the order of the queue.
+	 */
+	struct gsp_kcfg *tail;
+	int batch_status;
+
 	/* result of the run, valid after complete */
 	int status;
 	struct completion complete;
@@ -79,6 +87,9 @@ void gsp_kcfg_iommu_unmap(struct gsp_kcfg *kcfg);
 
 /* drop the dma-bufs and the fences, signal the release fence with @status */
 void gsp_kcfg_cleanup(struct gsp_kcfg *kcfg, int status);
+
+/* what the release fence gets: the first error of the batch, or @status */
+int gsp_kcfg_batch_status(struct gsp_kcfg *kcfg, int status);
 
 void gsp_kcfg_complete(struct gsp_kcfg *kcfg, int status);
 int gsp_kcfg_wait(struct gsp_kcfg *kcfg);
