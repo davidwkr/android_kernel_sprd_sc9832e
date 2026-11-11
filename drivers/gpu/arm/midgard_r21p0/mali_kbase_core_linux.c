@@ -740,6 +740,13 @@ static int kbase_api_get_context_id(struct kbase_context *kctx,
 static int kbase_api_tlstream_acquire(struct kbase_context *kctx,
 		struct kbase_ioctl_tlstream_acquire *acquire)
 {
+	/* The summary stream carries raw kernel context and device pointers,
+	 * which defeat KASLR for whatever opened this device node. Restrict
+	 * it to privileged callers (CVE-2023-26083).
+	 */
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+
 	return kbase_tlstream_acquire(kctx, acquire->flags);
 }
 
