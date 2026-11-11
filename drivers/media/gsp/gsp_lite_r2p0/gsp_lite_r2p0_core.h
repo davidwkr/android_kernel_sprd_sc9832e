@@ -70,6 +70,7 @@ int gsp_lite_r2p0_core_irq_ack(struct gsp_core *core);
 
 int __user *gsp_lite_r2p0_core_intercept(void __user *arg, int index);
 void gsp_lite_r2p0_core_irq_mask(struct gsp_core *core);
+int gsp_lite_r2p0_core_irq_collect(struct gsp_core *core);
 int gsp_lite_r2p0_core_reset(struct gsp_core *core);
 void gsp_lite_r2p0_core_dump(struct gsp_core *core);
 

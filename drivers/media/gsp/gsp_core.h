@@ -162,6 +162,8 @@ struct gsp_core_ops {
 	int (*irq_ack)(struct gsp_core *core);
 	/* mask the interrupts, keeping their status */
 	void (*irq_mask)(struct gsp_core *core);
+	/* after the mask: clear what is still pending, from the raw status */
+	int (*irq_collect)(struct gsp_core *core);
 
 	int (*enable)(struct gsp_core *core);
 	void (*disable)(struct gsp_core *core);

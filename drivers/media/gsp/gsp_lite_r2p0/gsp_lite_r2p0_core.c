@@ -747,6 +747,37 @@ int gsp_lite_r2p0_core_irq_ack(struct gsp_core *c)
 	return ret;
 }
 
+/*
+ * With the interrupts masked the status register reads 0: what is still
+ * pending is only in the raw bits. Collect and clear it.
+ */
+int gsp_lite_r2p0_core_irq_collect(struct gsp_core *c)
+{
+	struct LITE_R2P0_GSP_GSP_INT_REG raw, value, mask;
+	int ret = 0;
+
+	raw.value = gsp_core_reg_read(LITE_R2P0_GSP_GSP_INT(c->base));
+	value.value = 0;
+	mask.value = 0;
+
+	if (raw.INT_GSP_RAW) {
+		mask.INT_GSP_CLR = 1;
+		value.INT_GSP_CLR = 1;
+		ret |= GSP_IRQ_DONE;
+	}
+	if (raw.INT_GERR_RAW) {
+		mask.INT_GERR_CLR = 1;
+		value.INT_GERR_CLR = 1;
+		ret |= GSP_IRQ_ERR;
+	}
+
+	if (ret)
+		gsp_core_reg_update(LITE_R2P0_GSP_GSP_INT(c->base),
+				value.value, mask.value);
+
+	return ret;
+}
+
 static struct clk *gsp_lite_r2p0_core_get_clk(struct gsp_core *core,
 					      const char *name, int *ret)
 {

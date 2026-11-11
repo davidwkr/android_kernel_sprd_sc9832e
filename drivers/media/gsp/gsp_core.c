@@ -296,8 +296,8 @@ static void gsp_core_release(struct kthread_work *work)
 	atomic_set(&core->hw_running, 0);
 	synchronize_irq(core->irq);
 
-	/* what the hardware raised but the handler did not see */
-	status = core->ops->irq_ack(core);
+	/* what the hardware raised but the handler did not see: raw status only */
+	status = core->ops->irq_collect(core);
 
 	spin_lock_irqsave(&core->event_lock, flags);
 	status |= core->irq_status;
