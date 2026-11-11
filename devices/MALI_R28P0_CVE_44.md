@@ -61,14 +61,32 @@ cited). `n.a.` = the bug cannot occur in r28p0 (reason given).
 | `a3f9b5aa9ae2` (fences) | `dep_count` raised after `dma_fence_add_callback()` | present: `kbase_fence_add_callback()` does `atomic_inc(dep_count)` before the call and `atomic_dec()` on both failure paths. |
 | `a92c8b0ce4fe` (fences) | Duplicate reservation drops the exclusive bit | ported in `9fc0e2324bd2` (dormant, see below). |
 
+## Review findings (JIT and timeline stream)
+
+| Finding | Status |
+|---|---|
+| GHSL-2023-005 pattern: `MEM_COMMIT` resizes JIT regions | confirmed, fixed in `4e0865415f51`: `kbase_mem_commit()` refuses `KBASE_REG_JIT` under `reg_lock`. |
+| CVE-2023-6241: GPU page-fault worker grows a reused JIT region while `kbase_jit_grow()` has dropped its locks | confirmed (DONT_NEED is cleared first, grow-on-fault flags stay, and `old_size`/`delta` were cached across the pool grow), fixed in `e4e8dbaad23e`: the size is re-read after every lock-dropping pool grow and the calculation restarts; if the region already reached the commit nothing is allocated. |
+| `kbase_jit_free()` trimmed before taking `reg_lock` | confirmed, fixed in `a9f8d5552539`: `reg_lock` is held from the size snapshot to the DONT_NEED transition. |
+| CVE-2023-26083: `KBASE_IOCTL_TLSTREAM_ACQUIRE` without a capability check | confirmed, fixed in `87dd22dab752`: `CAP_SYS_ADMIN` required, otherwise `-EPERM`. |
+
+ABI notes:
+
+- `KBASE_IOCTL_MEM_COMMIT` on a JIT region now fails with `-EINVAL`. JIT sizes
+  are only changed by the kernel through the JIT soft jobs.
+- `KBASE_IOCTL_TLSTREAM_ACQUIRE` needs `CAP_SYS_ADMIN`: profiling tools (gator,
+  the vendor's timeline) must run as root.
+
 The other commits in the r21p0 range (imports, Kconfig help text, module
 rename, docs) have no counterpart to port.
 
 ## Fence code is not built
 
-`mali_kbase_fence.c` and `mali_kbase_dma_fence.c` are only compiled with
-`CONFIG_MALI_DMA_FENCE`, which `scripts/watch_build.sh` does not pass; the
-built `mali.ko` has no `kbase_dma_fence_*` symbols. The duplicate-reservation
+`mali_kbase_dma_fence.c` is only compiled with `CONFIG_MALI_DMA_FENCE`, which
+`scripts/watch_build.sh` does not pass; `mali_kbase_fence.c` is compiled with
+`CONFIG_MALI_DMA_FENCE` or `CONFIG_SYNC_FILE` (Kbuild), and the dm63 kernel
+config sets neither. The built `mali.ko` has no `kbase_dma_fence_*` symbols
+and no object from `mali_kbase_fence.c`. The duplicate-reservation
 fix is therefore dormant, as the fence fixes are on r21p0.
 
 ## Build
