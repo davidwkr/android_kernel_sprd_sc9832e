@@ -1,0 +1,31 @@
+# Stock Android 8.1 userspace on 4.14. Merge on top of
+# sprd_sharkle_defconfig + watch_414.fragment (+ watch_414_adf.fragment),
+# then run olddefconfig.
+#
+# sprd_sharkle_defconfig comes from SPRD's Android 10 platform, which
+# replaced these with eBPF traffic accounting and userspace lmkd (PSI).
+# The stock 8.1 system and its kernel (/proc/config.gz of the DM63) use
+# the old interfaces.
+
+# Per-UID traffic stats and socket tagging for netd / NetworkStatsService.
+# xt_qtaguid also registers itself as the "owner" match, so it needs
+# xt_owner off, as on stock.
+# CONFIG_NETFILTER_XT_MATCH_OWNER is not set
+CONFIG_NETFILTER_XT_MATCH_QTAGUID=y
+
+# In-kernel low memory killer, tuned by the 8.1 lmkd through
+# /sys/module/lowmemorykiller/parameters
+CONFIG_ANDROID_LOW_MEMORY_KILLER=y
+CONFIG_ANDROID_LOW_MEMORY_KILLER_AUTODETECT_OOM_ADJ_VALUES=y
+CONFIG_ANDROID_LOW_MEMORY_KILLER_MEMINFO=y
+
+# libsuspend uses /sys/power/autosleep when present, as on stock
+CONFIG_PM_AUTOSLEEP=y
+
+# As stock: PID namespaces only
+CONFIG_NAMESPACES=y
+CONFIG_PID_NS=y
+# CONFIG_UTS_NS is not set
+# CONFIG_IPC_NS is not set
+# CONFIG_USER_NS is not set
+# CONFIG_NET_NS is not set
