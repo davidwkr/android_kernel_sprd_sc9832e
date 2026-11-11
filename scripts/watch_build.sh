@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 # Build kernel Image + ramdisk modules for one watch.
-# Usage: scripts/watch_build.sh DEVICE [OUTDIR]
+# Usage: scripts/watch_build.sh [--newandroid] DEVICE [OUTDIR]
 #   DEVICE: dm63 | dw100u-silver | dw100u-v13m | mt107 | mt108 | dm82 | k18
 #   OUTDIR: default ../watch_out (outside the repo); results in OUTDIR/DEVICE/
-# Env: ARCH (arm64), CROSS_COMPILE (aarch64-linux-gnu-), JOBS (nproc)
+#   --newandroid: add arch/arm64/configs/watch_newandroid.fragment (Android 10-13 GSI
+#              extras, devices/NEWANDROID_44.md); same as WATCH_EXTRA_FRAGS=watch_newandroid
+# Env: WATCH_EXTRA_FRAGS (optional): space separated extra fragment names appended after
+#      the device fragments. Such a build goes to OUTDIR/DEVICE+NAMES/ and
+#      OUTDIR/obj-DEVICE+NAMES/, so the stock build in OUTDIR is not overwritten.
+#      ARCH (arm64), CROSS_COMPILE (aarch64-linux-gnu-), JOBS (nproc)
 #      HRS_STOCK_BOOT_IMG (optional; dm63, dw100u-silver, dw100u-v13m, mt107,
 #      mt108): path of THIS device's own stock boot image (the vendor layers
 #      differ between devices). Runs tools/blobcarve into OUTDIR/hrsblob-DEVICE/
@@ -13,16 +18,24 @@
 #      sfd_tool/dm63/boot.img (sfd_tool/boot.img is the K18 image).
 set -euo pipefail
 
-usage() { echo "usage: $0 DEVICE [OUTDIR]  (dm63|dw100u-silver|dw100u-v13m|mt107|mt108|dm82|k18)" >&2; exit 2; }
+usage() { echo "usage: $0 [--newandroid] DEVICE [OUTDIR]  (dm63|dw100u-silver|dw100u-v13m|mt107|mt108|dm82|k18)" >&2; exit 2; }
+args=()
+for a in "$@"; do
+  if [ "$a" = "--newandroid" ]; then WATCH_EXTRA_FRAGS="${WATCH_EXTRA_FRAGS:-} watch_newandroid"; else args+=("$a"); fi
+done
+set -- "${args[@]}"
 [ $# -ge 1 ] && [ $# -le 2 ] || usage
+export WATCH_EXTRA_FRAGS=${WATCH_EXTRA_FRAGS:-}
 
 DEVICE=$1
+TAG=
+for f in $WATCH_EXTRA_FRAGS; do TAG=$TAG+$f; done
 SRC=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 OUTBASE=${2:-$SRC/../watch_out}
 mkdir -p "$OUTBASE"
 OUTBASE=$(cd "$OUTBASE" && pwd)
-RES=$OUTBASE/$DEVICE
-O=$OUTBASE/obj-$DEVICE
+RES=$OUTBASE/$DEVICE$TAG
+O=$OUTBASE/obj-$DEVICE$TAG
 ARCH=${ARCH:-arm64}
 CROSS_COMPILE=${CROSS_COMPILE:-aarch64-linux-gnu-}
 JOBS=${JOBS:-$(nproc)}

@@ -1,0 +1,19 @@
+# Opt-in extras for running an Android 10-13 "ab" GSI on this 4.4 kernel (first-stage
+# ramdisk done elsewhere). NOT part of any device config: add it with
+# `scripts/watch_build.sh --newandroid DEVICE` (or WATCH_EXTRA_FRAGS=watch_newandroid),
+# the committed *_defconfig files stay the stock-8.1 configs. See devices/NEWANDROID_44.md.
+# Everything else Android 10-13 asks of a 4.4 kernel (binder with hwbinder/vndbinder
+# devices, ashmem, ION, sdcardfs, FUSE, f2fs/ext4 FBE, dm-verity+FEC, SELinux, seccomp-bpf,
+# the xt_qtaguid/quota2 netfilter set, BPF_SYSCALL, BPF_JIT, memcg, cpusets, SCHED_TUNE)
+# is already enabled by watch_base/watch_stock_parity.
+
+# eBPF programs attached to cgroups (BPF_PROG_ATTACH, BPF_CGROUP_INET_INGRESS/EGRESS). Listed in
+# this tree's kernel/configs/android-base.config; netd/bpfloader use it for per-UID traffic
+# accounting and firewalling. The 4.4 backport is in kernel/bpf/cgroup.c. Android 10-13 netd
+# only takes the BPF path on kernels >= 4.9 and stays on xt_qtaguid here (see the doc).
+CONFIG_CGROUP_BPF=y
+
+# "schedtune" cgroup controller: libprocessgroup (Android 10+ cgroups.json / task_profiles)
+# mounts it as /dev/stune for the foreground/top-app/background boost groups. Without it the
+# mount fails and those task profiles log errors and do nothing. Needs SCHED_TUNE (already y).
+CONFIG_CGROUP_SCHEDTUNE=y

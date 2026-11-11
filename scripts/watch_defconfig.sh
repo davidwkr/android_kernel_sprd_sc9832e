@@ -20,6 +20,8 @@ ARCH=${ARCH:-arm64}
 CROSS_COMPILE=${CROSS_COMPILE:-aarch64-linux-gnu-}
 export ARCH CROSS_COMPILE
 . "$(dirname "${BASH_SOURCE[0]}")/watch_lib.sh"
+# the committed defconfigs are the stock composition: never add opt-in fragments
+unset WATCH_EXTRA_FRAGS
 cd "$SRC"
 
 mkdir -p "$HOME/.cache"

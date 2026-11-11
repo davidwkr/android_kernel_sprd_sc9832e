@@ -6,7 +6,10 @@
 
 # watch_select DEVICE: sets DEVFRAGS, FRAGS, CFG, DEFCONFIG (file name without
 # path). dw100u is accepted as the name of the shared silver/v13m config.
+# WATCH_EXTRA_FRAGS (space separated fragment names, opt-in, e.g. watch_newandroid)
+# are appended last so they win on any overlap; unset = the stock-8.1 composition.
 watch_select() {
+  local f
   case $1 in
     dm63)                      DEVFRAGS="dm63_touch watch_hrs watch_sc7a22 dm63_aod dm63_sensors" ;;
     dw100u-silver|dw100u-v13m|dw100u) DEVFRAGS="dw100u_touch watch_hrs watch_sc7a22 dw100u_aod dw100u_fp dw100u_sensors" ;;
@@ -16,9 +19,14 @@ watch_select() {
     k18)                       DEVFRAGS="k18" ;;
     *) usage ;;
   esac
+  CFG=$SRC/arch/arm64/configs
   # parity before hardening: hardening wins on any overlap
   FRAGS="watch_base watch_stock_parity watch_hardening $DEVFRAGS"
-  CFG=$SRC/arch/arm64/configs
+  for f in ${WATCH_EXTRA_FRAGS:-}; do
+    case $f in *[!A-Za-z0-9_]*) echo "bad fragment name in WATCH_EXTRA_FRAGS: $f" >&2; exit 2 ;; esac
+    [ -r "$CFG/$f.fragment" ] || { echo "WATCH_EXTRA_FRAGS: cannot read $CFG/$f.fragment" >&2; exit 2; }
+    FRAGS="$FRAGS $f"
+  done
   case $1 in dw100u-*) DEFCONFIG=dw100u_defconfig ;; *) DEFCONFIG=$1_defconfig ;; esac
 }
 
