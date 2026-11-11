@@ -1,2 +1,12 @@
 # binderfs: per-ipc-namespace binder device nodes (/dev/binderfs), Android 11+ init mounts it
 CONFIG_ANDROID_BINDERFS=y
+
+# Kernel features Android 17 userspace needs (see devices/A17_KERNEL.md).
+# Merge on top of sprd_sharkle_defconfig + watch_414.fragment, then run
+# olddefconfig.
+#
+# pidfd_send_signal/pidfd_open/close_range and CLONE_PIDFD are built
+# unconditionally (no Kconfig symbol); anon_inodes is unconditional too.
+# The only config they rely on is procfs: pidfd fdinfo and
+# pidfd_send_signal() on a /proc/<pid> directory fd.
+CONFIG_PROC_FS=y
