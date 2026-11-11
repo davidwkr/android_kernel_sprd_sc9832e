@@ -3,23 +3,27 @@
 #   - the two commented memdisk lines (memdisk.0 /system, memdisk.1 /data).
 #   - the stock header comment: there is no /system or /vendor entry, the
 #     first-stage ramdisk mounts them (they are not listed here on purpose).
-# Every remaining line, flag and option is byte-identical to stock.
-# Encryption: "encryptable=footer" is kept as stock. It is legacy full-disk
-# encryption, which a GSI keeps only up to Android 10 (vold). Stock userdata
-# may carry a crypto footer: do not mount it with a GSI that expects FBE or no
-# encryption without a data wipe. For Android 11+, or to avoid the footer
-# probing, change "wait,encryptable=footer,check" to "wait,check" and the
-# sdcard "voldmanaged=...,encryptable=footer" to "voldmanaged=...".
+# Every remaining line is stock except that "encryptable=footer" is dropped
+# from the two userdata lines (wait,check) and from the sdcard voldmanaged
+# option. It is legacy full-disk encryption: Android 12+ removed FDE and
+# fs_mgr of Android 14 does not take it as a working option [I: from memory
+# of fs_mgr_fstab.cc, not checked against a source tree]. Userdata stays
+# unencrypted (no forceencrypt/fileencryption added). Stock userdata may
+# carry a crypto footer: do not mount it with a GSI without a data wipe.
+# Remaining flags, as far as known for the Android 14 fs_mgr [I]: wait, check,
+# noemulatedsd and voldmanaged=LABEL:auto are valid fs_mgr flags; the mount
+# options (noatime,nosuid,nodev, ext4/f2fs ones) go to the kernel; "defaults"
+# in the fs_mgr column of the /misc line is not a flag (at most a warning).
 # "emmc" (/misc) is a raw partition: fs_mgr skips it in mount_all, the entry
 # stays for recovery/uncrypt. The /productinfo mount point has to exist in the
 # GSI root, which is read-only: add it to the image with
 # scripts/gsi_add_mountpoints.sh (devices/VENDOR_GSI_PATCH.md).
 # <src>                                         <mnt_point>  <type>  <mnt_flags and options>             <fs_mgr_flags>
 
-/dev/block/platform/soc/soc:ap-ahb/20600000.sdio/by-name/userdata /data        f2fs noatime,nosuid,nodev,discard,inline_xattr,inline_data wait,encryptable=footer,check
-/dev/block/platform/soc/soc:ap-ahb/20600000.sdio/by-name/userdata /data        ext4 noatime,nosuid,nodev,nomblk_io_submit,noauto_da_alloc wait,encryptable=footer,check
+/dev/block/platform/soc/soc:ap-ahb/20600000.sdio/by-name/userdata /data        f2fs noatime,nosuid,nodev,discard,inline_xattr,inline_data wait,check
+/dev/block/platform/soc/soc:ap-ahb/20600000.sdio/by-name/userdata /data        ext4 noatime,nosuid,nodev,nomblk_io_submit,noauto_da_alloc wait,check
 /dev/block/platform/soc/soc:ap-ahb/20600000.sdio/by-name/cache    /cache       ext4 noatime,nosuid,nodev,nomblk_io_submit,noauto_da_alloc wait,check
 /devices/platform/soc/soc:ap-ahb/20200000.usb/musb-hdrc.0.auto/usb*      auto         vfat defaults voldmanaged=usbdisk:auto
-/devices/platform/soc/soc:ap-ahb/20300000.sdio/mmc_host/mmc1/mmc1:*/block/mmcblk1      auto         vfat defaults voldmanaged=sdcard0:auto,noemulatedsd,encryptable=footer
+/devices/platform/soc/soc:ap-ahb/20300000.sdio/mmc_host/mmc1/mmc1:*/block/mmcblk1      auto         vfat defaults voldmanaged=sdcard0:auto,noemulatedsd
 /dev/block/platform/soc/soc:ap-ahb/20600000.sdio/by-name/prodnv   /productinfo ext4 noatime,nosuid,nodev,nomblk_io_submit,noauto_da_alloc wait,check
 /dev/block/platform/soc/soc:ap-ahb/20600000.sdio/by-name/misc     /misc        emmc    defaults    defaults

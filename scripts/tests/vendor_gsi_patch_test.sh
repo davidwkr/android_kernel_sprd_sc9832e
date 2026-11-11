@@ -174,6 +174,13 @@ echo "-- syntax"
 check "bash -n" bash -n "$SCRIPT"
 if command -v shellcheck >/dev/null; then check "shellcheck" shellcheck "$SCRIPT"; else echo "skip shellcheck (not installed)"; fi
 
+echo "-- shipped fstabs and rc files"
+for d in "$HERE"/../../devices/*/vendor_gsi; do
+  n=$(basename "$(dirname "$d")")
+  check "$n fstab: no encryptable/forceencrypt/fileencryption" bash -c "! grep -v '^#' '$d/etc/fstab.sl8541e_1h10' | grep -Eq 'encryptable|forceencrypt|fileencryption'"
+  check "$n rc: no mknod (not an init command)" bash -c "! grep -Eq '^[[:space:]]*mknod ' '$d/etc/init/hw/init.sl8541e_1h10.rc'"
+done
+
 echo "-- dry run is the default"
 new_fake; unset FAKE_SU; FAKE_SU=magisk; export FAKE_SU
 before=$(tree_hash); vb=$(vendor_hash)

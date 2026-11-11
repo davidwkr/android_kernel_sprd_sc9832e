@@ -53,18 +53,19 @@ IDs match the header comment of the rc. "Common" is the `init.common.rc` part of
 | C8 | Common | `service count /system/xbin/count` (class main, root, socket 0777) | removed | binary of the stock `/system`, not in a GSI; as `class main` it would only log an exec failure |
 | C8 | Common | `dhcpcd_wlan0`, `dhcpcd_p2p`, `dhcpcd_ipv6`, `iprenew_wlan0`, `iprenew_p2p`, `dhcpcd_bnep0`, `iprenew_bnep0`, `dhcpcd_bt-pan`, `iprenew_bt-pan` | removed | `/system/bin/dhcpcd`: a GSI of Android 9+ has no dhcpcd (the framework runs its own DHCP client), all are `disabled`/`oneshot` |
 | C9 | whole file | tabs, trailing blanks, 2+ blank lines | spaces, trimmed, one blank line | formatting only |
+| C11 | device rc, `/dev/input` permissions | `mknod /dev/input c 5 0` | removed (the `chmod 755 /dev/input` after it stays) | Android init has no `mknod` command: the line is skipped at parse time with an error in the log (not an EEXIST at run time). ueventd creates `/dev/input` anyway [I: init command list from memory] |
 | (fstab) | `fstab.sl8541e_1h10` | header comment about the checker on `/system`, two commented `memdisk` lines | header replaced by the notes in the file | no `/system` or `/vendor` entry: the first-stage ramdisk mounts them. Every entry line is byte-identical to stock |
 | (ueventd) | `ueventd.sl8541e_1h10.rc` | the file | same lines, same order, after two `subsystem` blocks | renamed to `/vendor/ueventd.rc`; the `subsystem adf` and `subsystem graphics` blocks come from the stock `ueventd.rc` as a safety net (the display is ADF: `/dev/adf*`, `/dev/graphics/fb0`; a newer AOSP `ueventd.rc` may drop them; if kept, the duplicate is harmless) |
 
-Everything else in the rc is stock, line for line (about 780 lines): the sensor, GNSS, PMIC, modem, display, thermal, `reserve_space` and cpuhotplug permissions, the ZRAM/LMK/hwui property tables, the `mknod /dev/input c 5 0` line (fails with EEXIST once ueventd created `/dev/input`, as in stock), the `wpa_supplicant`/`p2p_supplicant`, `aprd`, `systemDebuggerd`, `srtd` and `gpsd` services.
+Everything else in the rc is stock, line for line (about 780 lines): the sensor, GNSS, PMIC, modem, display, thermal, `reserve_space` and cpuhotplug permissions, the ZRAM/LMK/hwui property tables, the `wpa_supplicant`/`p2p_supplicant`, `aprd`, `systemDebuggerd`, `srtd` and `gpsd` services. The one exception is the `mknod /dev/input c 5 0` line, removed (change table: C11).
 
 ### fstab
 
 | Entry | Mount point | Flags | Note |
 |---|---|---|---|
-| `userdata` f2fs, then ext4 | `/data` | stock flags, `wait,encryptable=footer,check` | `encryptable=footer` is legacy full-disk encryption: a GSI keeps it only up to Android 10. If userdata carries a crypto footer from the stock system, a GSI that expects FBE or none cannot mount it without a wipe. For Android 11+ remove `encryptable=footer` (documented in the file header); not changed here, to keep the stock flags |
+| `userdata` f2fs, then ext4 | `/data` | `wait,check` (stock: `wait,encryptable=footer,check`) | `encryptable=footer` removed: it is legacy full-disk encryption, Android 12+ removed FDE and the Android 14 fs_mgr does not accept it as a working option, so the fstab would not load [I: from memory of fs_mgr, not verified in source]. userdata stays unencrypted; `forceencrypt`/`fileencryption` are not added. If userdata carries a crypto footer from the stock system it cannot be mounted by a GSI without a data wipe. `wait`, `check` are valid fs_mgr flags [I] |
 | `cache` ext4 | `/cache` | stock | |
-| usb `auto` vfat, sdcard `auto` vfat | `auto` | stock `voldmanaged=...` | sdcard entry has `encryptable=footer` too (same note) |
+| usb `auto` vfat, sdcard `auto` vfat | `auto` | `voldmanaged=usbdisk:auto`; `voldmanaged=sdcard0:auto,noemulatedsd` (stock plus `,encryptable=footer`) | `encryptable=footer` removed from the sdcard entry (same note); `voldmanaged=LABEL:auto` and `noemulatedsd` are valid fs_mgr flags [I] |
 | `prodnv` ext4 | `/productinfo` | stock | kept at `/productinfo`: the stock vendor depends on the path (`/vendor/etc/init/charge.rc`, the `/productinfo` paths in the rc: WCN `wcn`, `sensor_calibration_data`). The GSI root is the read-only system image and has no such directory, so the mount would fail; the directory is added to the image instead, see "Root directories a GSI lacks" |
 | `misc` emmc | `/misc` | `defaults defaults` | raw partition: fs_mgr skips it in `mount_all`, the line stays for recovery/uncrypt |
 
