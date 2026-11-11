@@ -2918,16 +2918,6 @@ static int kbase_jit_grow(struct kbase_context *kctx,
 	if (!kbase_mem_evictable_unmake(reg->gpu_alloc))
 		goto update_failed;
 
-	if (reg->gpu_alloc->nents >= info->commit_pages)
-		goto done;
-
-	/* Grow the backing */
-	old_size = reg->gpu_alloc->nents;
-
-	/* Allocate some more pages */
-	delta = info->commit_pages - reg->gpu_alloc->nents;
-	pages_required = delta;
-
 #ifdef CONFIG_MALI_2MB_ALLOC
 	/* Preallocate memory for the sub-allocation structs */
 	for (i = 0; i != ARRAY_SIZE(prealloc_sas); ++i) {
@@ -2936,7 +2926,25 @@ static int kbase_jit_grow(struct kbase_context *kctx,
 		if (!prealloc_sas[i])
 			goto update_failed;
 	}
+#endif
 
+retry:
+	/* The region is no longer marked DONT_NEED and keeps its grow-on-fault
+	 * flags, so the GPU page fault handler may grow it whenever reg_lock is
+	 * dropped below. Everything derived from the backing size is therefore
+	 * recomputed from here after each such window.
+	 */
+	if (reg->gpu_alloc->nents >= info->commit_pages)
+		goto done;
+
+	/* Grow the backing */
+	old_size = reg->gpu_alloc->nents;
+
+	/* Allocate some more pages */
+	delta = info->commit_pages - old_size;
+	pages_required = delta;
+
+#ifdef CONFIG_MALI_2MB_ALLOC
 	if (pages_required >= (SZ_2M / SZ_4K)) {
 		pool = &kctx->lp_mem_pool;
 		/* Round up to number of 2 MB pages required */
@@ -2973,6 +2981,16 @@ static int kbase_jit_grow(struct kbase_context *kctx,
 		kbase_gpu_vm_lock(kctx);
 		spin_lock(&kctx->mem_partials_lock);
 		kbase_mem_pool_lock(pool);
+
+		/* The backing may have changed while the locks were dropped.
+		 * The pages added to the pool stay there, so just redo the
+		 * size calculation.
+		 */
+		if (reg->gpu_alloc->nents != old_size) {
+			kbase_mem_pool_unlock(pool);
+			spin_unlock(&kctx->mem_partials_lock);
+			goto retry;
+		}
 	}
 
 	gpu_pages = kbase_alloc_phy_pages_helper_locked(reg->gpu_alloc, pool,
