@@ -10,3 +10,9 @@ CONFIG_EROFS_FS_POSIX_ACL=y
 CONFIG_EROFS_FS_SECURITY=y
 # LZ4 compressed images
 CONFIG_EROFS_FS_ZIP=y
+
+# fs-verity core (uapi, signature check, measure); incfs implements the
+# ioctls on top of it
+CONFIG_FS_VERITY=y
+# verify verity signatures against the .fs-verity keyring
+CONFIG_FS_VERITY_BUILTIN_SIGNATURES=y
