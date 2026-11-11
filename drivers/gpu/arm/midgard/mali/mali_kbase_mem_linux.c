@@ -2213,6 +2213,24 @@ int kbase_mmap(struct file *file, struct vm_area_struct *vma)
 			}
 #endif /* CONFIG_DMA_SHARED_BUFFER */
 
+			/* An imported user buffer's pages are GUP-pinned only
+			 * while current_mapping_usage_count is non-zero and are
+			 * released as soon as it drops to zero, through several
+			 * unpin paths. A second CPU mapping of its GPU VA would
+			 * keep pointing at those pages after they are unpinned
+			 * and reused, giving user space CPU access to unrelated
+			 * memory (CVE-2022-36449). Refuse to create one rather
+			 * than try to invalidate it on every unpin path. The
+			 * cookie mmap that reserves a SAME_VA import cannot be
+			 * refused: kbase_cpu_mmap() and kbase_cpu_vm_fault()
+			 * never insert the pages of such a buffer instead.
+			 */
+			if (reg->cpu_alloc->type ==
+					KBASE_MEM_TYPE_IMPORTED_USER_BUF) {
+				err = -EINVAL;
+				goto out_unlock;
+			}
+
 			/* An evictable region (e.g. a freed JIT allocation in
 			 * the pool) can be reclaimed without another CPU
 			 * invalidation, so new PTEs must not be inserted into
