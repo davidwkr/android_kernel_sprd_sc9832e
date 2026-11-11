@@ -27,6 +27,8 @@ obj-y += rc/
 
 obj-$(CONFIG_CEC_CORE) += cec/
 
+obj-$(CONFIG_SPRD_GSP) += gsp/
+
 #
 # Finally, merge the drivers that require the core
 #
