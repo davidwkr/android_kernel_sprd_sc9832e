@@ -85,14 +85,31 @@ Also in the stock ramdisk root: `/lib` (the `.ko` files, see "Kernel modules": t
 ### `scripts/gsi_add_mountpoints.sh`
 
 ```
-scripts/gsi_add_mountpoints.sh --label u:object_r:TYPE:s0 --output OUT.img IN.img
+scripts/gsi_add_mountpoints.sh --dir /NAME --label u:object_r:TYPE:s0 [--dir /NAME --label ...] --output OUT.img IN.img
 ```
 
-Works on a copy: `IN.img` is only read, `OUT.img` must not exist (it is removed again on any failure). `IN.img` has to be a raw ext4 image: an Android sparse image (magic `3aff26ed`) is refused, convert it first with `simg2img system.img system.raw.img`. Needs `debugfs` and `e2fsck` (e2fsprogs). An image with `shared_blocks` (deduplicated, read-only) cannot be opened read-write by debugfs and the script stops with that message; so does an image without a free block or inode.
+Two use cases:
 
-On the copy it runs `debugfs -w`: `mkdir /productinfo`, `set_inode_field mode 040755`, `uid 0`, `gid 0`, `ea_set security.selinux` (label plus the terminating NUL, as the Android labelling code stores it). Mode and owner are what fs_mgr made in the stock ramdisk root (`mkdir(mount_point, 0755)`, root:root; the stock `init.*.rc` and `fstab` have no other chmod/chown for the mount point). The `chown system system /productinfo` / `chmod 0771` in the rc apply to the mounted `prodnv` root, not to the mount point. Then it verifies with `debugfs stat`, `ea_get` and `ls` (directory, 0755, 0:0, label, empty) and `e2fsck -fn` (must exit 0).
+| Directory | GSIs | Why |
+|---|---|---|
+| `/productinfo` | every GSI | `prodnv` mount point, see above |
+| `/second_stage_resources` | Android 10 and 11 GSIs only | the Android 14 first-stage init of our ramdisk mounts a tmpfs at `/second_stage_resources` and, in `SwitchRoot("/system")`, creates that directory under the new root and moves the mount there; a failure is fatal. It is in the GSI root from Android 12; Android 10 and 11 GSIs lack it and `system` is read-only, so it is added with this script |
 
-`--label` is required, not guessed. Take it from the watch's own vendor file contexts, so the mount point has the label the vendor policy expects for `/productinfo`: `adb shell grep productinfo /vendor/etc/selinux/nonplat_file_contexts` (`/vendor/etc/selinux/plat_file_contexts` is the other file of the stock policy), and use the context of the `/productinfo` entry, `u:object_r:TYPE:s0`. If the entry is `/productinfo(/.*)?`, the directory itself matches it. The GSI image is an input and is not committed. Flash `OUT.img` as `system` (the script does not touch a device). Test: `scripts/tests/gsi_add_mountpoints_test.sh` (synthetic ext4 image: directory, mode, owner, xattr, input untouched, refusals).
+Examples (labels are placeholders, see below):
+
+```
+scripts/gsi_add_mountpoints.sh --dir /productinfo --label u:object_r:PRODUCTINFO_TYPE:s0 --output OUT.img IN.img
+scripts/gsi_add_mountpoints.sh --dir /productinfo --label u:object_r:PRODUCTINFO_TYPE:s0 \
+  --dir /second_stage_resources --label u:object_r:ROOT_TYPE:s0 --output OUT.img IN.img
+```
+
+`--dir` and `--label` are repeatable; a `--label` applies to the preceding `--dir` and each `--dir` needs exactly one. `NAME` is a single root-level component (`^/[A-Za-z0-9_.-]+$`, not `/`, `.`, `..`), no duplicates. The script refuses, before writing anything, if any of the directories already exists in the image (an Android 12+ GSI already has `/second_stage_resources`). Every directory is root:root 0755 and is verified afterwards.
+
+Works on a copy: `IN.img` is only read, `OUT.img` must not exist (it is removed again on any failure). `IN.img` has to be a raw ext4 image: an Android sparse image (magic `3aff26ed`) is refused, convert it first with `simg2img system.img system.raw.img`. Needs `debugfs` and `e2fsck` (e2fsprogs). An image with `shared_blocks` (deduplicated, read-only) cannot be opened read-write by debugfs and the script stops with that message; so does an image without a free block or inode (each directory takes one inode and one block). The real Android 14 GSI was checked read-only: raw ext4 (no sparse magic), features without `shared_blocks`, 479 free blocks and 555 free inodes, so the `mkdir` fits.
+
+On the copy it runs `debugfs -w`: per directory `mkdir`, `set_inode_field mode 040755`, `uid 0`, `gid 0`, `ea_set security.selinux` (label plus the terminating NUL, as the Android labelling code stores it). Mode and owner are what fs_mgr made in the stock ramdisk root (`mkdir(mount_point, 0755)`, root:root; the stock `init.*.rc` and `fstab` have no other chmod/chown for the mount point). The `chown system system /productinfo` / `chmod 0771` in the rc apply to the mounted `prodnv` root, not to the mount point. Then it verifies with `debugfs stat`, `ea_get` and `ls` (directory, 0755, 0:0, label, empty, for each directory) and `e2fsck -fn` (must exit 0).
+
+`--label` is required, not guessed. For `/second_stage_resources` it is only a mount point covered by a tmpfs: use the GSI's own label for an unlisted root entry, from the GSI's `/system/etc/selinux/plat_file_contexts`: the rule that matches `/` or a root entry such as `/debug_ramdisk`. Read it without mounting: `debugfs -R 'cat /system/etc/selinux/plat_file_contexts' IN.img | grep -E 'debug_ramdisk|^/ '` and take the `u:object_r:TYPE:s0` of that rule. For `/productinfo`, take it from the watch's own vendor file contexts, so the mount point has the label the vendor policy expects for `/productinfo`: `adb shell grep productinfo /vendor/etc/selinux/nonplat_file_contexts` (`/vendor/etc/selinux/plat_file_contexts` is the other file of the stock policy), and use the context of the `/productinfo` entry, `u:object_r:TYPE:s0`. If the entry is `/productinfo(/.*)?`, the directory itself matches it. The GSI image is an input and is not committed. Flash `OUT.img` as `system` (the script does not touch a device). Test: `scripts/tests/gsi_add_mountpoints_test.sh` (synthetic ext4 image: directory, mode, owner, xattr, input untouched, refusals).
 
 ## Kernel modules
 

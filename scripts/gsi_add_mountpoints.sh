@@ -1,27 +1,42 @@
 #!/usr/bin/env bash
-# Add the /productinfo mount point to a COPY of a raw ext4 GSI system image.
+# Add root mount-point directories to a COPY of a raw ext4 GSI system image.
 # Rationale: devices/VENDOR_GSI_PATCH.md ("Root directories a GSI lacks").
-# Usage: scripts/gsi_add_mountpoints.sh --label CONTEXT --output OUT.img IN.img
-#   --label CONTEXT   SELinux label of /productinfo, u:object_r:TYPE:s0: the
-#                     /productinfo entry of /vendor/etc/selinux/nonplat_file_contexts
-#                     of the watch (adb shell grep productinfo ...)
+# Usage: scripts/gsi_add_mountpoints.sh --dir /NAME --label CONTEXT
+#          [--dir /NAME --label CONTEXT ...] --output OUT.img IN.img
+#   --dir /NAME       a root-level directory to add: one component, matching
+#                     ^/[A-Za-z0-9_.-]+$ (not / . ..); repeatable, no duplicates
+#   --label CONTEXT   SELinux label of the preceding --dir, u:object_r:TYPE:s0;
+#                     exactly one per --dir (see the doc for where to read it)
 #   --output OUT.img  the modified copy (must not exist, must not be IN.img)
 #   IN.img            raw ext4 (run simg2img first on an Android sparse image);
 #                     opened read-only, never modified
-# Adds an empty root directory /productinfo, root:root 0755 (what fs_mgr made in
-# the stock ramdisk root; the rc sets system 0771 on the mounted prodnv), with
-# debugfs -w on the copy; then checks it with debugfs stat/ea_get and e2fsck -fn.
+# Adds each directory empty, root:root 0755, with debugfs -w on the copy; refuses
+# if any of them already exists (before writing); then checks each with debugfs
+# stat/ea_get and the image with e2fsck -fn.
 set -euo pipefail
 
-LABEL= OUT= IN=
+OUT= IN=
+DIRS=() LABELS=()
+PENDING=0 # a --dir still waits for its --label
 
 die() { echo "FAIL: $*" >&2; exit 1; }
 say() { echo "== $*"; }
-usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 while [ $# -gt 0 ]; do
   case $1 in
-    --label) [ $# -ge 2 ] || usage; LABEL=$2; shift ;;
+    --dir)
+      [ $# -ge 2 ] && [ "$PENDING" -eq 0 ] || usage
+      printf '%s' "$2" | grep -Eq '^/[A-Za-z0-9_.-]+$' ||
+        die "--dir must be one root-level name like /NAME, got: $2"
+      case $2 in /.|/..) die "--dir must not be $2" ;; esac
+      for d in ${DIRS[@]+"${DIRS[@]}"}; do [ "$d" != "$2" ] || die "duplicate --dir $2"; done
+      DIRS+=("$2"); PENDING=1; shift ;;
+    --label)
+      [ $# -ge 2 ] && [ "$PENDING" -eq 1 ] || usage
+      printf '%s' "$2" | grep -Eq '^u:object_r:[A-Za-z0-9_]+:s0$' ||
+        die "label must look like u:object_r:TYPE:s0, got: $2"
+      LABELS+=("$2"); PENDING=0; shift ;;
     --output) [ $# -ge 2 ] || usage; OUT=$2; shift ;;
     -h|--help) usage ;;
     -*) echo "unknown option: $1" >&2; usage ;;
@@ -29,9 +44,7 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-[ -n "$LABEL" ] && [ -n "$OUT" ] && [ -n "$IN" ] || usage
-printf '%s' "$LABEL" | grep -Eq '^u:object_r:[A-Za-z0-9_]+:s0$' ||
-  die "label must look like u:object_r:TYPE:s0, got: $LABEL"
+[ "${#DIRS[@]}" -gt 0 ] && [ "$PENDING" -eq 0 ] && [ -n "$OUT" ] && [ -n "$IN" ] || usage
 for t in debugfs e2fsck; do command -v "$t" >/dev/null || die "$t not found (e2fsprogs)"; done
 
 [ -f "$IN" ] || die "no such file: $IN"
@@ -59,17 +72,22 @@ dbg() { debugfs "$@" "$OUT" 2>&1; }
 
 # the copy must open (debugfs refuses -w on a shared_blocks image below)
 dbg -R 'stat /' | grep -q 'Inode:' || die "cannot read the root of $OUT"
-dbg -R 'stat /productinfo' | grep -q 'Inode:' &&
-  die "/productinfo already exists in $IN"
+for d in "${DIRS[@]}"; do
+  ! dbg -R "stat $d" | grep -q 'Inode:' || die "$d already exists in $IN"
+done
 
-printf '%s\0' "$LABEL" >"$WORK/label"
-cat >"$WORK/cmds" <<EOC
-mkdir /productinfo
-set_inode_field /productinfo mode 040755
-set_inode_field /productinfo uid 0
-set_inode_field /productinfo gid 0
-ea_set -f $WORK/label /productinfo security.selinux
+: >"$WORK/cmds"
+for i in "${!DIRS[@]}"; do
+  d=${DIRS[$i]}
+  printf '%s\0' "${LABELS[$i]}" >"$WORK/label$i"
+  cat >>"$WORK/cmds" <<EOC
+mkdir $d
+set_inode_field $d mode 040755
+set_inode_field $d uid 0
+set_inode_field $d gid 0
+ea_set -f $WORK/label$i $d security.selinux
 EOC
+done
 say "debugfs -w on the copy"
 if ! out=$(debugfs -w -f "$WORK/cmds" "$OUT" 2>&1); then
   echo "$out" >&2
@@ -81,15 +99,18 @@ case $out in
 esac
 
 say "verify"
-st=$(dbg -R 'stat /productinfo')
-echo "$st" | head -3
-echo "$st" | grep -Eq 'Type: directory +Mode: +0755' || die "not a directory with mode 0755"
-echo "$st" | grep -Eq 'User: +0 +Group: +0' || die "owner is not 0:0"
-ea=$(dbg -R 'ea_get /productinfo security.selinux')
-echo "$ea"
-case $ea in *"$LABEL"*) ;; *) die "security.selinux is not $LABEL" ;; esac
-[ -z "$(dbg -R 'ls -p /productinfo' | grep -Ev '^debugfs |^/[0-9]+/[0-9]+/[0-9]+/[0-9]+/\.\.?/' | grep -v '^$')" ] ||
-  die "/productinfo is not empty"
+for i in "${!DIRS[@]}"; do
+  d=${DIRS[$i]} l=${LABELS[$i]}
+  st=$(dbg -R "stat $d")
+  echo "$st" | head -3
+  echo "$st" | grep -Eq 'Type: directory +Mode: +0755' || die "$d: not a directory with mode 0755"
+  echo "$st" | grep -Eq 'User: +0 +Group: +0' || die "$d: owner is not 0:0"
+  ea=$(dbg -R "ea_get $d security.selinux")
+  echo "$ea"
+  case $ea in *"$l"*) ;; *) die "$d: security.selinux is not $l" ;; esac
+  [ -z "$(dbg -R "ls -p $d" | grep -Ev '^debugfs |^/[0-9]+/[0-9]+/[0-9]+/[0-9]+/\.\.?/' | grep -v '^$')" ] ||
+    die "$d is not empty"
+done
 e2fsck -fn "$OUT" >"$WORK/fsck" 2>&1 || { cat "$WORK/fsck" >&2; die "e2fsck -fn failed"; }
 tail -1 "$WORK/fsck"
 

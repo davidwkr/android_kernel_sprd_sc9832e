@@ -33,7 +33,7 @@ mkfs.ext4 -q -d "$T/root" "$IMG"
 before=$(sha256sum <"$IMG")
 
 echo "-- add /productinfo"
-run --label "$LABEL" --output "$T/out.img" "$IMG"
+run --dir /productinfo --label "$LABEL" --output "$T/out.img" "$IMG"
 check "exit 0" test "$RC" = 0
 check "input untouched" test "$(sha256sum <"$IMG")" = "$before"
 IMG=$T/out.img
@@ -48,29 +48,64 @@ check "existing files kept" grep -q 'Inode:' <<<"$(dbg 'stat /system')"
 check "e2fsck -fn clean" e2fsck -fn "$IMG"
 IMG=$T/gsi.img
 
+echo "-- several directories"
+L2=u:object_r:rootfs:s0
+run --dir /productinfo --label "$LABEL" --dir /second_stage_resources --label "$L2" --output "$T/two.img" "$IMG"
+check "two dirs: exit 0" test "$RC" = 0
+check "two dirs: input untouched" test "$(sha256sum <"$IMG")" = "$before"
+IMG=$T/two.img
+for pair in "productinfo $LABEL" "second_stage_resources $L2"; do
+  set -- $pair
+  st=$(dbg "stat /$1")
+  check "/$1 directory 0755 0:0" grep -Eqz 'Type: directory +Mode: +0755.*User: +0 +Group: +0' <<<"$st"
+  check "/$1 label $2" grep -qF "\"$2\\000\"" <<<"$(dbg "ea_get /$1 security.selinux")"
+done
+check "two dirs: e2fsck -fn clean" e2fsck -fn "$IMG"
+IMG=$T/gsi.img
+
+echo "-- argument errors"
+run --label "$LABEL" --dir /productinfo --output "$T/a1.img" "$IMG"
+check "label before any --dir: usage" test "$RC" = 2
+run --dir /productinfo --dir /foo --label "$LABEL" --output "$T/a2.img" "$IMG"
+check "--dir without label: usage" test "$RC" = 2
+run --dir /productinfo --label "$LABEL" --label "$L2" --output "$T/a3.img" "$IMG"
+check "two labels for one --dir: usage" test "$RC" = 2
+run --dir /foo --label "$LABEL" --dir /foo --label "$L2" --output "$T/a4.img" "$IMG"
+check "duplicate --dir refused" test "$RC" != 0
+for bad in / /. /.. foo /a/b /a/ '/a b' '/a;b' '//a' ''; do
+  run --dir "$bad" --label "$LABEL" --output "$T/a5.img" "$IMG"
+  check "bad name '$bad' refused" test "$RC" != 0
+done
+check "no output from argument errors" bash -c "! ls $T/a?.img"
+run --dir /foo --label "$LABEL" --dir /system --label "$L2" --output "$T/one.img" "$IMG"
+check "one of two exists: refused" test "$RC" != 0
+check "...says which" grep -q '/system already exists' <<<"$OUTLOG"
+check "...no output" test ! -e "$T/one.img"
+check "...input untouched" test "$(sha256sum <"$IMG")" = "$before"
+
 echo "-- refusals"
-run --label "$LABEL" --output "$T/out.img" "$IMG"
+run --dir /productinfo --label "$LABEL" --output "$T/out.img" "$IMG"
 check "existing output refused" test "$RC" != 0
 check "refused input still untouched" test "$(sha256sum <"$IMG")" = "$before"
-run --label "$LABEL" --output "$IMG" "$IMG"
+run --dir /productinfo --label "$LABEL" --output "$IMG" "$IMG"
 check "output = input refused" test "$RC" != 0
-run --label "$LABEL" --output "$T/o2.img" "$T/out.img"
+run --dir /productinfo --label "$LABEL" --output "$T/o2.img" "$T/out.img"
 check "image that has /productinfo refused" test "$RC" != 0
 check "...and leaves no output" test ! -e "$T/o2.img"
-run --label 'u:object_r:x:s0;rm' --output "$T/o3.img" "$IMG"
+run --dir /productinfo --label 'u:object_r:x:s0;rm' --output "$T/o3.img" "$IMG"
 check "malformed label refused" test "$RC" != 0
 check "...and leaves no output" test ! -e "$T/o3.img"
-run --output "$T/o4.img" "$IMG"
+run --dir /productinfo --output "$T/o4.img" "$IMG"
 check "missing --label: usage" test "$RC" = 2
-run --label "$LABEL" "$IMG"
+run --dir /productinfo --label "$LABEL" "$IMG"
 check "missing --output: usage" test "$RC" = 2
 printf '\072\377\046\355' >"$T/sparse.img"
 head -c 4096 /dev/zero >>"$T/sparse.img"
-run --label "$LABEL" --output "$T/o5.img" "$T/sparse.img"
+run --dir /productinfo --label "$LABEL" --output "$T/o5.img" "$T/sparse.img"
 check "sparse image refused" test "$RC" != 0
 check "...says simg2img" grep -q simg2img <<<"$OUTLOG"
 head -c 8192 /dev/zero >"$T/zero.img"
-run --label "$LABEL" --output "$T/o6.img" "$T/zero.img"
+run --dir /productinfo --label "$LABEL" --output "$T/o6.img" "$T/zero.img"
 check "non-ext4 refused" test "$RC" != 0
 check "refused input still untouched" test "$(sha256sum <"$IMG")" = "$before"
 
