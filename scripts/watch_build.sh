@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # Build kernel Image + ramdisk modules for one watch.
-# Usage: scripts/watch_build.sh [--newandroid] DEVICE [OUTDIR]
+# Usage: scripts/watch_build.sh [--newandroid] [--vndk29] DEVICE [OUTDIR]
 #   DEVICE: dm63 | dw100u-silver | dw100u-v13m | mt107 | mt108 | dm82 | k18
 #   OUTDIR: default ../watch_out (outside the repo); results in OUTDIR/DEVICE/
 #   --newandroid: add arch/arm64/configs/watch_newandroid.fragment (Android 10-13 GSI
 #              extras, devices/NEWANDROID_44.md); same as WATCH_EXTRA_FRAGS=watch_newandroid
+#   --vndk29: add arch/arm64/configs/watch_vndk29.fragment (Android 10 VNDK 29 vendor
+#              extras, devices/VNDK29_44.md); same as WATCH_EXTRA_FRAGS=watch_vndk29.
+#              Use it together with --newandroid (the order of the flags is the order of
+#              the fragments). It also collects sprd_vibrator.ko.
 # Env: WATCH_EXTRA_FRAGS (optional): space separated extra fragment names appended after
 #      the device fragments. Such a build goes to OUTDIR/DEVICE+NAMES/ and
 #      OUTDIR/obj-DEVICE+NAMES/, so the stock build in OUTDIR is not overwritten.
@@ -18,10 +22,14 @@
 #      sfd_tool/dm63/boot.img (sfd_tool/boot.img is the K18 image).
 set -euo pipefail
 
-usage() { echo "usage: $0 [--newandroid] DEVICE [OUTDIR]  (dm63|dw100u-silver|dw100u-v13m|mt107|mt108|dm82|k18)" >&2; exit 2; }
+usage() { echo "usage: $0 [--newandroid] [--vndk29] DEVICE [OUTDIR]  (dm63|dw100u-silver|dw100u-v13m|mt107|mt108|dm82|k18)" >&2; exit 2; }
 args=()
 for a in "$@"; do
-  if [ "$a" = "--newandroid" ]; then WATCH_EXTRA_FRAGS="${WATCH_EXTRA_FRAGS:-} watch_newandroid"; else args+=("$a"); fi
+  case $a in
+    --newandroid) WATCH_EXTRA_FRAGS="${WATCH_EXTRA_FRAGS:-} watch_newandroid" ;;
+    --vndk29) WATCH_EXTRA_FRAGS="${WATCH_EXTRA_FRAGS:-} watch_vndk29" ;;
+    *) args+=("$a") ;;
+  esac
 done
 set -- "${args[@]}"
 [ $# -ge 1 ] && [ $# -le 2 ] || usage
@@ -121,16 +129,20 @@ MK M="$FM" BSP_BOARD_UNISOC_WCN_SOCKET=sipc modules
 
 echo "== collect"
 rm -f "${RES:?}/Image" "${RES:?}/sprdwl_ng.ko" "${RES:?}/mali.ko" "${RES:?}/sprdbt_tty.ko" \
-      "${RES:?}/sprd_fm.ko" "${RES:?}/sha256sum.txt"
+      "${RES:?}/sprd_fm.ko" "${RES:?}/sprd_vibrator.ko" "${RES:?}/sha256sum.txt"
 cp "$O/arch/$ARCH/boot/Image" "$RES/"
 cp "$(find "$O/drivers" -name sprdwl_ng.ko | head -n1)" "$RES/"
 cp "$MALI/mali.ko" "$BT/sprdbt_tty.ko" "$FM/sprd_fm.ko" "$RES/"
+MODS="sprdwl_ng mali sprdbt_tty sprd_fm"
+# only a module when watch_vndk29 sets SPRD_VIBRATOR=m (built in otherwise)
+VIB=$(find "$O/drivers" -name sprd_vibrator.ko | head -n1)
+if [ -n "$VIB" ]; then cp "$VIB" "$RES/"; MODS="$MODS sprd_vibrator"; fi
 # strip debug info only (never --strip-all: modules need their symbol table)
-for k in sprdwl_ng mali sprdbt_tty sprd_fm; do
+for k in $MODS; do
   before=$(stat -c %s "$RES/$k.ko")
   "${CROSS_COMPILE}strip" --strip-debug "$RES/$k.ko"
   echo "strip $k.ko: $before -> $(stat -c %s "$RES/$k.ko") bytes"
 done
-(cd "$RES" && sha256sum Image sprdwl_ng.ko mali.ko sprdbt_tty.ko sprd_fm.ko > sha256sum.txt)
+(cd "$RES" && sha256sum Image $(printf '%s.ko ' $MODS) > sha256sum.txt)
 cat "$RES/sha256sum.txt"
 echo "OK: $RES"

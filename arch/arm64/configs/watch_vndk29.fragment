@@ -1,0 +1,30 @@
+# Opt-in extras for running the third-party Android 10 VNDK 29 vendor (SL8541E_VNDK29 package,
+# devices/VNDK29_44.md) on this 4.4 kernel instead of that package's own 4.4.147 kernel.
+# NOT part of any device config: add it after watch_newandroid with
+# `scripts/watch_build.sh --vndk29 DEVICE` (or WATCH_EXTRA_FRAGS="watch_newandroid watch_vndk29"),
+# the committed *_defconfig files stay the stock-8.1 configs.
+# Everything else in the package kernel's config is already enabled here or is left out on
+# purpose (KSU, the debug options and other boards' drivers, see the doc).
+
+# SIPC "stty" tty channels (stty.c) on the shared-memory link to the modem/WCN. The package
+# kernel enables it for its Android 10 vendor. In this tree the driver only binds the
+# "sprd,stty4bt" compatible, which neither the stock nor the package DT carries, so it is
+# inert until a DT node asks for it. Depends on SPRD_SIPC (already y).
+CONFIG_SPRD_SIPC_STTY=y
+
+# SIPC gnss tty option, also enabled by the package kernel for the vendor's gps HAL (gnss 1.1 /
+# vendor.sprd gnss 2.0 talk to /dev/sttygnss0, which the "spipe_gnss" DT node already
+# provides through SPRD_SIPC_SPIPE). This tree has the Kconfig symbol but no code that uses
+# it, so today it only keeps the config equal to the package one. Depends on SPRD_SIPC.
+CONFIG_SPRD_SIPC_GNSS_STTY=y
+
+# Audio SIPC (audio-sipc/smsg/pipe): the AP to AGDSP message channel behind the vendor's
+# audio.primary.sp9832e. Binds the "sprd,audio_sipc" compatible, which neither DT has on
+# this SC9832E board, so it only adds the driver. Depends on SPRD_MAILBOX and
+# SPRD_AUDIO_MEMORY_MANAGER (both already y).
+CONFIG_SPRD_AUDIO_SIPC=y
+
+# The vendor image carries /vendor/lib/modules/sprd_vibrator.ko, so the vibrator driver has to
+# be a module (the stock configs build it in, then the vendor insmod would fail). Same
+# driver, same DT node; watch_build.sh collects the sprd_vibrator.ko. Depends on SPI_SPRD_ADI.
+CONFIG_SPRD_VIBRATOR=m
