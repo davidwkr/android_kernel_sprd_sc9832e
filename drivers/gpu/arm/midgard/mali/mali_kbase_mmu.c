@@ -1197,6 +1197,23 @@ fail_unlock:
 	return err;
 }
 
+/*
+ * WARNING: only reached from the huge-page insertion path of
+ * kbase_mmu_insert_pages_no_flush() (cur_level == MIDGARD_MMU_LEVEL(2), i.e.
+ * is_huge_head(*phys)), which is unreachable while CONFIG_MALI_2MB_ALLOC is
+ * disabled, as it is in the module scripts/watch_build.sh builds (it does not
+ * pass CONFIG_MALI_2MB_ALLOC).
+ *
+ * This frees the page-table page @pte used to point to (via
+ * kbase_mem_pool_free(), making it immediately reusable) *before* the caller
+ * has invalidated the GPU's TLB for the VA range being replaced with a huge
+ * ATE. A GPU page-table walk racing this call can still be using the old
+ * table page's stale content, or the freed physical page can already have
+ * been handed out for something else by the time the walk completes. Do not
+ * enable CONFIG_MALI_2MB_ALLOC on this driver without first reordering this
+ * to defer the free until after the replacing ATE has been flushed and the
+ * TLB invalidated for this range.
+ */
 static inline void cleanup_empty_pte(struct kbase_device *kbdev,
 		struct kbase_mmu_table *mmut, u64 *pte)
 {

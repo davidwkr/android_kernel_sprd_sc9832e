@@ -15,3 +15,7 @@
 
 obj-y += mali_kbase_config_pike2.o
 
+# pike2 also provides kbase_platform_get_init_freq()/kbase_platform_set_freq(),
+# see platform/sharkle/Kbuild.
+ccflags-y += -DMALI_PLATFORM_HAS_SET_FREQ
+

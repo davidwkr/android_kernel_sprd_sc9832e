@@ -189,7 +189,7 @@ int parse_firmware_path(char *firmware_path)
 		strlcpy(fstab_name, fstab_dir[loop], sizeof(fstab_name));
 		if (strlen(fstab_name) > 1)
 			fstab_name[strlen(fstab_name)] = '/';
-		strncpy(fstab_base, fstab_name, sizeof(fstab_base));
+		strlcpy(fstab_base, fstab_name, sizeof(fstab_base));
 		iterate_dir(file1, &ctx);
 		fput(file1);
 		ret = load_fstab_conf(fstab_name, firmware_path);

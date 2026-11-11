@@ -49,12 +49,14 @@ struct kbase_hwc_dma_mapping {
  *                properties for the new allocation.
  * @gpu_va:       Start address of the memory region which was allocated from GPU
  *                virtual address space.
+ * @jit_alloc:    True when called by the JIT allocator: the region is marked
+ *                KBASE_REG_JIT before it is published to the address space.
  *
  * Return: 0 on success or error code
  */
 struct kbase_va_region *kbase_mem_alloc(struct kbase_context *kctx,
 		u64 va_pages, u64 commit_pages, u64 extent, u64 *flags,
-		u64 *gpu_va);
+		u64 *gpu_va, bool jit_alloc);
 
 /**
  * kbase_mem_query - Query properties of a GPU memory region

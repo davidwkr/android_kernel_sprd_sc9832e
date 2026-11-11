@@ -260,7 +260,8 @@ static int kbasep_hwcnt_backend_gpu_dump_alloc(
 
 	nr_pages = PFN_UP(info->dump_bytes);
 
-	reg = kbase_mem_alloc(kctx, nr_pages, nr_pages, 0, &flags, gpu_dump_va);
+	reg = kbase_mem_alloc(kctx, nr_pages, nr_pages, 0, &flags,
+			gpu_dump_va, false);
 
 	if (!reg)
 		return -ENOMEM;
