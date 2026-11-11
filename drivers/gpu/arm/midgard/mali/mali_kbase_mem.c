@@ -3030,11 +3030,19 @@ retry:
 	ret = kbase_mem_grow_gpu_mapping(kctx, reg, info->commit_pages,
 			old_size);
 	/*
-	 * The grow failed so put the allocation back in the
+	 * The GPU mapping failed. The pages just added are not mapped, so
+	 * free them: left in place, a later reuse with a smaller request
+	 * would see the region as sufficiently backed and never map them.
+	 * reg_lock has been held since old_size was read, so nents is
+	 * exactly old_size + delta. Then put the allocation back in the
 	 * pool and return failure.
 	 */
-	if (ret)
+	if (ret) {
+		kbase_free_phy_pages_helper(reg->cpu_alloc, delta);
+		if (reg->cpu_alloc != reg->gpu_alloc)
+			kbase_free_phy_pages_helper(reg->gpu_alloc, delta);
 		goto update_failed;
+	}
 
 done:
 	ret = 0;
