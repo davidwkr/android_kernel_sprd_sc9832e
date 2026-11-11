@@ -95,14 +95,24 @@ static void sprd_vibrator_enable(struct timed_output_dev *tdev, int value)
 	schedule_work(&vib->work);
 }
 
+/*
+ * A stop may fail to cancel a timer rearmed while an old callback was still
+ * running; that timer only turns the motor off again, so report from the
+ * logical state.
+ */
 static int sprd_vibrator_get_time(struct timed_output_dev *tdev)
 {
 	struct sprd_vibrator *vib = to_vib(tdev);
+	unsigned long flags;
+	s64 ms = 0;
 
-	if (!hrtimer_active(&vib->timer))
-		return 0;
+	spin_lock_irqsave(&vib->lock, flags);
+	if (vib->on && hrtimer_active(&vib->timer))
+		ms = max_t(s64, ktime_to_ms(hrtimer_get_remaining(&vib->timer)),
+			   0);
+	spin_unlock_irqrestore(&vib->lock, flags);
 
-	return max_t(s64, ktime_to_ms(hrtimer_get_remaining(&vib->timer)), 0);
+	return ms;
 }
 
 static enum hrtimer_restart sprd_vibrator_timer(struct hrtimer *timer)

@@ -36,9 +36,10 @@ Unchanged: `vibrator@eb4` in `sc2721.dtsi`, `compatible = "sprd,sc27xx-vibrator"
 "sprd,sc2721-vibrator"`, `reg = <0xeb4>` (`ANA_VIBRATOR_CTRL0`), child of the SC27xx PMIC, whose
 regmap is used. Both `sc27xx-vibra` and `sprd_vibrator` match `sprd,sc2721-vibrator`, so
 `watch_414_stock81.fragment` selects this one and sets `# CONFIG_INPUT_SC27XX_VIBRA is not set`
-(Kconfig enforces the exclusion). The driver also matches `sprd,sc2731-vibrator`,
-`sprd,sc2723t-vibrator` and `sprd,sc2720-vibrator` (4.4 compatibles); the SC2730 register layout
-differs and is not supported here.
+(Kconfig enforces the exclusion). The driver also matches `sprd,sc2720-vibrator`. Unlike
+4.4 it does not match `sprd,sc2731-vibrator` or `sprd,sc2723t-vibrator`: those PMICs also need
+`BIT_RTC_VIBR_EN` in their RTC clock register, which this port does not set. The SC2730 register
+layout differs and is not supported either.
 
 Hardware sequence as 4.4: LDO trim in `ANA_VIBRATOR_CTRL0[7:0]` (0xb4; 0x2 on SC2720), then
 `LDO_VIBR_PD` (bit 8) and `SLP_LDOVIBR_PD_EN` (bit 9) cleared to run, set to stop.
