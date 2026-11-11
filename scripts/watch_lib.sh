@@ -8,8 +8,8 @@
 # path). dw100u is accepted as the name of the shared silver/v13m config.
 watch_select() {
   case $1 in
-    dm63)                      DEVFRAGS="dm63_touch watch_hrs watch_sc7a22 dm63_aod" ;;
-    dw100u-silver|dw100u-v13m|dw100u) DEVFRAGS="dw100u_touch watch_hrs watch_sc7a22 dw100u_aod dw100u_fp" ;;
+    dm63)                      DEVFRAGS="dm63_touch watch_hrs watch_sc7a22 dm63_aod dm63_sensors" ;;
+    dw100u-silver|dw100u-v13m|dw100u) DEVFRAGS="dw100u_touch watch_hrs watch_sc7a22 dw100u_aod dw100u_fp dw100u_sensors" ;;
     mt107)                     DEVFRAGS="mt107" ;;
     mt108)                     DEVFRAGS="mt108" ;;
     dm82)                      DEVFRAGS="dm82" ;;
