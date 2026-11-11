@@ -34,7 +34,7 @@ cpusets, `UID_SYS_STATS`, `CPU_FREQ_TIMES`) is already in the watch configs.
 | Option | Why not |
 |---|---|
 | `KSU*` | KernelSU, present in the third-party reference kernel: a root backdoor, never adopted. |
-| `SPRD_SIPC_STTY`, `SPRD_SIPC_GNSS_STTY`, `SPRD_AUDIO_SIPC` | The reference kernel's Android 10 vendor image needs them; our stock 8.1 vendor does not (all three are `not set` in every `devices/*/stock.config`) and the vendor partition is the stock one. Enable them only together with a vendor that expects those tty/audio sipc channels. |
+| `SPRD_SIPC_STTY`, `SPRD_SIPC_GNSS_STTY`, `SPRD_AUDIO_SIPC` | The reference kernel's Android 10 vendor image needs them; our stock 8.1 vendor does not (all three are `not set` in every `devices/*/stock.config`) and the vendor partition is the stock one. Enable them only together with a vendor that expects those tty/audio sipc channels: `watch_vndk29`, see `devices/VNDK29_44.md`. |
 | `PSI` | Not in 4.4 (upstream 4.20, Android backports start at 4.9). Android 10+ `lmkd` falls back to the kernel-LMK/memcg vmpressure path when `/proc/pressure/memory` is missing. |
 | `NET_SCH_INGRESS`, `NET_SCH_CLSACT` | Only used by the `tc` BPF programs of the network BPF loader, which needs 4.9+ (see below); `CLSACT` does not exist in 4.4. |
 | `NETFILTER_XT_MATCH_OWNER` | Conflicts with `xt_qtaguid` ("quota, tag, uid"), which netd uses on 4.4. |
