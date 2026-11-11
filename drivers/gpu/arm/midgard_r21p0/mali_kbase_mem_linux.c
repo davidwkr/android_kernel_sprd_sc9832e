@@ -733,10 +733,23 @@ bool kbase_mem_evictable_unmake(struct kbase_mem_phy_alloc *gpu_alloc)
 			 * ... and grow the mapping back to its
 			 * pre-eviction size.
 			 */
-			if (!err)
+			if (!err) {
 				err = kbase_mem_grow_gpu_mapping(kctx,
 						gpu_alloc->reg,
 						gpu_alloc->evicted, 0);
+				/*
+				 * Don't keep unmapped backing. evicted is
+				 * cleared first so the free is accounted
+				 * like the allocation above.
+				 */
+				if (err) {
+					size_t n = gpu_alloc->evicted;
+
+					gpu_alloc->evicted = 0;
+					kbase_free_phy_pages_helper(gpu_alloc,
+							n);
+				}
+			}
 
 			gpu_alloc->evicted = 0;
 		}
@@ -1258,8 +1271,6 @@ static struct kbase_va_region *kbase_mem_from_user_buffer(
 
 	if (pages) {
 		struct device *dev = kctx->kbdev->dev;
-		unsigned long local_size = user_buf->size;
-		unsigned long offset = user_buf->address & ~PAGE_MASK;
 		struct tagged_addr *pa = kbase_get_gpu_phy_pages(reg);
 
 		/* Top bit signifies that this was pinned on import */
@@ -1267,20 +1278,17 @@ static struct kbase_va_region *kbase_mem_from_user_buffer(
 
 		for (i = 0; i < faulted_pages; i++) {
 			dma_addr_t dma_addr;
-			unsigned long min;
 
-			min = MIN(PAGE_SIZE - offset, local_size);
-			dma_addr = dma_map_page(dev, pages[i],
-					offset, min,
+			/* Map the whole page: the GPU sees whole pages
+			 * (CVE-2023-4272).
+			 */
+			dma_addr = dma_map_page(dev, pages[i], 0, PAGE_SIZE,
 					DMA_BIDIRECTIONAL);
 			if (dma_mapping_error(dev, dma_addr))
 				goto unwind_dma_map;
 
 			user_buf->dma_addrs[i] = dma_addr;
 			pa[i] = as_tagged(page_to_phys(pages[i]));
-
-			local_size -= min;
-			offset = 0;
 		}
 
 		reg->gpu_alloc->nents = faulted_pages;
@@ -1747,6 +1755,12 @@ int kbase_mem_commit(struct kbase_context *kctx, u64 gpu_addr, u64 new_pages)
 		goto out_unlock;
 
 	if (0 == (reg->flags & KBASE_REG_GROWABLE))
+		goto out_unlock;
+
+	/* JIT regions are sized by the kernel (JIT_ALLOC, grow on fault,
+	 * the shrinker); userspace must not resize their backing under it.
+	 */
+	if (reg->flags & KBASE_REG_JIT_OWNED)
 		goto out_unlock;
 
 	/* Would overflow the VA region */

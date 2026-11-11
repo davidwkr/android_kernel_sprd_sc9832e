@@ -1044,8 +1044,11 @@ static int kbase_jit_allocate_process(struct kbase_jd_atom *katom)
 	if (!ptr) {
 		/*
 		 * Leave the allocation "live" as the JIT free jit will be
-		 * submitted anyway.
+		 * submitted anyway. Bind it to its ID so that JIT_FREE finds
+		 * and releases it, instead of leaving it active and
+		 * non-evictable until context teardown.
 		 */
+		kctx->jit_alloc[info->id] = reg;
 		katom->event_code = BASE_JD_EVENT_JOB_INVALID;
 		return 0;
 	}
