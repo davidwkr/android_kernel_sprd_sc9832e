@@ -52,8 +52,12 @@ The ioctl is reachable from the HAL domain. The 4.4 driver had no bounds on the 
 - The kcfg lifetime is a refcount (ioctl, core, sync waiter); a kcfg goes back to the pool when the last drops it.
   4.4 handed it back in the core while the sync waiter still walked its list, and `cancel()` after a failed push
   decremented the fill count of kcfgs which were never queued.
-- One kthread worker does trigger, release (irq) and recover (hang timer): a kcfg is ended exactly once, the irq
-  handler ignores a shared line while no kcfg runs, a hung core is reset (stop, soft reset) before its buffers go.
+- One kthread worker does trigger, release (irq) and recover (hang timer). Every started job has a generation;
+  the irq and the hang timer record the one they fired for and the worker drops the events of any other, so a
+  kcfg is ended exactly once and a late recover/release cannot end or unmap the next job. The irq handler reads
+  `INT_GSP_STS`/`INT_GERR_STS`, returns `IRQ_NONE` on the shared line if neither is set and clears only what is
+  set; a hung core is reset (stop, soft reset) before its buffers go.
+- The release fence of a batch gets the first error of any of its kcfgs, not only the last one's.
 - The ioctl size must be the core's cfg size and the count 1..`io-cnt` (4.4 sized the copy from the ioctl number);
   the capability copy is clamped to the capability struct (it copied `size` bytes from a smaller allocation).
 - Every enum and field of the cfg is range-checked (formats, endian, rotation, scale taps: the coefficient code
@@ -68,9 +72,9 @@ The ioctl is reachable from the HAL domain. The 4.4 driver had no bounds on the 
 
 ## Assumptions to check on hardware
 
-- The destination bound takes the work area (scaled, rotated by odd angles) as written from its position inside
-  `pitch x height`; the second work area likewise. If the HAL trips it, `dmesg` shows `cfg does not fit its buffers`.
-- Hardware error flag is logged, not an error (as 4.4). A sync trigger returns `-EIO` only for a failed start or a hang.
+- The destination bound takes both work areas (scaled, rotated by odd angles) as written from their positions
+  inside `pitch x height`, and every plane of the format up to the lowest row written must be inside the buffer. If the HAL trips it, `dmesg` shows `cfg does not fit its buffers`.
+- A hardware error interrupt fails the kcfg with `-EIO` (4.4 only logged it); the error code is still logged.
 - A hung core is only stopped through the AHB soft reset; 4.4 had no reset for sharkle.
 - Found while porting, not fixed here: `drivers/video/adf/adf_fence.c` has no `.wait` in its `dma_fence_ops`, and
   `dma_fence_init()` `BUG_ON`s on that.
