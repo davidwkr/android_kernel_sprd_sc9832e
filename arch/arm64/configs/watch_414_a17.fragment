@@ -1,0 +1,2 @@
+# binderfs: per-ipc-namespace binder device nodes (/dev/binderfs), Android 11+ init mounts it
+CONFIG_ANDROID_BINDERFS=y
