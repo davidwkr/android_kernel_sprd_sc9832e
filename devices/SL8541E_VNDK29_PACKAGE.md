@@ -24,6 +24,17 @@ watches. Inspected read-only on 2026-11-11; nothing from it was executed or flas
   `lcd_ch13613_oled204_mipi`, `lcd_ch13613_oled213_mipi`, touch `hynitron,hyn_ts` and `cst0xx,cst0xx_ts`
   (the DW100U family). Bootargs end in `androidboot.selinux=permissive`.
 
+- **The kernel is pre-rooted:** embedded config (`extract-ikconfig`) has `CONFIG_KSU=y` and
+  `CONFIG_KSU_LSM_SECURITY_HOOKS=y` (KernelSU; KernelSU strings in the image), plus
+  `SECURITY_SELINUX_DEVELOP`, `KALLSYMS_ALL`, `DEBUG_FS`. Never use this kernel on a managed watch;
+  report its circulation to the security team. The same `boot.img` also circulates on its own
+  (sha256 `f34fa572f3f6696e46076090f61b43b666e272a371512c5c59e8ea51743954af`).
+- Reusable as knowledge only: the first-stage ramdisk layout (system and vendor with
+  `first_stage_mount`; rebuild it from a trusted `init`, do not reuse this one) and the config as a
+  reference for newer Android on 4.4. Versus our 4.4 candidate it adds only `CGROUP_BPF`,
+  `CGROUP_SCHEDTUNE` (newer-Android builds) and `SPRD_SIPC_STTY`, `SPRD_SIPC_GNSS_STTY`,
+  `SPRD_AUDIO_SIPC` (its Android 10 vendor's GNSS and audio path), besides KernelSU.
+
 ## vendor.img
 
 - Sparse ext4, 400 MiB unpacked (102400 x 4 KiB): exactly the watches' vendor partition size.
