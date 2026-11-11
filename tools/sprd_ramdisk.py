@@ -26,8 +26,10 @@
 #
 #   remove-module RAMDISK OUT --module NAME...
 #       drop /lib/modules/NAME and every "insmod /lib/modules/NAME" line from
-#       the *.rc files at the root; all other entries and all other bytes of
-#       those files stay identical; any other mention of NAME is refused
+#       the *.rc files at the root (each NAME needs at least one); all other
+#       entries and all other bytes of those files and of their headers
+#       (except c_filesize) stay identical; any other mention of NAME, and an
+#       insmod line with a quote, a backslash or a continuation, is refused
 #
 # The ramdisk is the file written by "sprd_bootimg.py unpack". Compression is
 # detected by magic: gzip and xz are handled; lz4 (legacy or frame) and
@@ -823,27 +825,57 @@ def cmd_add_rc(a):
     return 0
 
 
-def drop_insmod(data, path, fn):
-    """Return data without the "insmod PATH [args]" lines and how many were
-    dropped; any other mention of the module in what is left is refused."""
+FILESIZE_OFF = 6 + 8 * NEWC_FIELDS.index('filesize')
+
+
+def patch_filesize(hdr, n):
+    """The newc header with only the 8 hex chars of c_filesize replaced, in
+    the case the header already uses (the field itself, else the other
+    fields)."""
+    old = hdr[FILESIZE_OFF:FILESIZE_OFF + 8]
+    rest = hdr[6:FILESIZE_OFF] + hdr[FILESIZE_OFF + 8:NEWC_HDR]
+    up = any(c in b'ABCDEF' for c in old) or \
+        (not any(c in b'abcdef' for c in old) and
+         not any(c in b'abcdef' for c in rest) and
+         any(c in b'ABCDEF' for c in rest))
+    return bytes(hdr[:FILESIZE_OFF]) + \
+        (b'%08X' if up else b'%08x') % n + bytes(hdr[FILESIZE_OFF + 8:])
+
+
+def drop_insmod(data, paths, fn):
+    """Return data without the "insmod PATH" lines (PATH one of paths) and
+    how many were dropped per path. Init splits on space/tab only; a line
+    with a quote or backslash, or one that follows an unfinished line, is
+    refused. Any other mention of a module in what is left is refused."""
     keep = []
-    n = 0
-    prev = b''
+    n = dict.fromkeys(paths, 0)
+    cont = False    # previous non-comment line ends in an odd run of "\"
+    quoted = False  # an unbalanced quote is open from a previous line
     for l in re.findall(rb'[^\n]*\n|[^\n]+', data):
-        t = l.split()
-        if len(t) >= 2 and t[0] == b'insmod' and t[1] == path:
-            if l.rstrip(b'\r\n').endswith(b'\\') or prev.endswith(b'\\'):
-                raise Error('%s: insmod line of %s has a line continuation; '
-                            'fix it by hand' % (fn, path.decode()))
-            n += 1
+        body = l.rstrip(b'\r\n')
+        t = [x for x in re.split(rb'[ \t]+', body) if x]
+        comment = body.lstrip(b' \t').startswith(b'#') and not cont and \
+            not quoted
+        if len(t) >= 2 and t[0] == b'insmod' and t[1] in n:
+            if b'"' in body or b'\\' in body or cont or quoted:
+                raise Error('%s: insmod line of %s has a quote, a backslash '
+                            'or a continuation; fix it by hand' %
+                            (fn, t[1].decode()))
+            n[t[1]] += 1
         else:
             keep.append(l)
-        prev = l.rstrip(b'\r\n')
+        if not comment:
+            cont = len(body) - len(body.rstrip(b'\\')) & 1 == 1
+            quoted ^= body.count(b'"') & 1 == 1
     rest = b''.join(keep)
-    name = path.rsplit(b'/', 1)[-1]
-    if name in rest or name in re.sub(rb'[\s\\"]', b'', rest):
-        raise Error('%s: %s is referenced in a form other than "insmod %s"; '
-                    'fix it by hand' % (fn, name.decode(), path.decode()))
+    joined = re.sub(rb'[\s\\"]', b'', rest)
+    for path in paths:
+        name = re.escape(path.rsplit(b'/', 1)[-1])
+        if re.search(rb'(?:^|[/\s"\'])' + name + rb'(?=$|[\s"\'])', rest,
+                     re.M) or re.search(rb'(?:^|/)' + name, joined):
+            raise Error('%s: %s is referenced in a form other than "insmod '
+                        '%s"; fix it by hand' %
+                        (fn, path.rsplit(b'/', 1)[-1].decode(), path.decode()))
     return rest, n
 
 
@@ -877,7 +909,8 @@ def cmd_remove_module(a):
                         (b, e.f['nlink']))
         drop[e.off] = e
     rcs = {}
-    lines = 0
+    paths = [b'/' + MODULE_DIRS[0].encode() + b.encode() for b in names]
+    lines = dict.fromkeys(paths, 0)
     for e in entries:
         n = norm(e.name)
         if not is_reg(e) or '/' in n or not n.endswith('.rc'):
@@ -885,18 +918,19 @@ def cmd_remove_module(a):
         if e.f['filesize'] > MAX_RC_SIZE:
             raise Error('/%s over 1 MiB; refusing' % n)
         data = p.cpio[e.data_off:e.data_off + e.f['filesize']]
-        for b in names:
-            data, k = drop_insmod(data, b'/' + MODULE_DIRS[0].encode() +
-                                  b.encode(), '/' + n)
-            lines += k
+        data, k = drop_insmod(data, paths, '/' + n)
+        for x in paths:
+            lines[x] += k[x]
         if len(data) != e.f['filesize']:
             if e.f['nlink'] != 1:
                 raise Error('/%s is a hard link (nlink %d); not supported' %
                             (n, e.f['nlink']))
             rcs[e.off] = data
-    if not lines:
-        raise Error('no "insmod /%s<name>" line for %s in the .rc files at '
-                    'the root' % (MODULE_DIRS[0], ', '.join(names)))
+    for x in paths:
+        if not lines[x]:
+            raise Error('no "insmod %s" line in the .rc files at the root' %
+                        x.decode())
+    lines = sum(lines.values())
     out = bytearray()
     for e in entries:
         nxt = pad4(e.data_off + e.f['filesize'])
@@ -904,8 +938,7 @@ def cmd_remove_module(a):
             continue
         if e.off in rcs:
             data = rcs[e.off]
-            out += hdr_bytes(p.cpio[e.off:e.off + NEWC_HDR],
-                             dict(e.f, filesize=len(data)))
+            out += patch_filesize(p.cpio[e.off:e.off + NEWC_HDR], len(data))
             out += p.cpio[e.off + NEWC_HDR:e.data_off]
             out += data + b'\0' * (pad4(len(data)) - len(data))
         else:
@@ -924,7 +957,12 @@ def cmd_remove_module(a):
         if x.off in rcs:
             data = rcs[x.off]
             fx['filesize'] = len(data)
-        if x.name != y.name or fx != y.f or \
+        hx = bytearray(p.cpio[x.off:x.off + NEWC_HDR])
+        hy = bytearray(out[y.off:y.off + NEWC_HDR])
+        if x.off in rcs:
+            hx[FILESIZE_OFF:FILESIZE_OFF + 8] = hy[FILESIZE_OFF:
+                                                   FILESIZE_OFF + 8]
+        if x.name != y.name or fx != y.f or hx != hy or \
                 out[y.data_off:y.data_off + y.f['filesize']] != data:
             raise Error('self-check: entry %s changed unexpectedly' %
                         safe_name(x.name))
