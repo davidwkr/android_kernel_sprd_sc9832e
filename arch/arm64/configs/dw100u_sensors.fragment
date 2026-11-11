@@ -1,0 +1,3 @@
+# DW100U: OCH1970 hall sensor ("magnetic,och1970" in both DW100U DTs), as on
+# stock (polled, power-down unless enabled).
+CONFIG_SENSORS_OCH1970=y

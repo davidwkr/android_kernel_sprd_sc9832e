@@ -5,6 +5,7 @@
 # directory (no device dumps). Run: python3 -I tools/sprd_ramdisk_test.py
 
 import gzip
+import importlib.util
 import os
 import struct
 import subprocess
@@ -15,6 +16,9 @@ import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.path.join(HERE, 'sprd_ramdisk.py')
+_spec = importlib.util.spec_from_file_location('sprd_ramdisk', TOOL)
+sprd = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(sprd)
 FRAG = os.path.join(HERE, '..', 'devices', 'common', 'init.watch_tweaks.rc')
 
 
@@ -263,6 +267,54 @@ class Case(unittest.TestCase):
         r = self.run_tool('add-rc', src, src, '--fragment', FRAG)
         self.assertEqual(r.returncode, 1)
         self.assertIn('OUT must differ', r.stderr)
+
+    def toks(self, d):
+        return [t for t, s, e, m in sprd.tokenize_rc(d)]
+
+    def test_tokenizer_matches_init(self):
+        # backslash + bare CR: both discarded, the token goes on
+        self.assertEqual(self.toks(b'insmod a.\\\rko\n'), [[b'insmod', b'a.ko']])
+        # n, r, t and backslash do not skip the letter (as in init)
+        self.assertEqual(self.toks(b'\\n.ko\n'), [[b'\nn.ko']])
+        self.assertEqual(self.toks(b'x\\tz\n'), [[b'x\ttz']])
+        # backslash + CR LF: init steps over the CR only, the LF ends the
+        # command; backslash + LF continues, eating the following blanks
+        self.assertEqual(self.toks(b'insmod a.\\\r\n \tko\n'),
+                         [[b'insmod', b'a.'], [b'ko']])
+        self.assertEqual(self.toks(b'a\\\n b\n'), [[b'ab']])
+        # unterminated quote: the token and its command are dropped
+        self.assertEqual(self.toks(b'one\ninsmod "a.ko\n'), [[b'one']])
+        self.assertEqual(self.toks(b'insmod "a.ko'), [])
+
+    def rm(self, rc, mods=('a.ko',)):
+        src = self.stock([(1, 'init.rc', rc), (2, 'lib/modules/a.ko', b'xx')])
+        out = self.path('out.gz')
+        args = []
+        for m in mods:
+            args += ['--module', m]
+        return self.run_tool('remove-module', src, out, *args), out
+
+    def test_remove_module(self):
+        r, out = self.rm(b'on boot\n    insmod /lib/modules/a.ko\n'
+                         b'    write /x 1\n')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        b, order = self.unpack(out)
+        self.assertNotIn('lib/modules/a.ko', order)
+        self.assertEqual(b['init.rc'][1], b'on boot\n    write /x 1\n')
+
+    def test_remove_module_evasions_refused(self):
+        ins = b'insmod /lib/modules/a.ko\n'
+        for extra in (b'insmod /lib/modules/a.\\\rko\n',
+                      b'insmod /lib/modules/a.\\\r\nko\n',
+                      b'insmod /lib/modules/a\\.ko\n',
+                      b'insmod /lib/modules/"a.ko"\n',
+                      b'insmod /lib/modules/a"".ko\n',
+                      b'insmod /lib/modules/\\n.ko a.ko\n',
+                      b'insmod /lib/modules/"a.ko\n',
+                      b'write /x a.ko\n'):
+            r, out = self.rm(ins + extra)
+            self.assertEqual(r.returncode, 1, extra)
+            self.assertFalse(os.path.exists(out), extra)
 
 
 if __name__ == '__main__':

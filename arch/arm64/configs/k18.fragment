@@ -2,8 +2,8 @@
 # Merge on top of the device config. The DT lists three touch candidates, two
 # with drivers here (cst0xx_ts 0x38, hyn_ts 0x5a, sharing the reset/irq GPIOs);
 # the one that answers probes, the other fails probe and releases its GPIOs.
-# btl_ts (Betterlife, 0x2d) is enabled too. bd1xxx_hr (BD1820) has an
-# interface-only driver (no measurement yet). No rotary
+# btl_ts (Betterlife, 0x2d) is enabled too. bd1xxx_hr (BD1820) has a driver with
+# the stock measurement path (untested on hardware, see BD1XXX_INTERFACE.md). No rotary
 # encoder node (decorative crown): the parity-enabled rotary driver stays inert.
 # The panel is not known (no lcd_id) and the DT has non-CO5300 candidates, so
 # SPRD_AOD_IDLE stays off until the panel is identified.

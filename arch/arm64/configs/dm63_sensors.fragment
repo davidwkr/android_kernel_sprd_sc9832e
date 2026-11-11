@@ -1,0 +1,3 @@
+# DM63: AF6837 compass ("compass,af6837", af6837_mag@0C in the stock DT), as on
+# stock. No OCH1970 node here: stock leaves SENSORS_OCH1970 off.
+CONFIG_SENSORS_COMPASS_AF6837=y

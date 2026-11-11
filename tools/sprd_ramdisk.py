@@ -24,6 +24,16 @@
 #       trailer) and append "import /init.watch_tweaks.rc" to /init.rc; all
 #       other entries stay byte-identical; a second run is a no-op
 #
+#   remove-module RAMDISK OUT --module NAME...
+#       drop /lib/modules/NAME and every "insmod /lib/modules/NAME" line from
+#       the *.rc files at the root (each NAME needs at least one); all other
+#       entries and all other bytes of those files and of their headers
+#       (except c_filesize) stay identical; the .rc files are tokenized like
+#       init does, an insmod command that spans lines or has a quote or a
+#       backslash, any other token containing NAME, and any .rc file that
+#       still contains NAME once backslashes, quotes, CR and LF are stripped,
+#       are refused
+#
 # The ramdisk is the file written by "sprd_bootimg.py unpack". Compression is
 # detected by magic: gzip and xz are handled; lz4 (legacy or frame) and
 # bzip2/lzma-alone are reported and refused.
@@ -818,6 +828,257 @@ def cmd_add_rc(a):
     return 0
 
 
+FILESIZE_OFF = 6 + 8 * NEWC_FIELDS.index('filesize')
+
+
+def patch_filesize(hdr, n):
+    """The newc header with only the 8 hex chars of c_filesize replaced, in
+    the case the header already uses (the field itself, else the other
+    fields)."""
+    old = hdr[FILESIZE_OFF:FILESIZE_OFF + 8]
+    rest = hdr[6:FILESIZE_OFF] + hdr[FILESIZE_OFF + 8:NEWC_HDR]
+    up = any(c in b'ABCDEF' for c in old) or \
+        (not any(c in b'abcdef' for c in old) and
+         not any(c in b'abcdef' for c in rest) and
+         any(c in b'ABCDEF' for c in rest))
+    return bytes(hdr[:FILESIZE_OFF]) + \
+        (b'%08X' if up else b'%08x') % n + bytes(hdr[FILESIZE_OFF + 8:])
+
+
+def tokenize_rc(d):
+    """Port of next_token() in Android 8.1 (O-MR1) system/core/init/
+    parser.cpp, with the parser's grouping of tokens into commands (a
+    NEWLINE ends one). Returns [(tokens, start, end, multiline)], one per
+    non-empty command: the byte span d[start:end] it came from and whether
+    that span crosses a physical line (a continuation or a quoted newline)."""
+    cmds = []
+    cur = []
+    start = end = 0
+    x = 0
+    n = len(d)
+    while True:
+        while x < n and d[x] in b' \t\r':
+            x += 1
+        if x >= n:
+            break
+        c = d[x]
+        if c == 10:
+            if cur:
+                cmds.append((cur, start, end, b'\n' in d[start:end]))
+                cur = []
+            x += 1
+            continue
+        if c == 35:                     # '#': a comment, up to the newline
+            while x < n and d[x] != 10:
+                x += 1
+            continue
+        t0 = x
+        tok = bytearray()
+        while x < n:
+            c = d[x]
+            if c in b' \t\r':
+                x += 1
+                break
+            if c == 10:
+                break
+            if c == 34:                 # '"': literal up to the next '"'
+                x += 1
+                while x < n and d[x] != 34:
+                    tok.append(d[x])
+                    x += 1
+                if x >= n:              # unterminated: init returns EOF, the
+                    return cmds         # token and its command are dropped
+                x += 1
+                continue
+            if c == 92:                 # '\\'
+                x += 1
+                if x >= n:
+                    break
+                c = d[x]
+                if c == 110:
+                    tok.append(10)      # as in init, no x += 1 for n, r, t
+                elif c == 114:          # and '\\': the letter is then copied
+                    tok.append(13)      # again as an ordinary char ('\n.ko'
+                elif c == 116:          # is LF + 'n.ko')
+                    tok.append(9)
+                elif c == 92:
+                    tok.append(92)
+                elif c == 13:
+                    # init steps over the CR only: '\ CR' alone is dropped
+                    # and the token goes on; in '\ CR LF' the LF then ends
+                    # the token and the command (no continuation)
+                    x += 1
+                    continue
+                elif c == 10:
+                    # '\ LF' continues the line, eating the blanks after it
+                    x += 1
+                    while x < n and d[x] in b' \t':
+                        x += 1
+                    continue
+                else:
+                    tok.append(c)       # unknown escape: copy
+                    x += 1
+                continue
+            tok.append(c)
+            x += 1
+        if not cur:
+            start = t0
+        cur.append(bytes(tok))
+        end = x
+    if cur:
+        cmds.append((cur, start, end, b'\n' in d[start:end]))
+    return cmds
+
+
+def drop_insmod(data, paths, fn):
+    """Return data without the "insmod PATH" commands (PATH one of paths),
+    how many were dropped per path, and the tokens of everything else. Only
+    a command that sits on one physical line and has no quote or backslash
+    is dropped (whole line, ending included); any other insmod of PATH is
+    refused. The caller refuses any left-over token that contains a module
+    name, which also rejects an unrelated NAME.debug.ko: refusing is the
+    safe side. Comments are not tokens and are ignored. The caller also
+    runs a second check that does not depend on the tokenizer: the data left
+    in each .rc file, with every backslash, quote, CR and LF removed, must not
+    contain a module name at all (this can only add refusals)."""
+    if b'\0' in data:
+        raise Error('%s: NUL byte; refusing' % fn)
+    keep = []
+    toks = []
+    n = dict.fromkeys(paths, 0)
+    pos = 0
+    for t, s, e, multi in tokenize_rc(data):
+        if len(t) >= 2 and t[0] == b'insmod' and t[1] in n:
+            raw = data[s:e]
+            if multi or b'"' in raw or b'\\' in raw:
+                raise Error('%s: insmod of %s spans lines or has a quote or '
+                            'a backslash; fix it by hand' %
+                            (fn, t[1].decode()))
+            n[t[1]] += 1
+            ls = data.rfind(b'\n', 0, s) + 1
+            le = data.find(b'\n', e)
+            le = len(data) if le < 0 else le + 1
+            keep.append(data[pos:ls])
+            pos = le
+        else:
+            toks += t
+    keep.append(data[pos:])
+    return b''.join(keep), n, toks
+
+
+def cmd_remove_module(a):
+    if os.path.abspath(a.out) == os.path.abspath(a.ramdisk):
+        raise Error('OUT must differ from RAMDISK')
+    if len(a.module) > MAX_MODULES:
+        raise Error('more than %d --module arguments' % MAX_MODULES)
+    names = []
+    for b in a.module:
+        if not b or '/' in b or b in ('.', '..') or not b.endswith('.ko') \
+                or not b.isascii() or not b.isprintable() or ' ' in b:
+            raise Error('bad module name %r: want a basename like mali.ko' %
+                        safe_name(b))
+        if b in names:
+            raise Error('module %s given twice' % b)
+        names.append(b)
+    p, entries, end = load(a.ramdisk)
+    check_clean(p, entries, end, 'the removed modules')
+    drop = {}
+    for b in names:
+        hit = [e for e in entries if norm(e.name) == MODULE_DIRS[0] + b]
+        if not hit:
+            raise Error('ramdisk has no /%s%s' % (MODULE_DIRS[0], b))
+        e = hit[0]
+        if not is_reg(e):
+            raise Error('/%s%s is not a regular file; refusing' %
+                        (MODULE_DIRS[0], b))
+        if e.f['nlink'] != 1:
+            raise Error('%s has nlink %d (hard link); not supported' %
+                        (b, e.f['nlink']))
+        drop[e.off] = e
+    rcs = {}
+    paths = [b'/' + MODULE_DIRS[0].encode() + b.encode() for b in names]
+    lines = dict.fromkeys(paths, 0)
+    toks = []
+    for e in entries:
+        n = norm(e.name)
+        if not is_reg(e) or '/' in n or not n.endswith('.rc'):
+            continue
+        if e.f['filesize'] > MAX_RC_SIZE:
+            raise Error('/%s over 1 MiB; refusing' % n)
+        data = p.cpio[e.data_off:e.data_off + e.f['filesize']]
+        data, k, t = drop_insmod(data, paths, '/' + n)
+        for x in paths:
+            lines[x] += k[x]
+        toks.append((n, t, data))
+        if len(data) != e.f['filesize']:
+            if e.f['nlink'] != 1:
+                raise Error('/%s is a hard link (nlink %d); not supported' %
+                            (n, e.f['nlink']))
+            rcs[e.off] = data
+    for x in paths:
+        if not lines[x]:
+            raise Error('no "insmod %s" line in the .rc files at the root' %
+                        x.decode())
+    for n, t, data in toks:
+        raw = data.translate(None, b'\\"\r\n')
+        for x in paths:
+            m = x.rsplit(b'/', 1)[-1]
+            if any(m in y for y in t) or m in raw:
+                raise Error('/%s: %s is referenced in a form other than '
+                            '"insmod %s"; fix it by hand' %
+                            (n, m.decode(), x.decode()))
+    lines = sum(lines.values())
+    out = bytearray()
+    for e in entries:
+        nxt = pad4(e.data_off + e.f['filesize'])
+        if e.off in drop:
+            continue
+        if e.off in rcs:
+            data = rcs[e.off]
+            out += patch_filesize(p.cpio[e.off:e.off + NEWC_HDR], len(data))
+            out += p.cpio[e.off + NEWC_HDR:e.data_off]
+            out += data + b'\0' * (pad4(len(data)) - len(data))
+        else:
+            out += p.cpio[e.off:nxt]
+    out += p.cpio[min(end, len(p.cpio)):]
+    out = bytes(out)
+    # self-check: the result parses; only the dropped entries are gone and
+    # only the .rc files changed
+    e2, end2 = parse_cpio(out)
+    old = [e for e in entries if e.off not in drop]
+    if len(e2) != len(old):
+        raise Error('self-check: entry count')
+    for x, y in zip(old, e2):
+        fx = dict(x.f)
+        data = p.cpio[x.data_off:x.data_off + x.f['filesize']]
+        if x.off in rcs:
+            data = rcs[x.off]
+            fx['filesize'] = len(data)
+        hx = bytearray(p.cpio[x.off:x.off + NEWC_HDR])
+        hy = bytearray(out[y.off:y.off + NEWC_HDR])
+        if x.off in rcs:
+            hx[FILESIZE_OFF:FILESIZE_OFF + 8] = hy[FILESIZE_OFF:
+                                                   FILESIZE_OFF + 8]
+        if x.name != y.name or fx != y.f or hx != hy or \
+                out[y.data_off:y.data_off + y.f['filesize']] != data:
+            raise Error('self-check: entry %s changed unexpectedly' %
+                        safe_name(x.name))
+    if out[end2:] != p.cpio[end:]:
+        raise Error('self-check: trailer/tail changed')
+    blob = compress(p, out)
+    if decompress(blob).cpio != out:
+        raise Error('self-check: recompressed ramdisk does not decode')
+    write_out(a.out, blob)
+    print('removed %d module(s) and %d insmod line(s); cpio %d -> %d bytes; '
+          '%s; wrote %s (%d bytes)' % (len(drop), lines, len(p.cpio),
+                                       len(out), p.describe(), a.out,
+                                       len(blob)))
+    if p.params is None:
+        print('note: the stock compressed stream is not reproducible; the '
+              'output uses default %s settings' % p.fmt)
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description='list and patch the modules in '
                                  'a SPRD boot ramdisk')
@@ -844,6 +1105,14 @@ def main():
     p.add_argument('--fragment', required=True, metavar='FILE',
                    help='init fragment (ASCII, up to %d bytes)' % MAX_FRAGMENT)
     p.set_defaults(fn=cmd_add_rc)
+    p = sub.add_parser('remove-module', help='drop .ko files and their '
+                       'insmod lines')
+    p.add_argument('ramdisk')
+    p.add_argument('out')
+    p.add_argument('--module', action='append', default=[], required=True,
+                   metavar='NAME', help='basename under /%s (repeatable)' %
+                   MODULE_DIRS[0])
+    p.set_defaults(fn=cmd_remove_module)
     a = ap.parse_args()
     try:
         return a.fn(a)

@@ -1,6 +1,6 @@
 # MT108 (ST77916 360x360 LCD): see devices/mt108/SPEC.md. Merge on top of
 # the device config. DT touch: cst0xx_ts only plus btl_ts (no hyn_ts node;
-# bd1xxx_hr has no driver). sprd_aod_idle is NOT enabled (CO5300 only).
+# bd1xxx_hr (BD1820): stock measurement path, untested on hardware, enabled as on stock). sprd_aod_idle is NOT enabled (CO5300 only).
 # hrs3xxx accepts HRS3918 (id 0x27) and HRS3300 (id 0x21, the stock
 # config's chip); probe and power only unless the stock measurement code is
 # linked (HRS3XXX_TYHX_BLOB_HRS3300, scripts/watch_build.sh with
@@ -18,3 +18,5 @@ CONFIG_SENSORS_SC7A22=y
 CONFIG_INPUT_QMA6981_I2C=y
 # "magnetic,och1970" (hall sensor, polled, power-down unless enabled)
 CONFIG_SENSORS_OCH1970=y
+CONFIG_INPUT_SENSORS_BD1XXX=y
+CONFIG_HEARTRATE_BD1820=y

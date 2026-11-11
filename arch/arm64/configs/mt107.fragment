@@ -2,7 +2,7 @@
 # device config. The DT lists three touch candidates, two with drivers here (cst0xx_ts 0x38, hyn_ts 0x5a,
 # sharing the reset/irq GPIOs); the one that answers probes, the other
 # fails probe and releases its GPIOs. btl_ts (Betterlife, 0x2d) is
-# enabled too. Not needed: bd1xxx_hr (no driver in tree). watch_otg.fragment is deliberately not enabled.
+# enabled too. bd1xxx_hr stays unbound, as on stock (no INPUT_SENSORS_BD1XXX). watch_otg.fragment is deliberately not enabled.
 CONFIG_TOUCHSCREEN_CST0XX=y
 CONFIG_TOUCHSCREEN_BTL=y
 CONFIG_TOUCHSCREEN_CST9217=y
@@ -14,3 +14,7 @@ CONFIG_SENSORS_SC7A22=y
 CONFIG_INPUT_QMA6981_I2C=y
 # "magnetic,och1970" (hall sensor, polled, power-down unless enabled)
 CONFIG_SENSORS_OCH1970=y
+# "pressure,msp891" (pressure and temperature, polled)
+CONFIG_SENSORS_MSP891=y
+# "compass,af6837" (compass, polled)
+CONFIG_SENSORS_COMPASS_AF6837=y
