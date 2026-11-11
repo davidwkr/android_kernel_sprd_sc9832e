@@ -232,7 +232,7 @@ static int vmpressure_notify_usr_enable;
 module_param_named(vmpressure_notify_usr_enable, vmpressure_notify_usr_enable, int,
 	S_IRUGO | S_IWUSR);
 
-int adjust_minadj(short *min_score_adj, int *pressure)
+static int adjust_minadj(short *min_score_adj, int *pressure)
 {
 	int ret = VMPRESSURE_NO_ADJUST;
 
@@ -271,7 +271,7 @@ static int lmk_vmpressure_notifier(struct notifier_block *nb,
 		other_file = global_node_page_state(NR_FILE_PAGES) -
 			global_node_page_state(NR_SHMEM) -
 			total_swapcache_pages();
-		other_free = global_node_page_state(NR_FREE_PAGES);
+		other_free = global_zone_page_state(NR_FREE_PAGES);
 
 		atomic_set(&shift_adj, 1);
 		atomic_set(&vmpressure_mark, pressure);
@@ -286,7 +286,7 @@ static int lmk_vmpressure_notifier(struct notifier_block *nb,
 			global_node_page_state(NR_SHMEM) -
 			total_swapcache_pages();
 
-		other_free = global_node_page_state(NR_FREE_PAGES);
+		other_free = global_zone_page_state(NR_FREE_PAGES);
 
 		if ((other_free < lowmem_minfree[array_size - 1]) &&
 			(other_file < vmpressure_file_min)) {
@@ -341,7 +341,7 @@ static void dump_tasks_info(void)
 }
 #endif
 
-void tune_lmk_zone_param(struct zonelist *zonelist, int classzone_idx,
+static void tune_lmk_zone_param(struct zonelist *zonelist, int classzone_idx,
 					int *other_free, int *other_file)
 {
 	struct zone *zone;
@@ -359,8 +359,9 @@ void tune_lmk_zone_param(struct zonelist *zonelist, int classzone_idx,
 							       NR_FREE_PAGES);
 			if (other_file != NULL)
 				*other_file -= zone_page_state(zone,
-							       NR_FILE_PAGES)
-					      - zone_page_state(zone, NR_SHMEM);
+							       NR_ZONE_INACTIVE_FILE) +
+					       zone_page_state(zone,
+							       NR_ZONE_ACTIVE_FILE);
 		} else if (zone_idx < classzone_idx) {
 			if (zone_watermark_ok(zone, 0, 0, classzone_idx, 0))
 				*other_free -=
@@ -373,7 +374,7 @@ void tune_lmk_zone_param(struct zonelist *zonelist, int classzone_idx,
 }
 
 #ifdef CONFIG_HIGHMEM
-void adjust_gfp_mask(gfp_t *gfp_mask)
+static void adjust_gfp_mask(gfp_t *gfp_mask)
 {
 	struct zone *preferred_zone;
 	struct zonelist *zonelist;
@@ -397,12 +398,12 @@ void adjust_gfp_mask(gfp_t *gfp_mask)
 	}
 }
 #else
-void adjust_gfp_mask(gfp_t *unused)
+static void adjust_gfp_mask(gfp_t *unused)
 {
 }
 #endif
 
-void tune_lmk_param(int *other_free, int *other_file, struct shrink_control *sc)
+static void tune_lmk_param(int *other_free, int *other_file, struct shrink_control *sc)
 {
 	gfp_t gfp_mask;
 	struct zone *preferred_zone;
@@ -470,7 +471,7 @@ static int get_current_ram(int *other_free_p, int *other_file_orig_p,
 	int other_free, other_file_orig, other_file;
 	int unevictable_anon;
 
-	other_free = global_node_page_state(NR_FREE_PAGES);
+	other_free = global_zone_page_state(NR_FREE_PAGES);
 	other_file_orig = global_node_page_state(NR_FILE_PAGES) -
 			  global_node_page_state(NR_SHMEM) -
 			  total_swapcache_pages();
