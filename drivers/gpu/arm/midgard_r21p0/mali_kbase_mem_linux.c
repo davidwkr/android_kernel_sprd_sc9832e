@@ -1749,6 +1749,12 @@ int kbase_mem_commit(struct kbase_context *kctx, u64 gpu_addr, u64 new_pages)
 	if (0 == (reg->flags & KBASE_REG_GROWABLE))
 		goto out_unlock;
 
+	/* JIT regions are sized by the kernel (JIT_ALLOC, grow on fault,
+	 * the shrinker); userspace must not resize their backing under it.
+	 */
+	if (reg->flags & KBASE_REG_JIT_OWNED)
+		goto out_unlock;
+
 	/* Would overflow the VA region */
 	if (new_pages > reg->nr_pages)
 		goto out_unlock;
