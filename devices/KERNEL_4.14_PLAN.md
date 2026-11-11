@@ -177,6 +177,28 @@ Next:
    without a 4.14 driver: BetterLife touch and bd1xxx are ported; af6837 and msp891 have no source anywhere and
    were written new from the stock interface (`AF6837_INTERFACE.md`, `MSP891_INTERFACE.md`).
 
+### 6.1 Status 2026-11-11 (compile and review only, nothing booted)
+
+Merged into `kernel-4.14` (`33bb6dde037d` for the current images), each through the final review:
+- Stock DT `android,fstab` node restored on every watch (`sp9832e-watch-firmware.dtsi`); 8.1 init mounts
+  `/system` and `/vendor` only from it.
+- `watch_414_stock81.fragment` for the stock 8.1 userspace (the base defconfig comes from SPRD's Android 10
+  platform): `xt_qtaguid`, in-kernel low memory killer with the OOM notifier, `PM_AUTOSLEEP`, PID namespaces,
+  `PM_WAKELOCKS_LIMIT=0`, `timed_output` vibrator, GSP. Their drivers were never compiled on 4.14 before:
+  qtaguid socket lifetimes and low memory killer vmstat counters and OOM locking fixed.
+- Ports: `timed_output` + SC2721 vibrator (`VIBRATOR_414_PORT.md`), GSP 2D blender (`GSP_414_PORT.md`).
+- Fixes found by the fence-path review: ADF software fences lacked `.wait` (a `BUG_ON` on the first frame);
+  Mali r21p0 counted a fence dependency after adding its callback; Mali duplicate reservations lost exclusive
+  access (dormant, `MALI_DMA_FENCE` off).
+- A17 kernel features (`watch_414_a17.fragment`, `A17_KERNEL.md`), off in the stock-8.1 images.
+- Ramdisk: the stale 4.4.83 `mali.ko` and its `insmod` line are dropped (`tools/sprd_ramdisk.py remove-module`).
+- Images and the first-boot checklist: `dm63/BOOT_414.md`, `dw100u/BOOT_414.md`, built by `build_414_stock81.sh`.
+
+Kept as stock behaviour (review findings, revisit after a first boot): ADF posts a buffer whose acquire fence
+timed out or failed, and advances the release timeline on a failed flip.
+
+Newer Android on the watches: `NEWER_ANDROID.md`.
+
 ## 7. Driver port status (branch `kernel-4.14-ports`)
 
 Source: the 4.4 product tree, branch `security-backports`. All builds below are compile and link only;
