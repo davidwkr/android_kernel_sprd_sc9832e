@@ -24,6 +24,11 @@
 #       trailer) and append "import /init.watch_tweaks.rc" to /init.rc; all
 #       other entries stay byte-identical; a second run is a no-op
 #
+#   remove-module RAMDISK OUT --module NAME...
+#       drop /lib/modules/NAME and every "insmod /lib/modules/NAME" line from
+#       the *.rc files at the root; all other entries and all other bytes of
+#       those files stay identical; any other mention of NAME is refused
+#
 # The ramdisk is the file written by "sprd_bootimg.py unpack". Compression is
 # detected by magic: gzip and xz are handled; lz4 (legacy or frame) and
 # bzip2/lzma-alone are reported and refused.
@@ -818,6 +823,127 @@ def cmd_add_rc(a):
     return 0
 
 
+def drop_insmod(data, path, fn):
+    """Return data without the "insmod PATH [args]" lines and how many were
+    dropped; any other mention of the module in what is left is refused."""
+    keep = []
+    n = 0
+    prev = b''
+    for l in re.findall(rb'[^\n]*\n|[^\n]+', data):
+        t = l.split()
+        if len(t) >= 2 and t[0] == b'insmod' and t[1] == path:
+            if l.rstrip(b'\r\n').endswith(b'\\') or prev.endswith(b'\\'):
+                raise Error('%s: insmod line of %s has a line continuation; '
+                            'fix it by hand' % (fn, path.decode()))
+            n += 1
+        else:
+            keep.append(l)
+        prev = l.rstrip(b'\r\n')
+    rest = b''.join(keep)
+    name = path.rsplit(b'/', 1)[-1]
+    if name in rest or name in re.sub(rb'[\s\\"]', b'', rest):
+        raise Error('%s: %s is referenced in a form other than "insmod %s"; '
+                    'fix it by hand' % (fn, name.decode(), path.decode()))
+    return rest, n
+
+
+def cmd_remove_module(a):
+    if os.path.abspath(a.out) == os.path.abspath(a.ramdisk):
+        raise Error('OUT must differ from RAMDISK')
+    if len(a.module) > MAX_MODULES:
+        raise Error('more than %d --module arguments' % MAX_MODULES)
+    names = []
+    for b in a.module:
+        if not b or '/' in b or b in ('.', '..') or not b.endswith('.ko') \
+                or not b.isascii() or not b.isprintable() or ' ' in b:
+            raise Error('bad module name %r: want a basename like mali.ko' %
+                        safe_name(b))
+        if b in names:
+            raise Error('module %s given twice' % b)
+        names.append(b)
+    p, entries, end = load(a.ramdisk)
+    check_clean(p, entries, end, 'the removed modules')
+    drop = {}
+    for b in names:
+        hit = [e for e in entries if norm(e.name) == MODULE_DIRS[0] + b]
+        if not hit:
+            raise Error('ramdisk has no /%s%s' % (MODULE_DIRS[0], b))
+        e = hit[0]
+        if not is_reg(e):
+            raise Error('/%s%s is not a regular file; refusing' %
+                        (MODULE_DIRS[0], b))
+        if e.f['nlink'] != 1:
+            raise Error('%s has nlink %d (hard link); not supported' %
+                        (b, e.f['nlink']))
+        drop[e.off] = e
+    rcs = {}
+    lines = 0
+    for e in entries:
+        n = norm(e.name)
+        if not is_reg(e) or '/' in n or not n.endswith('.rc'):
+            continue
+        if e.f['filesize'] > MAX_RC_SIZE:
+            raise Error('/%s over 1 MiB; refusing' % n)
+        data = p.cpio[e.data_off:e.data_off + e.f['filesize']]
+        for b in names:
+            data, k = drop_insmod(data, b'/' + MODULE_DIRS[0].encode() +
+                                  b.encode(), '/' + n)
+            lines += k
+        if len(data) != e.f['filesize']:
+            if e.f['nlink'] != 1:
+                raise Error('/%s is a hard link (nlink %d); not supported' %
+                            (n, e.f['nlink']))
+            rcs[e.off] = data
+    if not lines:
+        raise Error('no "insmod /%s<name>" line for %s in the .rc files at '
+                    'the root' % (MODULE_DIRS[0], ', '.join(names)))
+    out = bytearray()
+    for e in entries:
+        nxt = pad4(e.data_off + e.f['filesize'])
+        if e.off in drop:
+            continue
+        if e.off in rcs:
+            data = rcs[e.off]
+            out += hdr_bytes(p.cpio[e.off:e.off + NEWC_HDR],
+                             dict(e.f, filesize=len(data)))
+            out += p.cpio[e.off + NEWC_HDR:e.data_off]
+            out += data + b'\0' * (pad4(len(data)) - len(data))
+        else:
+            out += p.cpio[e.off:nxt]
+    out += p.cpio[min(end, len(p.cpio)):]
+    out = bytes(out)
+    # self-check: the result parses; only the dropped entries are gone and
+    # only the .rc files changed
+    e2, end2 = parse_cpio(out)
+    old = [e for e in entries if e.off not in drop]
+    if len(e2) != len(old):
+        raise Error('self-check: entry count')
+    for x, y in zip(old, e2):
+        fx = dict(x.f)
+        data = p.cpio[x.data_off:x.data_off + x.f['filesize']]
+        if x.off in rcs:
+            data = rcs[x.off]
+            fx['filesize'] = len(data)
+        if x.name != y.name or fx != y.f or \
+                out[y.data_off:y.data_off + y.f['filesize']] != data:
+            raise Error('self-check: entry %s changed unexpectedly' %
+                        safe_name(x.name))
+    if out[end2:] != p.cpio[end:]:
+        raise Error('self-check: trailer/tail changed')
+    blob = compress(p, out)
+    if decompress(blob).cpio != out:
+        raise Error('self-check: recompressed ramdisk does not decode')
+    write_out(a.out, blob)
+    print('removed %d module(s) and %d insmod line(s); cpio %d -> %d bytes; '
+          '%s; wrote %s (%d bytes)' % (len(drop), lines, len(p.cpio),
+                                       len(out), p.describe(), a.out,
+                                       len(blob)))
+    if p.params is None:
+        print('note: the stock compressed stream is not reproducible; the '
+              'output uses default %s settings' % p.fmt)
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description='list and patch the modules in '
                                  'a SPRD boot ramdisk')
@@ -844,6 +970,14 @@ def main():
     p.add_argument('--fragment', required=True, metavar='FILE',
                    help='init fragment (ASCII, up to %d bytes)' % MAX_FRAGMENT)
     p.set_defaults(fn=cmd_add_rc)
+    p = sub.add_parser('remove-module', help='drop .ko files and their '
+                       'insmod lines')
+    p.add_argument('ramdisk')
+    p.add_argument('out')
+    p.add_argument('--module', action='append', default=[], required=True,
+                   metavar='NAME', help='basename under /%s (repeatable)' %
+                   MODULE_DIRS[0])
+    p.set_defaults(fn=cmd_remove_module)
     a = ap.parse_args()
     try:
         return a.fn(a)
