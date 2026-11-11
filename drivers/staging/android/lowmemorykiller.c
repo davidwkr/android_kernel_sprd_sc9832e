@@ -558,6 +558,7 @@ static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 {
 	struct task_struct *tsk;
 	struct task_struct *selected = NULL;
+	char selected_comm[TASK_COMM_LEN] = "";
 	unsigned long rem = 0;
 	int selected_process_uid = 0;
 	int selected_process_pid = 0;
@@ -737,6 +738,7 @@ static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 		}
 
 		task_lock(selected);
+		strlcpy(selected_comm, selected->comm, sizeof(selected_comm));
 		/* add for lmfs */
 		selected_process_uid = from_kuid(&init_user_ns,
 						 selected->cred->uid);
@@ -799,7 +801,7 @@ static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 				enhanced_show_mem(E_SHOW_MEM_CLASSIC);
 			else
 				enhanced_show_mem(E_SHOW_MEM_BASIC);
-		} else if (process_need_show_memory(selected->comm)) {
+		} else if (process_need_show_memory(selected_comm)) {
 			enhanced_show_mem(E_SHOW_MEM_ALL);
 		}
 #endif
