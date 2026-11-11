@@ -183,6 +183,11 @@ config MALI_2MB_ALLOC
 	  allocate 2MB pages from the kernel. This reduces TLB pressure and
 	  helps to prevent memory fragmentation.
 
+	  WARNING: not safe on this driver: cleanup_empty_pte() frees the
+	  replaced page-table page before the GPU TLB is invalidated
+	  (CVE-2022-36449). The build fails with this option until that is
+	  fixed.
+
 	  If in doubt, say N
 
 config MALI_PWRSOFT_765

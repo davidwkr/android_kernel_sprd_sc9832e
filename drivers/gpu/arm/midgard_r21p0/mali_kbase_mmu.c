@@ -752,6 +752,9 @@ fail_unlock:
  * to defer the free until after the replacing ATE has been flushed and the
  * TLB invalidated for this range.
  */
+#ifdef CONFIG_MALI_2MB_ALLOC
+#error "CONFIG_MALI_2MB_ALLOC needs cleanup_empty_pte() fixed first (free-before-invalidate, Project Zero 2333 / CVE-2022-36449); see the comment above"
+#endif
 static inline void cleanup_empty_pte(struct kbase_context *kctx, u64 *pte)
 {
 	phys_addr_t tmp_pgd;
