@@ -43,6 +43,25 @@ watches. Inspected read-only on 2026-11-11; nothing from it was executed or flas
 - `etc/fstab.sl8541e_1h10`: `/data` f2fs or ext4 `formattable` without encryption flags, `/cache`,
   `prodnv` at `/mnt/vendor`, `misc`, USB and SD vold entries; zram swap 60 %.
 
+## Fit against the DM63 and DW100U (checked 2026-11-11, read-only over adb)
+
+- Same partition table on both watches: vendor `mmcblk0p35` = 400 MiB on both, system 3 GB (DM63) and
+  4.5 GB (DW100U); the Android 14 GSI (2.4 GiB unpacked) fits both.
+- Fitted panels are in the DTB: DM63 `lcd_id=ID5300213` (CO5300 2.13"), DW100U `ID5300204`
+  (CO5300 2.04", per `dw100u-silver/SPEC.md`). DW100U stock panels missing from the DTB:
+  `lcd_co5300_oled_213_mipi`, `lcd_ch13613_oled206_mipi`, `lcd_icna3311_oled148/214_mipi`,
+  `lcd_jd9855_oled_cto20_mipi`, `lcd_st7801_oled206_mipi` (other hardware revisions would get no display).
+- Stock DT nodes missing: `tyhx,hrs3xxx` (heart rate, both), `goodix,fingerprintree` (DW100U),
+  `compass,af6837` (DM63). The DTB adds `heartrate,bd1xxx`.
+- Stock vendor services missing in this vendor: fingerprint HAL (`biometrics.fingerprint@2.1`, `goodix.rc`),
+  `gnss_download.rc`, `vendor.sprd.hardware.gnss@1.0`, `ifaa`, `power@2.0`, `zram.rc`, `engineermode`,
+  `storageproxyd_androidone`; it brings `gnss@2.0`, `power@3.0`, `radio@1.4-sprd-compat`, `thermal@2.0`,
+  `wcn.rc`, `engpc`, microtrust storageproxyd.
+- GNSS: `gps.default.so` differs from both watches' stock HAL (sha256), only a 32-bit HAL is shipped
+  (stock patched one is 64-bit), its own `etc/config.xml` / `supl.xml` and `gpsd`. The A-GPS patches
+  (SUPL on any network, TLS, wakelock, IMSI log) would have to be redone on it.
+- Unknown until tested: radio HAL vs the watches' modem firmware, charger and sensor behaviour of its kernel.
+
 ## What it means
 
 - With this boot ramdisk and vendor, "ab" GSIs (Android 10-14) boot as designed: system-as-root through
