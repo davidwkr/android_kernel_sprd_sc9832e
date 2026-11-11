@@ -898,6 +898,21 @@ config SENSORS_MSP891
 	  reproduced; see devices/MSP891_INTERFACE.md.
 
 	  To compile this driver as a module, choose M here.
+
+config SENSORS_COMPASS_AF6837
+	tristate "AF6837 3-axis magnetometer device with I2C bus"
+	depends on I2C && INPUT
+	default n
+	help
+	  Say Y here if you have an AF6837 magnetometer on an I2C bus. The
+	  driver registers the input device "compass", reporting samples
+	  through EV_ABS ABS_RX/RY/RZ, and is controlled through the "enable"
+	  (0/1) and "delay" (milliseconds) sysfs attributes on the input
+	  device. The stock sampling mechanism (timer vs. workqueue) could
+	  not be recovered from the stock kernel image; this driver polls on
+	  a delayed_work instead. See devices/AF6837_INTERFACE.md.
+
+	  To compile this driver as a module, choose M here.
 config INPUT_EPL259x_I2C
 	tristate "EPL259x proximity and light sensor device with I2C bus"
 	depends on I2C
