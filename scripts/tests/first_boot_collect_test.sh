@@ -6,7 +6,8 @@
 # Usage: scripts/tests/first_boot_collect_test.sh
 # Knobs of the stub: FAKE_DMESG_DENIED=1 (plain dmesg exits 1; su -c dmesg
 # works), FAKE_NO_LSMOD=1 (lsmod exits 127), FAKE_HANG=1 (dumpsys battery
-# sleeps past the timeout), FAKE_TWO=1 (two devices attached).
+# sleeps past the timeout), FAKE_TERM_DEAF=1 (it also ignores TERM), FAKE_STALL_DEVICES=1
+# ('adb devices' stalls), FAKE_TWO=1 (two devices attached).
 set -uo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -21,10 +22,34 @@ EMAIL=jane.doe@example.test PH1='+54 11 5555 0000' PH2=011-5555-0000 PH3=555-012
 LAT=-34.603722 LNG=-58.381592
 SSID1='Home,Net Secret' SSID2=GuestNet SSID3='Cafe Wifi' SSID4=HomeNetSecret
 SERV1=ABC123XYZ789 SERV2=55AA66BB77
-export T SER IMEI MEID MAC MAC2 ICCID IMSI EMAIL PH1 PH2 PH3 LAT LNG SSID1 SSID2 SSID3 SSID4 SERV1 SERV2
+# second and third values of each category, placed right next to the first
+ICCID2=8901260123456789013 IMEI2=356938035643810 MEID2=A0000012345679 MAC3=aa:bb:cc:dd:ee:00 MAC4=aa:bb:cc:dd:ee:01
+PH4=555-0124 PH5='+54 11 5555 0001' PH6=011-5555-0001 LAT2=-34.603999 LNG2=-58.381999 SERV3=QRS456TUV012 SERV4=ZZ99YY88XX
+export ICCID2 IMEI2 MEID2 MAC3 MAC4 PH4 PH5 PH6 LAT2 LNG2 SERV3 SERV4 T SER IMEI MEID MAC MAC2 ICCID IMSI EMAIL PH1 PH2 PH3 LAT LNG SSID1 SSID2 SSID3 SSID4 SERV1 SERV2
 LEAKS=("$SER" "$IMEI" "$MEID" "$MAC" "$MAC2" "$ICCID" "$IMSI" jane.doe example.test "5555 0000" 5555-0000 555-0123
-       34.603722 58.381592 "$SSID1" "Net Secret" "$SSID2" "$SSID3" "$SSID4" "$SERV1" "$SERV2")
+       34.603722 58.381592 "$SSID1" "Net Secret" "$SSID2" "$SSID3" "$SSID4" "$SERV1" "$SERV2"
+       "$ICCID2" "$IMEI2" "$MEID2" "$MAC3" "$MAC4" 555-0124 "5555 0001" 5555-0001 34.603999 58.381999 "$SERV3" "$SERV4")
 
+# arm64 4.14 style oops: addresses (raw, 0x, %px, %p-hashed) and the symbols,
+# offsets, timestamps and register names that must stay
+oops() {
+  cat <<'OOPS'
+[   12.345678] Unable to handle kernel paging request at virtual address ffffffc0f0a3b240
+[   12.345700] pgd = ffffffc0b1c2d000
+[   12.345710] [ffffffc0f0a3b240] *pgd=0000000081234003, *pud=0000000081234003
+[   12.345800] pc : mali_kbase_jd_submit+0x1c4/0x5e0 [mali]
+[   12.345810] pc : ffffff8008123456
+[   12.345820] lr : kbase_ioctl+0x58/0x90 [mali]
+[   12.345830] sp : ffffffc0b1c2fe40
+[   12.345840] x29: ffffffc0b1c2fe40 x28: ffffffc0f0a3b000
+[   12.345850] x1 : 0000000000000001 x0 : ffffffc000123abc
+[   12.345860] Call trace:
+[   12.345870] [<ffffffc000123abc>] do_fault+0x1c/0x120
+[   12.345880] [<ffffff8008123456>] el0_svc_naked+0x34/0x38
+[   12.345890] hashed ptr 00000000a1b2c3d4 raw 0xffffffc000aabbcc end
+[   12.345900] module Live 0xffffffbffc012000 (mali)
+OOPS
+}
 adb_mock() {
   local ser=
   # a targeted call must name the attached device, else adb fails like this
@@ -39,6 +64,7 @@ adb_mock() {
   case $sub in
     get-state) echo device ;;
     devices)
+      [ "${FAKE_STALL_DEVICES:-0}" != 1 ] || { trap '' TERM; sleep 30; }
       printf 'List of devices attached\n%s\tdevice\n' "$SER"
       [ "${FAKE_TWO:-0}" != 1 ] || printf 'OTHER0002\tdevice\n' ;;
     shell)
@@ -58,6 +84,9 @@ adb_mock() {
           printf '01-01 00:00:04.000  100  100 W AccountManager: Account {name=%s, type=com.example} owner %s\n' "$EMAIL" "$EMAIL"
           printf '01-01 00:00:05.000  100  100 W Telephony: number %s / %s / %s imei=%s meid %s\n' "$PH1" "$PH2" "$PH3" "$IMEI" "$MEID"
           printf '01-01 00:00:06.000  100  100 W LocationManager: Location[gps %s,%s hAcc=5] latitude=%s longitude=%s at %s, %s\n' "$LAT" "$LNG" "$LAT" "$LNG" "$LAT" "$LNG"
+          printf '01-01 00:00:08.000  100  100 W Adjacent: subscriptions: %s %s imei %s %s meids=%s,%s\n' "$ICCID" "$ICCID2" "$IMEI" "$IMEI2" "$MEID" "$MEID2"
+          printf '01-01 00:00:09.000  100  100 W Adjacent: macs %s %s %s phones %s %s %s %s\n' "$MAC" "$MAC3" "$MAC4" "$PH3" "$PH4" "$PH1" "$PH5"
+          printf '01-01 00:00:10.000  100  100 W Adjacent: coords %s, %s, %s, %s, %s serial: %s %s serials=%s %s\n' "$LAT" "$LNG" "$LAT2" "$LNG2" "$LAT" "$SERV1" "$SERV3" "$SERV2" "$SERV4"
           printf '01-01 00:00:07.000  100  100 W Build: serial: %s and Serial Number: %s iccid=%s imsi %s\n' "$SERV1" "$SERV2" "$ICCID" "$IMSI" ;;
         'cat /proc/meminfo') echo "MemTotal: 1800000 kB" ;;
         'ls /proc/pressure') printf 'cpu\nio\nmemory\n' ;;
@@ -66,6 +95,7 @@ adb_mock() {
         'dumpsys gfxinfo') printf '** Graphics info for pid 1 [system] **\nTotal frames rendered: 10\nsecret_gfx_line %s\n' "$EMAIL" ;;
         'dumpsys battery')
           [ "${FAKE_HANG:-0}" != 1 ] || sleep 5
+          [ "${FAKE_TERM_DEAF:-0}" != 1 ] || { trap '' TERM; sleep 30; }
           printf 'Current Battery Service state:\n  AC powered: false\n  level: 80\n  scale: 100\n  Charge counter: 1234\n  serial number: %s\n' "$SERV2" ;;
         'dumpsys location')
           printf 'Location Settings: [enabled]\nLast Known Locations:\n  passive: Location[gps %s,%s hAcc=5]\n  RAWMARKER_LOC owner %s\n' "$LAT" "$LNG" "$EMAIL"
@@ -79,18 +109,21 @@ adb_mock() {
         'ls -lZ /dev/mali0'*) echo "crw-rw-rw- 1 root root u:object_r:gpu_device:s0 /dev/mali0" ;;
         getenforce) echo Permissive ;;
         'ls -l /sys/fs/pstore') printf 'total 0\n-r--r--r-- 1 root root 100 2000-01-01 00:00 console-ramoops\n' ;;
-        'cat /sys/fs/pstore/console-ramoops') printf 'Kernel panic - not syncing: test\nwlan mac %s\n' "$MAC" ;;
+        'cat /sys/fs/pstore/console-ramoops')
+          printf 'Kernel panic - not syncing: test\nwlan mac %s\n' "$MAC"
+          oops ;;
         'ls /sys/kernel/debug') echo "ls: /sys/kernel/debug: No such file or directory" >&2; return 1 ;;
         dmesg)
           if [ "${FAKE_DMESG_DENIED:-0}" = 1 ]; then echo "klogctl: Operation not permitted" >&2; return 1; fi
-          printf '[1.0] mali: warning: GPU fault\n[2.0] BUG: scheduling while atomic\n[3.0] Oops: 0000\n[4.0] avc: denied { x } for pid=1\n[5.0] wlan mac %s\n' "$MAC" ;;
+          printf '[1.0] mali: warning: GPU fault\n[2.0] BUG: scheduling while atomic\n[3.0] Oops: 0000\n[4.0] avc: denied { x } for pid=1\n[5.0] wlan mac %s\n' "$MAC"
+          oops ;;
         'su -c dmesg') printf '[1.0] mali: error: timeout\n[2.0] su dmesg ok\n' ;;
         *) echo "adb_mock: unexpected shell command: $1" >&2; return 1 ;;
       esac ;;
     *) echo "adb_mock: unsupported adb command: $sub" >&2; return 1 ;;
   esac
 }
-export -f adb_mock
+export -f adb_mock oops
 
 PASS=0 FAIL=0
 check() { local d=$1; shift; if "$@"; then PASS=$((PASS + 1)); echo "ok   $d"; else FAIL=$((FAIL + 1)); echo "FAIL $d"; fi; }
@@ -150,6 +183,13 @@ check "pressure: each file read on its own" bash -c "grep -c '^== /proc/pressure
 check "pstore: file read on its own" grep -q 'Kernel panic' "$d/pstore.txt"
 check "dmesg readable: no su" bash -c "! grep -q 'su ' '$T/adb.log'"
 
+echo "-- adjacent values of the same category, kernel addresses"
+check "adjacent values: none of the second/third ones survive (ICCID, IMEI, MEID, MAC, phone, coordinates, serial)" no_leak "$d"
+check "kernel addresses: every form gone" bash -c "! grep -rqiE '(^|[^0-9a-z])(0x)?[0-9a-f]{16}([^0-9a-z]|\$)' '$d' && ! grep -rqiE 'ffffff[0-9a-f]{10}' '$d'"
+check "kernel addresses: <KADDR> present in dmesg and pstore" bash -c "grep -q '<KADDR>' '$d/dmesg.txt' && grep -q '<KADDR>' '$d/pstore.txt'"
+check "oops: symbols, offsets, sizes, timestamps, register names stay" bash -c "grep -q 'mali_kbase_jd_submit+0x1c4/0x5e0 \[mali\]' '$d/dmesg.txt' && grep -q 'do_fault+0x1c/0x120' '$d/dmesg.txt' && grep -q 'el0_svc_naked+0x34/0x38' '$d/pstore.txt' && grep -q '^\[   12.345678\] Unable to handle kernel paging request at virtual address <KADDR>' '$d/dmesg.txt' && grep -q 'sp : <KADDR>' '$d/dmesg.txt' && grep -q 'x29: <KADDR> x28: <KADDR>' '$d/dmesg.txt' && grep -q '\[<<KADDR>>\] do_fault' '$d/dmesg.txt'"
+check "summary says <KADDR> covers hashed pointers too" grep -q 'hashed pointers' "$d/summary.txt"
+
 echo "-- device is only read, one plain command at a time"
 check "every targeted call carries -s SERIAL (and the stub accepted it)" bash -c "! grep -v '^serial=$SER ' '$T/adb.log' | grep -v '^serial=NONE devices *\$' | grep -q ."
 check "no call was rejected" bash -c "! grep -q REJECTED '$T/adb.log'"
@@ -188,6 +228,19 @@ check "timeout: battery.txt says it timed out" grep -q 'TIMED OUT after 1s' "$d/
 check "timeout: status.txt and summary.txt say so" bash -c "grep -q $'^battery.txt\\tdumpsys battery\\tTIMED OUT after 1s\$' '$d/status.txt' && grep -q 'TIMED OUT after 1s: dumpsys battery' '$d/summary.txt'"
 check "timeout: the other files are there" test -s "$d/wifi.txt"
 check "bad FBC_TIMEOUT refused" bash -c "! FBC_TIMEOUT=0 ADB=adb_mock bash '$SCRIPT' --dry-run >/dev/null 2>&1"
+
+echo "-- stalled discovery and a TERM-ignoring command end within the bound"
+rm -rf "$T/out"
+export FAKE_STALL_DEVICES=1; SECONDS=0; FBC_TIMEOUT=1 FBC_KILL_AFTER=1 run --out-dir "$T/out"; el=$SECONDS; unset FAKE_STALL_DEVICES
+check "stalled adb devices: ends within timeout + grace" test "$el" -le 5
+check "stalled adb devices: refused, says it timed out, nothing written" bash -c "test '$RC' != 0 && grep -q 'adb devices: TIMED OUT after 1s' <<<'$OUT' && test ! -e '$T/out'"
+rm -rf "$T/out"
+export FAKE_TERM_DEAF=1; SECONDS=0; FBC_TIMEOUT=1 FBC_KILL_AFTER=1 run --out-dir "$T/out"; el=$SECONDS; unset FAKE_TERM_DEAF
+d=$(D)
+check "TERM-ignoring command: the whole run ends within the bound" test "$el" -le 8
+check "TERM-ignoring command: run goes on, exit 0" test "$RC" = 0
+check "TERM-ignoring command: recorded as killed in file, status and summary" bash -c "grep -q 'TIMED OUT after 1s (killed after a 1s grace' '$d/battery.txt' && grep -q $'^battery.txt\\tdumpsys battery\\tTIMED OUT after 1s (killed' '$d/status.txt' && grep -q '(killed after a 1s grace: it ignored TERM): dumpsys battery' '$d/summary.txt'"
+check "bad FBC_KILL_AFTER refused" bash -c "! FBC_KILL_AFTER=0 ADB=adb_mock bash '$SCRIPT' --dry-run >/dev/null 2>&1"
 
 echo "-- the final scan removes a leaking output"
 # a copy of the script whose redaction does nothing: whatever it leaks must be caught

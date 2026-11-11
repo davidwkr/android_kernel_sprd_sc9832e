@@ -10,11 +10,13 @@
 #   --dry-run         print the commands, touch no device, write nothing
 # Env: ADB (default adb; the tests set it to a stub function)
 #      FBC_TIMEOUT seconds per adb call (default 60)
+#      FBC_KILL_AFTER seconds after that TERM before KILL (default 5), for a
+#      command that ignores TERM
 # Device side: only 'adb shell' of single commands (no pipe, redirection, ';',
 # '&&' or substitution: each producer runs alone and is filtered and truncated
 # on the host; each is checked against a write/state-change blacklist at
 # start-up), plus 'adb devices' and 'adb get-state'. Every adb call is bounded
-# by timeout; its exit status is recorded (status.txt, summary.txt). Never
+# by timeout -k; its exit status is recorded (status.txt, summary.txt). Never
 # remounts, pushes, installs, reboots, sets a property or setting.
 # Privacy: the sensitive dumps (location, wifi, bluetooth, battery) are reduced
 # to an allowlist of diagnostic lines, never stored raw; logcat is warnings and
@@ -25,6 +27,7 @@ set -euo pipefail
 
 ADB=${ADB:-adb}
 TMO=${FBC_TIMEOUT:-60}
+KILLAFTER=${FBC_KILL_AFTER:-5}
 SERIAL= OUT_BASE=first_boot_collect DRY=0 ROOT=0
 
 die() { echo "FAIL: $*" >&2; exit 1; }
@@ -43,6 +46,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 [[ $TMO =~ ^[0-9]+$ ]] && [ "$TMO" -gt 0 ] || die "FBC_TIMEOUT must be a positive number of seconds"
+[[ $KILLAFTER =~ ^[0-9]+$ ]] && [ "$KILLAFTER" -gt 0 ] || die "FBC_KILL_AFTER must be a positive number of seconds"
 
 # --- what is collected: file|host filter|command (one device command, read only) -
 LOGCAT_TAGS="SurfaceFlinger:I hwcomposer:I mali:I gralloc:I lmkd:I init:I vold:I keystore2:I GnssHAL:I gps:I LocationManager:I wifi:I WifiService:I bluetooth:I auditd:I SELinux:W"
@@ -82,7 +86,7 @@ safe_cmd() {
 for e in "${CMDS[@]}"; do safe_cmd "${e##*|}" || die "command is not read-only: ${e##*|}"; done
 for e in "${EXTRA_CMDS[@]}"; do safe_cmd "$e" || die "command is not read-only: $e"; done
 
-adb_() { timeout "$TMO" bash -c '"$@"' fbc "$ADB" ${SERIAL:+-s "$SERIAL"} "$@"; }
+adb_() { timeout -k "$KILLAFTER" "$TMO" bash -c '"$@"' fbc "$ADB" ${SERIAL:+-s "$SERIAL"} "$@"; }
 
 if [ "$DRY" -eq 1 ]; then
   say "DRY RUN: no device access, nothing written. Commands (adb ${SERIAL:+-s <SERIAL> }shell '...', each alone, timeout ${TMO}s):"
@@ -105,7 +109,15 @@ trap 'rm -rf "$WORK"' EXIT
 
 # --- device ------------------------------------------------------------------
 if [ -z "$SERIAL" ]; then
-  list=$("$ADB" devices | tr -d '\r' | awk 'NR>1 && $2=="device"{print $1}')
+  rc=0
+  devs=$(adb_ devices 2>/dev/null </dev/null) || rc=$?
+  case $rc in
+    0) ;;
+    124) die "adb devices: TIMED OUT after ${TMO}s" ;;
+    137) die "adb devices: TIMED OUT after ${TMO}s (killed after a ${KILLAFTER}s grace: it ignored TERM)" ;;
+    *) die "adb devices: FAILED, exit $rc" ;;
+  esac
+  list=$(printf '%s\n' "$devs" | tr -d '\r' | awk 'NR>1 && $2=="device"{print $1}')
   n=$(printf '%s\n' "$list" | sed '/^$/d' | wc -l)
   [ "$n" -eq 1 ] || die "$n adb devices attached, pass --serial"
   SERIAL=$list
@@ -129,23 +141,32 @@ build_redactor() { # $1: getprop output
   done <<<"$1"
   cat >>"$s" <<'EOF'
 s/^(\[[^]]*(imei|meid|esn|imsi|iccid|serial|mac|bdaddr|btaddr|msisdn|phone)[^]]*\]: \[)[^]]*\]/\1<REDACTED>]/I
-s/([A-Za-z0-9_.-]*(serialno|serial|imei|meid|imsi|iccid|mac|bdaddr)[A-Za-z0-9_.-]*=)[^ ,;]+/\1<REDACTED>/gI
-s/(serial[A-Za-z0-9_ .-]{0,12}[:=] *"?)[^ ,;"]+/\1<SERIAL>/gI
-s/(serial[ ]+)[A-Za-z]*[0-9][A-Za-z0-9]{5,}/\1<SERIAL>/gI
+s/([A-Za-z0-9_.-]*(serialno|serial|imei|meid|imsi|iccid|mac|bdaddr)[A-Za-z0-9_.-]*=)[^ ,;]+([ ,;]+[A-Za-z]*[0-9][A-Za-z0-9]{5,})*/\1<REDACTED>/gI
+s/(serial[A-Za-z0-9_ .-]{0,12}[:=] *"?)[^ ,;"]+([ ,;]+[A-Za-z]*[0-9][A-Za-z0-9]{5,})*/\1<SERIAL>/gI
+s/(serial[ ]+)[A-Za-z]*[0-9][A-Za-z0-9]{5,}([ ,;]+[A-Za-z]*[0-9][A-Za-z0-9]{5,})*/\1<SERIAL>/gI
 s/(Account ?\{name=)[^,}]*/\1<EMAIL>/gI
 s/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/<EMAIL>/g
 s/([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}/<MAC>/g
-s/((imei|meid|esn|imsi|iccid|msisdn|phone ?number|subscriber ?id|device ?id)[A-Za-z0-9_.-]*[=: ]+"?)[0-9A-Za-z]{6,}/\1<ID>/gI
+s/((imei|meid|esn|imsi|iccid|msisdn|phone ?number|subscriber ?id|device ?id)[A-Za-z0-9_.-]*[=: ]+"?)[0-9A-Za-z]{6,}([ ,;\/]+[A-Za-z]*[0-9][0-9A-Za-z]{5,})*/\1<ID>/gI
+s/\b(0x)?[0-9A-Fa-f]{16}\b/<KADDR>/g
+:iccid
 s/(^|[^0-9])89[0-9]{17,18}([^0-9]|$)/\1<ICCID>\2/g
+t iccid
+:imei
 s/(^|[^0-9])[0-9]{14,15}([^0-9]|$)/\1<ID>\2/g
+t imei
+:meid
 s/(^|[^0-9A-Za-z])[0-9A-Fa-f]{14}([^0-9A-Za-z]|$)/\1<ID>\2/g
+t meid
 s/Location\[[^]]*\]/Location[<LATLON>]/g
 s/\b(lat(itude)?|lng|lon|long(itude)?)[ =:]+-?[0-9]+(\.[0-9]+)?/\1=<LATLON>/gI
-s/-?[0-9]{1,3}\.[0-9]{4,}[ ,;\/]+-?[0-9]{1,3}\.[0-9]{4,}/<LATLON>/g
+s/-?[0-9]{1,3}\.[0-9]{4,}([ ,;\/]+-?[0-9]{1,3}\.[0-9]{4,})+/<LATLON>/g
 s/(ssid[A-Za-z_]*[=: ]+).*/\1<SSID>/I
 s/\+[0-9][0-9 ().-]{6,}[0-9]/<PHONE>/g
 s/\(?[0-9]{2,4}\)?[ .-][0-9]{3,4}[ .-][0-9]{3,4}/<PHONE>/g
+:phone
 s/(^|[^0-9])[0-9]{3}-[0-9]{4}([^0-9]|$)/\1<PHONE>\2/g
+t phone
 EOF
 }
 redact() { sed -E -f "$WORK/redact.sed"; }
@@ -190,6 +211,7 @@ devrun() { # command, file
   case $RC in
     0) NOTE=ok ;;
     124) NOTE="TIMED OUT after ${TMO}s" ;;
+    137) NOTE="TIMED OUT after ${TMO}s (killed after a ${KILLAFTER}s grace: it ignored TERM)" ;;
     *) NOTE="FAILED, exit $RC" ;;
   esac
   STATUS+=("$(printf '%s\t%s\t%s' "$2" "$1" "$NOTE")")
@@ -283,8 +305,10 @@ grep_sec() { # title, file, ERE
   echo "  location, wifi, bluetooth_manager and battery only as allowlisted state/error lines"
   echo "  (the raw dumps are not stored). Not collected: accounts, packages, settings, contacts."
   echo "  Redacted: adb serial, serial/IMEI/MEID/IMSI/ICCID values, MAC, e-mail/account names,"
-  echo "  phone numbers, coordinates, Wi-Fi network names (<SERIAL> <REDACTED> <ID> <ICCID> <MAC> <EMAIL>"
-  echo "  <PHONE> <LATLON> <SSID>). Package and process names, and anything the patterns do not"
+  echo "  phone numbers, coordinates, Wi-Fi network names, kernel addresses (<SERIAL> <REDACTED> <ID> <ICCID>"
+  echo "  <MAC> <EMAIL> <PHONE> <LATLON> <SSID> <KADDR>). <KADDR> is every 16-hex-digit value, 0x or not: raw"
+  echo "  64-bit kernel addresses and %p-hashed pointers print alike, so both go; symbols, +offset/size,"
+  echo "  timestamps and register names stay. Package and process names, and anything the patterns do not"
   echo "  recognise, are as the device printed them: read every file before sharing."
   echo
   echo "device commands: $(grep -c . "$OUT/status.txt"), not ok: $nfail (a failed or timed-out command says so at the top of its file)"
@@ -316,6 +340,8 @@ leak() { grep -rEqi -e "$2" "$OUT" && bad="$bad ${1}," || true; }
 leak 'e-mail' '[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z]{2,}'
 leak 'MAC-like value' '([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}'
 leak 'IMEI/IMSI-like digits' '(^|[^0-9])[0-9]{14,15}([^0-9]|$)'
+leak 'ICCID-like digits' '(^|[^0-9])89[0-9]{17,18}([^0-9]|$)'
+leak 'kernel address' '(0x)?ffff[0-9a-f]{12}([^0-9a-f]|$)|(^|[^0-9A-Za-z])(0x)?[0-9a-f]{16}([^0-9A-Za-z]|$)'
 leak 'MEID-like hex' '(^|[^0-9A-Za-z])[0-9A-F]{14}([^0-9A-Za-z]|$)'
 leak 'coordinates' '-?[0-9]{1,3}\.[0-9]{4,}[ ,;/]+-?[0-9]{1,3}\.[0-9]{4,}|Location\[[a-z]+ [-0-9]'
 leak 'latitude/longitude value' '(latitude|longitude|lat|lng)[ =:]+-?[0-9]'
