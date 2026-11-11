@@ -1,0 +1,64 @@
+# Android 14 GSI (system-as-root from a first-stage ramdisk) on the stock
+# Android 8.1 vendor. Merge on top of sprd_sharkle_defconfig +
+# watch_414.fragment + watch_414_adf.fragment + watch_414_a17.fragment,
+# then run olddefconfig. Instead of watch_414_stock81.fragment; see
+# devices/GSI_414.md. "Pinned" lines are already on in the defconfig and only
+# guard against a later change.
+
+# What the 8.1 vendor still needs under the newer system (from
+# watch_414_stock81.fragment): vibrator HAL through timed_output, the GSP for
+# the hwcomposer/gsp HAL, PID namespaces only.
+CONFIG_ANDROID_TIMED_OUTPUT=y
+CONFIG_SPRD_VIBRATOR=y
+# CONFIG_INPUT_SC27XX_VIBRA is not set
+CONFIG_SPRD_GSP=y
+CONFIG_NAMESPACES=y
+CONFIG_PID_NS=y
+
+# Left out on purpose: Android 14 does traffic accounting with eBPF, not
+# xt_qtaguid, so xt_owner stays on (qtaguid would take its "owner" name), and
+# memory pressure comes from lmkd on PSI, not the in-kernel killer.
+# CONFIG_NETFILTER_XT_MATCH_QTAGUID is not set
+CONFIG_NETFILTER_XT_MATCH_OWNER=y
+# CONFIG_ANDROID_LOW_MEMORY_KILLER is not set
+# CONFIG_OOM_NOTIFIER is not set
+
+# lmkd: /proc/pressure/* (pinned; PSI_DEFAULT_DISABLED off, no psi=1 needed)
+CONFIG_PSI=y
+# CONFIG_PSI_DEFAULT_DISABLED is not set
+# memory cgroup (memcg v1 hierarchy of libprocessgroup, swap accounting); the
+# 4.14 kernel has no cgroup v2 freezer or uclamp (CONFIG_UCLAMP_TASK does not
+# exist in this tree); freezer v1 and pids are used by the task profiles
+CONFIG_MEMCG=y
+CONFIG_MEMCG_SWAP=y
+CONFIG_CGROUP_FREEZER=y
+# per-cgroup task limit (Android 14 libprocessgroup)
+CONFIG_CGROUP_PIDS=y
+
+# eBPF: netbpfload/netd (cgroup skb and sock programs, xt_bpf, clatd's
+# cls_bpf), CGROUP_BPF and BPF_JIT pinned (BPF_JIT also in watch_414_a17.fragment)
+CONFIG_BPF_SYSCALL=y
+CONFIG_CGROUP_BPF=y
+CONFIG_BPF_JIT=y
+CONFIG_BPF_EVENTS=y
+CONFIG_NETFILTER_XT_MATCH_BPF=y
+CONFIG_NET_CLS_BPF=y
+# the one that was missing in the defconfig
+CONFIG_NET_ACT_BPF=y
+# netd destroys sockets of a removed network
+CONFIG_INET_DIAG_DESTROY=y
+
+# first stage init and vold: dm-verity (the GSI is mounted without AVB, but
+# the other partitions' fstab entries can ask for it), /dev, loop devices for
+# APEX payloads, file based encryption
+CONFIG_DM_VERITY=y
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+CONFIG_BLK_DEV_LOOP=y
+CONFIG_FS_ENCRYPTION=y
+
+# The first stage init of the ramdisk is a 32-bit ARM static binary, and the 8.1
+# vendor is 32-bit too: AArch32 execution (COMPAT; 4.14 has no separate
+# AARCH32_EL0 symbol and memfd_create, pidfd, userfaultfd, EROFS and binderfs
+# are in watch_414_a17.fragment or built unconditionally)
+CONFIG_COMPAT=y
