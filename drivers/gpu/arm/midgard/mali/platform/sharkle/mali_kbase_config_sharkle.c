@@ -378,7 +378,9 @@ static void mali_platform_term(struct kbase_device *kbdev)
 	vfree(gpu_dfs_ctx.freq_list);
 	vfree(gpu_dfs_ctx.gpu_clk_src);
 
-	regulator_put(gpu_reg);
+	/* gpu_reg was obtained with devm_regulator_get(); devres already
+	 * releases it when the device detaches, so don't also regulator_put()
+	 * it here - doing both releases the regulator handle twice. */
 
 #ifdef GPU_SUPPORT_QOS
 	if(gpu_qos_reg)
