@@ -19,8 +19,18 @@ CONFIG_ANDROID_LOW_MEMORY_KILLER=y
 CONFIG_ANDROID_LOW_MEMORY_KILLER_AUTODETECT_OOM_ADJ_VALUES=y
 CONFIG_ANDROID_LOW_MEMORY_KILLER_MEMINFO=y
 
+# Final reclaim attempt from the OOM notifier before the native OOM killer
+# picks a victim, killing up to 3 tasks at once, as stock
+CONFIG_OOM_NOTIFIER=y
+CONFIG_MULTIPLE_OOM_KILLER=y
+CONFIG_MULTIPLE_OOM_KILL_COUNT=3
+
 # libsuspend uses /sys/power/autosleep when present, as on stock
 CONFIG_PM_AUTOSLEEP=y
+
+# No cap on the wakelocks userspace may create through /sys/power/wake_lock,
+# as stock
+CONFIG_PM_WAKELOCKS_LIMIT=0
 
 # As stock: PID namespaces only
 CONFIG_NAMESPACES=y
