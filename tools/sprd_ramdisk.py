@@ -28,8 +28,9 @@
 #       drop /lib/modules/NAME and every "insmod /lib/modules/NAME" line from
 #       the *.rc files at the root (each NAME needs at least one); all other
 #       entries and all other bytes of those files and of their headers
-#       (except c_filesize) stay identical; any other mention of NAME, and an
-#       insmod line with a quote, a backslash or a continuation, is refused
+#       (except c_filesize) stay identical; the .rc files are tokenized like
+#       init does, an insmod command that spans lines or has a quote or a
+#       backslash, and any other token containing NAME, are refused
 #
 # The ramdisk is the file written by "sprd_bootimg.py unpack". Compression is
 # detected by magic: gzip and xz are handled; lz4 (legacy or frame) and
@@ -842,41 +843,112 @@ def patch_filesize(hdr, n):
         (b'%08X' if up else b'%08x') % n + bytes(hdr[FILESIZE_OFF + 8:])
 
 
+def tokenize_rc(d):
+    """Port of next_token() in Android 8.1 (O-MR1) system/core/init/
+    tokenizer.cpp, with the parser's grouping of tokens into commands (a
+    NEWLINE ends one). Returns [(tokens, start, end, multiline)], one per
+    non-empty command: the byte span d[start:end] it came from and whether
+    that span crosses a physical line (a continuation or a quoted newline)."""
+    cmds = []
+    cur = []
+    start = end = 0
+    x = 0
+    n = len(d)
+    while True:
+        while x < n and d[x] in b' \t\r':
+            x += 1
+        if x >= n:
+            break
+        c = d[x]
+        if c == 10:
+            if cur:
+                cmds.append((cur, start, end, b'\n' in d[start:end]))
+                cur = []
+            x += 1
+            continue
+        if c == 35:                     # '#': a comment, up to the newline
+            while x < n and d[x] != 10:
+                x += 1
+            continue
+        t0 = x
+        tok = bytearray()
+        while x < n:
+            c = d[x]
+            if c in b' \t\r':
+                x += 1
+                break
+            if c == 10:
+                break
+            if c == 34:                 # '"': literal up to the next '"'
+                x += 1
+                while x < n and d[x] != 34:
+                    tok.append(d[x])
+                    x += 1
+                if x < n:
+                    x += 1
+                continue
+            if c == 92:                 # '\\'
+                x += 1
+                if x >= n:
+                    break
+                c = d[x]
+                if c == 110:
+                    tok.append(10)
+                elif c == 114:
+                    tok.append(13)
+                elif c == 116:
+                    tok.append(9)
+                elif c == 10 or (c == 13 and d[x + 1:x + 2] == b'\n'):
+                    x += 1 + (c == 13)
+                    while x < n and d[x] in b' \t':
+                        x += 1
+                    continue
+                else:
+                    tok.append(c)       # includes '\\' itself
+                x += 1
+                continue
+            tok.append(c)
+            x += 1
+        if not cur:
+            start = t0
+        cur.append(bytes(tok))
+        end = x
+    if cur:
+        cmds.append((cur, start, end, b'\n' in d[start:end]))
+    return cmds
+
+
 def drop_insmod(data, paths, fn):
-    """Return data without the "insmod PATH" lines (PATH one of paths) and
-    how many were dropped per path. Init splits on space/tab only; a line
-    with a quote or backslash, or one that follows an unfinished line, is
-    refused. Any other mention of a module in what is left is refused."""
+    """Return data without the "insmod PATH" commands (PATH one of paths),
+    how many were dropped per path, and the tokens of everything else. Only
+    a command that sits on one physical line and has no quote or backslash
+    is dropped (whole line, ending included); any other insmod of PATH is
+    refused. The caller refuses any left-over token that contains a module
+    name, which also rejects an unrelated NAME.debug.ko: refusing is the
+    safe side. Comments are not tokens and are ignored."""
+    if b'\0' in data:
+        raise Error('%s: NUL byte; refusing' % fn)
     keep = []
+    toks = []
     n = dict.fromkeys(paths, 0)
-    cont = False    # previous non-comment line ends in an odd run of "\"
-    quoted = False  # an unbalanced quote is open from a previous line
-    for l in re.findall(rb'[^\n]*\n|[^\n]+', data):
-        body = l.rstrip(b'\r\n')
-        t = [x for x in re.split(rb'[ \t]+', body) if x]
-        comment = body.lstrip(b' \t').startswith(b'#') and not cont and \
-            not quoted
+    pos = 0
+    for t, s, e, multi in tokenize_rc(data):
         if len(t) >= 2 and t[0] == b'insmod' and t[1] in n:
-            if b'"' in body or b'\\' in body or cont or quoted:
-                raise Error('%s: insmod line of %s has a quote, a backslash '
-                            'or a continuation; fix it by hand' %
+            raw = data[s:e]
+            if multi or b'"' in raw or b'\\' in raw:
+                raise Error('%s: insmod of %s spans lines or has a quote or '
+                            'a backslash; fix it by hand' %
                             (fn, t[1].decode()))
             n[t[1]] += 1
+            ls = data.rfind(b'\n', 0, s) + 1
+            le = data.find(b'\n', e)
+            le = len(data) if le < 0 else le + 1
+            keep.append(data[pos:ls])
+            pos = le
         else:
-            keep.append(l)
-        if not comment:
-            cont = len(body) - len(body.rstrip(b'\\')) & 1 == 1
-            quoted ^= body.count(b'"') & 1 == 1
-    rest = b''.join(keep)
-    joined = re.sub(rb'[\s\\"]', b'', rest)
-    for path in paths:
-        name = re.escape(path.rsplit(b'/', 1)[-1])
-        if re.search(rb'(?:^|[/\s"\'])' + name + rb'(?=$|[\s"\'])', rest,
-                     re.M) or re.search(rb'(?:^|/)' + name, joined):
-            raise Error('%s: %s is referenced in a form other than "insmod '
-                        '%s"; fix it by hand' %
-                        (fn, path.rsplit(b'/', 1)[-1].decode(), path.decode()))
-    return rest, n
+            toks += t
+    keep.append(data[pos:])
+    return b''.join(keep), n, toks
 
 
 def cmd_remove_module(a):
@@ -911,6 +983,7 @@ def cmd_remove_module(a):
     rcs = {}
     paths = [b'/' + MODULE_DIRS[0].encode() + b.encode() for b in names]
     lines = dict.fromkeys(paths, 0)
+    toks = []
     for e in entries:
         n = norm(e.name)
         if not is_reg(e) or '/' in n or not n.endswith('.rc'):
@@ -918,9 +991,10 @@ def cmd_remove_module(a):
         if e.f['filesize'] > MAX_RC_SIZE:
             raise Error('/%s over 1 MiB; refusing' % n)
         data = p.cpio[e.data_off:e.data_off + e.f['filesize']]
-        data, k = drop_insmod(data, paths, '/' + n)
+        data, k, t = drop_insmod(data, paths, '/' + n)
         for x in paths:
             lines[x] += k[x]
+        toks.append((n, t))
         if len(data) != e.f['filesize']:
             if e.f['nlink'] != 1:
                 raise Error('/%s is a hard link (nlink %d); not supported' %
@@ -930,6 +1004,13 @@ def cmd_remove_module(a):
         if not lines[x]:
             raise Error('no "insmod %s" line in the .rc files at the root' %
                         x.decode())
+    for n, t in toks:
+        for x in paths:
+            m = x.rsplit(b'/', 1)[-1]
+            if any(m in y for y in t):
+                raise Error('/%s: %s is referenced in a form other than '
+                            '"insmod %s"; fix it by hand' %
+                            (n, m.decode(), x.decode()))
     lines = sum(lines.values())
     out = bytearray()
     for e in entries:
