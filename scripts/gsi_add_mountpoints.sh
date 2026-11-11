@@ -4,7 +4,8 @@
 # Usage: scripts/gsi_add_mountpoints.sh --dir /NAME --label CONTEXT
 #          [--dir /NAME --label CONTEXT ...] --output OUT.img IN.img
 #   --dir /NAME       a root-level directory to add: one component, matching
-#                     ^/[A-Za-z0-9_.-]+$ (not / . ..); repeatable, no duplicates
+#                     ^/[A-Za-z0-9_.-]+$ (not / . ..), checked on the whole
+#                     argument (newlines refused); repeatable, no duplicates
 #   --label CONTEXT   SELinux label of the preceding --dir, u:object_r:TYPE:s0;
 #                     exactly one per --dir (see the doc for where to read it)
 #   --output OUT.img  the modified copy (must not exist, must not be IN.img)
@@ -21,20 +22,20 @@ PENDING=0 # a --dir still waits for its --label
 
 die() { echo "FAIL: $*" >&2; exit 1; }
 say() { echo "== $*"; }
-usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 while [ $# -gt 0 ]; do
   case $1 in
     --dir)
       [ $# -ge 2 ] && [ "$PENDING" -eq 0 ] || usage
-      printf '%s' "$2" | grep -Eq '^/[A-Za-z0-9_.-]+$' ||
+      [[ $2 =~ ^/[A-Za-z0-9_.-]+$ ]] ||
         die "--dir must be one root-level name like /NAME, got: $2"
       case $2 in /.|/..) die "--dir must not be $2" ;; esac
       for d in ${DIRS[@]+"${DIRS[@]}"}; do [ "$d" != "$2" ] || die "duplicate --dir $2"; done
       DIRS+=("$2"); PENDING=1; shift ;;
     --label)
       [ $# -ge 2 ] && [ "$PENDING" -eq 1 ] || usage
-      printf '%s' "$2" | grep -Eq '^u:object_r:[A-Za-z0-9_]+:s0$' ||
+      [[ $2 =~ ^u:object_r:[A-Za-z0-9_]+:s0$ ]] ||
         die "label must look like u:object_r:TYPE:s0, got: $2"
       LABELS+=("$2"); PENDING=0; shift ;;
     --output) [ $# -ge 2 ] || usage; OUT=$2; shift ;;
@@ -81,11 +82,11 @@ for i in "${!DIRS[@]}"; do
   d=${DIRS[$i]}
   printf '%s\0' "${LABELS[$i]}" >"$WORK/label$i"
   cat >>"$WORK/cmds" <<EOC
-mkdir $d
-set_inode_field $d mode 040755
-set_inode_field $d uid 0
-set_inode_field $d gid 0
-ea_set -f $WORK/label$i $d security.selinux
+mkdir "$d"
+set_inode_field "$d" mode 040755
+set_inode_field "$d" uid 0
+set_inode_field "$d" gid 0
+ea_set -f "$WORK/label$i" "$d" security.selinux
 EOC
 done
 say "debugfs -w on the copy"

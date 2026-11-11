@@ -95,6 +95,18 @@ check "...and leaves no output" test ! -e "$T/o2.img"
 run --dir /productinfo --label 'u:object_r:x:s0;rm' --output "$T/o3.img" "$IMG"
 check "malformed label refused" test "$RC" != 0
 check "...and leaves no output" test ! -e "$T/o3.img"
+# a newline must not smuggle a second line (a debugfs command) past validation
+NL_DIR=$'/safe\ndump /system/build.prop /host/x'
+run --dir "$NL_DIR" --label "$LABEL" --output "$T/o7.img" "$IMG"
+check "newline in --dir refused" test "$RC" != 0
+check "...and leaves no output" test ! -e "$T/o7.img"
+check "...input untouched" test "$(sha256sum <"$IMG")" = "$before"
+run --dir /productinfo --label $'u:object_r:x:s0\nrm /system' --output "$T/o8.img" "$IMG"
+check "newline in --label refused" test "$RC" != 0
+check "...and leaves no output" test ! -e "$T/o8.img"
+check "...input untouched" test "$(sha256sum <"$IMG")" = "$before"
+run --dir $'/a\n' --label "$LABEL" --output "$T/o9.img" "$IMG"
+check "trailing newline in --dir refused" test "$RC" != 0
 run --dir /productinfo --output "$T/o4.img" "$IMG"
 check "missing --label: usage" test "$RC" = 2
 run --dir /productinfo --label "$LABEL" "$IMG"
