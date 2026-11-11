@@ -77,7 +77,7 @@ by drivers that need them), `GENERIC_PHY`, `PHY_XGENE`, `SERIO`, `SERIO_LIBPS2`,
 | `GOODIX_TEE_FINGERPRINT` (DW100U), `SUNWAVE_FINGERPRINT` (DM63, MT107, MT108, DM82), `HEALTH_GOODIX` (DM63, MT108) | as listed | No. Vendor drivers, no source here. |
 | `HEARTRATE_BD1820` (DW100U, MT108, DM82), `INPUT_SENSORS_BD1XXX` (all but MT107) | as listed | No. The `bd1xxx_hr` DT node has no driver (HRS3300/HRS3918 are covered by `INPUT_SENSORS_HRS3XXX`). |
 | `SENSORS_MSP891`, `SENSORS_OCH1970` (all but DM63), `SENSORS_COMPASS_AF6837` (all), `INPUT_FALL_OFF` (DM63, MT108) | as listed | No. No source or compatible in tree (OCH1970 is the MT108's magnetic open/rotate sensor, see its SPEC). |
-| `TOUCHSCREEN_BETTERLIFE_COB_JR` | all | No: the `btl,btl_ts` node (present in every stock DT) has no driver. |
+| `TOUCHSCREEN_BETTERLIFE_COB_JR` | all | Yes, renamed: `TOUCHSCREEN_BTL` (`btl_ts.c`, compatible `btl,btl_ts`, see `BTL_TS_INTERFACE.md`); enabled in the K18, MT107, MT108 and DM82 fragments. DM63 and DW100U leave that chip unbound (their touch is CST0xx and Hynitron); the node is in every DT, the chip ID check makes the probe fail cleanly where the chip is absent. |
 | `TOUCHSCREEN_CTS0XX_TS_SMARTWATCH_JR` (all), `TOUCHSCREEN_CTS0XX_E10_GS17` (DM63, DW100U, MT107) | as listed | Yes, renamed: `TOUCHSCREEN_CST0XX` (`cst0xx_ts.c`, "smartwatch" strings; compatible `cst0xx,cst0xx_ts`), enabled in the DM63 and MT fragments. |
 
 ## Result
