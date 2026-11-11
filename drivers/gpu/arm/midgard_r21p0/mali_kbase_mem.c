@@ -2448,8 +2448,6 @@ static int kbase_jd_user_buf_map(struct kbase_context *kctx,
 	unsigned long address;
 	struct mm_struct *mm;
 	struct device *dev;
-	unsigned long offset;
-	unsigned long local_size;
 
 	alloc = reg->gpu_alloc;
 	pa = kbase_get_gpu_phy_pages(reg);
@@ -2503,25 +2501,21 @@ static int kbase_jd_user_buf_map(struct kbase_context *kctx,
 	}
 
 	dev = kctx->kbdev->dev;
-	offset = address & ~PAGE_MASK;
-	local_size = alloc->imported.user_buf.size;
 
+	/* The GPU is given whole-page mappings, so every page must be
+	 * DMA-mapped (and cache-maintained) in full, not just the part covered
+	 * by the user buffer (CVE-2023-4272).
+	 */
 	for (i = 0; i < pinned_pages; i++) {
 		dma_addr_t dma_addr;
-		unsigned long min;
 
-		min = MIN(PAGE_SIZE - offset, local_size);
-		dma_addr = dma_map_page(dev, pages[i],
-				offset, min,
+		dma_addr = dma_map_page(dev, pages[i], 0, PAGE_SIZE,
 				DMA_BIDIRECTIONAL);
 		if (dma_mapping_error(dev, dma_addr))
 			goto unwind;
 
 		alloc->imported.user_buf.dma_addrs[i] = dma_addr;
 		pa[i] = as_tagged(page_to_phys(pages[i]));
-
-		local_size -= min;
-		offset = 0;
 	}
 
 	alloc->nents = pinned_pages;
@@ -2554,23 +2548,18 @@ static void kbase_jd_user_buf_unmap(struct kbase_context *kctx,
 {
 	long i;
 	struct page **pages;
-	unsigned long size = alloc->imported.user_buf.size;
 
 	KBASE_DEBUG_ASSERT(alloc->type == KBASE_MEM_TYPE_IMPORTED_USER_BUF);
 	pages = alloc->imported.user_buf.pages;
 	for (i = 0; i < alloc->imported.user_buf.nr_pages; i++) {
-		unsigned long local_size;
 		dma_addr_t dma_addr = alloc->imported.user_buf.dma_addrs[i];
 
-		local_size = MIN(size, PAGE_SIZE - (dma_addr & ~PAGE_MASK));
-		dma_unmap_page(kctx->kbdev->dev, dma_addr, local_size,
+		dma_unmap_page(kctx->kbdev->dev, dma_addr, PAGE_SIZE,
 				DMA_BIDIRECTIONAL);
 		if (writeable)
 			set_page_dirty_lock(pages[i]);
 		put_page(pages[i]);
 		pages[i] = NULL;
-
-		size -= local_size;
 	}
 	alloc->nents = 0;
 }
