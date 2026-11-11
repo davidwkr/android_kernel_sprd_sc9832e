@@ -1,0 +1,24 @@
+# /vendor/etc/fstab.sl8541e_1h10 for a GSI (mount_all target in init.sl8541e_1h10.rc).
+# Stock ramdisk fstab.sl8541e_1h10 (identical on DM63 and DW100U-silver) minus:
+#   - the two commented memdisk lines (memdisk.0 /system, memdisk.1 /data).
+#   - the stock header comment: there is no /system or /vendor entry, the
+#     first-stage ramdisk mounts them (they are not listed here on purpose).
+# Every remaining line, flag and option is byte-identical to stock.
+# Encryption: "encryptable=footer" is kept as stock. It is legacy full-disk
+# encryption, which a GSI keeps only up to Android 10 (vold). Stock userdata
+# may carry a crypto footer: do not mount it with a GSI that expects FBE or no
+# encryption without a data wipe. For Android 11+, or to avoid the footer
+# probing, change "wait,encryptable=footer,check" to "wait,check" and the
+# sdcard "voldmanaged=...,encryptable=footer" to "voldmanaged=...".
+# "emmc" (/misc) is a raw partition: fs_mgr skips it in mount_all, the entry
+# stays for recovery/uncrypt. The /productinfo mount point is created by fs_mgr
+# in the ramdisk root, which has to be writable.
+# <src>                                         <mnt_point>  <type>  <mnt_flags and options>             <fs_mgr_flags>
+
+/dev/block/platform/soc/soc:ap-ahb/20600000.sdio/by-name/userdata /data        f2fs noatime,nosuid,nodev,discard,inline_xattr,inline_data wait,encryptable=footer,check
+/dev/block/platform/soc/soc:ap-ahb/20600000.sdio/by-name/userdata /data        ext4 noatime,nosuid,nodev,nomblk_io_submit,noauto_da_alloc wait,encryptable=footer,check
+/dev/block/platform/soc/soc:ap-ahb/20600000.sdio/by-name/cache    /cache       ext4 noatime,nosuid,nodev,nomblk_io_submit,noauto_da_alloc wait,check
+/devices/platform/soc/soc:ap-ahb/20200000.usb/musb-hdrc.0.auto/usb*      auto         vfat defaults voldmanaged=usbdisk:auto
+/devices/platform/soc/soc:ap-ahb/20300000.sdio/mmc_host/mmc1/mmc1:*/block/mmcblk1      auto         vfat defaults voldmanaged=sdcard0:auto,noemulatedsd,encryptable=footer
+/dev/block/platform/soc/soc:ap-ahb/20600000.sdio/by-name/prodnv   /productinfo ext4 noatime,nosuid,nodev,nomblk_io_submit,noauto_da_alloc wait,check
+/dev/block/platform/soc/soc:ap-ahb/20600000.sdio/by-name/misc     /misc        emmc    defaults    defaults

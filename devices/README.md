@@ -27,6 +27,10 @@ Use `stock.dts` as the device tree for the first boots. It's the vendor's, and i
 - Prove equivalence with `python3 -I tools/dtcompare.py --dtc ../out_dts/scripts/dtc/dtc STOCK NEW`. STOCK and NEW can each be a boot image, a DTB or a DTS. It parses the FDT binary and compares the header fields, `/memreserve/` entries, node names, property names and raw value bytes (so phandle numbers must match exactly, nothing is normalised); DTS input is compiled first. It prints `BYTE-IDENTICAL`, `SAME STRUCTURE IN ORDER`, `SAME CONTENT, ORDER DIFFERS` or the list of differences; `--strict-order` also fails on order differences. Errors exit 2. Checked: the six DTS against the DTBs of the stock boot images (DW100U V13M against its extracted stock DTB, since no V13M boot image is kept) all report `BYTE-IDENTICAL`.
 - The DTS carry no per-unit data (no MAC, serial or IMEI properties). Re-check before adding a tree from a new dump.
 
+### GSI vendor patch
+
+`dm63/vendor_gsi/` and `dw100u-silver/vendor_gsi/` hold the device rc, fstab and ueventd that a GSI under system-as-root needs in `/vendor`; what changed against the stock ramdisk and how `scripts/vendor_gsi_patch.sh` installs it: [`VENDOR_GSI_PATCH.md`](VENDOR_GSI_PATCH.md).
+
 Related: [`../TODO.md`](../TODO.md) (work plan), [`../KERNEL_TWEAKS.md`](../KERNEL_TWEAKS.md) (battery, flash-write and GNSS changes wanted once the kernel boots).
 
 ## Common platform (all three)
