@@ -48,6 +48,8 @@ oops() {
 [   12.345880] [<ffffff8008123456>] el0_svc_naked+0x34/0x38
 [   12.345890] hashed ptr 00000000a1b2c3d4 raw 0xffffffc000aabbcc end
 [   12.345900] module Live 0xffffffbffc012000 (mali)
+[   12.345910] x0 : ffffffffffffffea x2 : ffffffffffffffff x3 : fffffffffffff000
+[   12.345920] drv: error=0xffffffffffffffea ret=0xfffffffffffff3f4 below fffffffffffefff0 ok
 OOPS
 }
 adb_mock() {
@@ -87,6 +89,7 @@ adb_mock() {
           printf '01-01 00:00:08.000  100  100 W Adjacent: subscriptions: %s %s imei %s %s meids=%s,%s\n' "$ICCID" "$ICCID2" "$IMEI" "$IMEI2" "$MEID" "$MEID2"
           printf '01-01 00:00:09.000  100  100 W Adjacent: macs %s %s %s phones %s %s %s %s\n' "$MAC" "$MAC3" "$MAC4" "$PH3" "$PH4" "$PH1" "$PH5"
           printf '01-01 00:00:10.000  100  100 W Adjacent: coords %s, %s, %s, %s, %s serial: %s %s serials=%s %s\n' "$LAT" "$LNG" "$LAT2" "$LNG2" "$LAT" "$SERV1" "$SERV3" "$SERV2" "$SERV4"
+          printf '01-01 00:00:08.000  100  100 W Quoted: serial: "%s" "%s" serials: "%s","%s", "%s"\n' "$SERV1" "$SERV3" "$SERV2" "$SERV4" "$SERV3"
           printf '01-01 00:00:07.000  100  100 W Build: serial: %s and Serial Number: %s iccid=%s imsi %s\n' "$SERV1" "$SERV2" "$ICCID" "$IMSI" ;;
         'cat /proc/meminfo') echo "MemTotal: 1800000 kB" ;;
         'ls /proc/pressure') printf 'cpu\nio\nmemory\n' ;;
@@ -185,7 +188,9 @@ check "dmesg readable: no su" bash -c "! grep -q 'su ' '$T/adb.log'"
 
 echo "-- adjacent values of the same category, kernel addresses"
 check "adjacent values: none of the second/third ones survive (ICCID, IMEI, MEID, MAC, phone, coordinates, serial)" no_leak "$d"
-check "kernel addresses: every ffff form gone" bash -c "! grep -rqiE '(^|[^0-9a-z])(0x)?ffff[0-9a-f]{12}([^0-9a-z]|\$)' '$d' && ! grep -rqiE 'ffffff8008123[0-9a-f]{3}|ffffffc000123abc' '$d'"
+check "kernel addresses: every ffff form gone (outside the error range)" bash -c "! grep -rPqi '(^|[^0-9a-z])(0x)?ffff(?!f{9})[0-9a-f]{12}([^0-9a-z]|\$)' '$d' && ! grep -rqiE 'ffffff8008123[0-9a-f]{3}|ffffffc000123abc' '$d'"
+check "error codes stay (-EINVAL, -1, -ENOMEM-style, last page); just below the range is redacted" bash -c "grep -q 'x0 : ffffffffffffffea x2 : ffffffffffffffff x3 : fffffffffffff000' '$d/dmesg.txt' && grep -q 'error=0xffffffffffffffea ret=0xfffffffffffff3f4 below <KADDR> ok' '$d/dmesg.txt' && ! grep -rqi 'fffffffffffefff0' '$d'"
+check "quoted serial lists: no element survives" bash -c "grep -q 'Quoted: serial: <SERIAL> serials: <SERIAL>' '$d/logcat.txt'"
 check "hashed pointers and register values stay" bash -c "grep -q 'x1 : 0000000000000001' '$d/dmesg.txt' && grep -q '00000000a1b2c3d4' '$d/dmesg.txt' && grep -q '\*pgd=0000000081234003' '$d/dmesg.txt'"
 check "kernel addresses: <KADDR> present in dmesg and pstore" bash -c "grep -q '<KADDR>' '$d/dmesg.txt' && grep -q '<KADDR>' '$d/pstore.txt'"
 check "oops: symbols, offsets, sizes, timestamps, register names stay" bash -c "grep -q 'mali_kbase_jd_submit+0x1c4/0x5e0 \[mali\]' '$d/dmesg.txt' && grep -q 'do_fault+0x1c/0x120' '$d/dmesg.txt' && grep -q 'el0_svc_naked+0x34/0x38' '$d/pstore.txt' && grep -q '^\[   12.345678\] Unable to handle kernel paging request at virtual address <KADDR>' '$d/dmesg.txt' && grep -q 'sp : <KADDR>' '$d/dmesg.txt' && grep -q 'x29: <KADDR> x28: <KADDR>' '$d/dmesg.txt' && grep -q '\[<KADDR>\] do_fault' '$d/dmesg.txt'"

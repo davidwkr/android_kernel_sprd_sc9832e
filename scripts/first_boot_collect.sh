@@ -142,14 +142,16 @@ build_redactor() { # $1: getprop output
   cat >>"$s" <<'EOF'
 s/^(\[[^]]*(imei|meid|esn|imsi|iccid|serial|mac|bdaddr|btaddr|msisdn|phone)[^]]*\]: \[)[^]]*\]/\1<REDACTED>]/I
 s/([A-Za-z0-9_.-]*(serialno|serial|imei|meid|imsi|iccid|mac|bdaddr)[A-Za-z0-9_.-]*=)[^ ,;]+([ ,;]+[A-Za-z]*[0-9][A-Za-z0-9]{5,})*/\1<REDACTED>/gI
-s/(serial[A-Za-z0-9_ .-]{0,12}[:=] *"?)[^ ,;"]+([ ,;]+[A-Za-z]*[0-9][A-Za-z0-9]{5,})*/\1<SERIAL>/gI
+s/(serial[A-Za-z0-9_ .-]{0,12}[:=] *)"?[^ ,;"]+"?(([ ,;]*"[^"]*")|([ ,;]+[A-Za-z]*[0-9][A-Za-z0-9]{5,}))*/\1<SERIAL>/gI
 s/(serial[ ]+)[A-Za-z]*[0-9][A-Za-z0-9]{5,}([ ,;]+[A-Za-z]*[0-9][A-Za-z0-9]{5,})*/\1<SERIAL>/gI
 s/(Account ?\{name=)[^,}]*/\1<EMAIL>/gI
 s/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/<EMAIL>/g
 s/([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}/<MAC>/g
 s/((imei|meid|esn|imsi|iccid|msisdn|phone ?number|subscriber ?id|device ?id)[A-Za-z0-9_.-]*[=: ]+"?)[0-9A-Za-z]{6,}([ ,;\/]+[A-Za-z]*[0-9][0-9A-Za-z]{5,})*/\1<ID>/gI
+s/\b(0x)?fffffffffffff([0-9A-Fa-f]{3})\b/\1@E@\2/gI
 s/\[<(0x)?ffff[0-9A-Fa-f]{12}>\]/[<KADDR>]/gI
 s/\b(0x)?ffff[0-9A-Fa-f]{12}\b/<KADDR>/gI
+s/@E@/fffffffffffff/g
 :iccid
 s/(^|[^0-9])89[0-9]{17,18}([^0-9]|$)/\1<ICCID>\2/g
 t iccid
@@ -342,13 +344,17 @@ leak 'e-mail' '[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z]{2,}'
 leak 'MAC-like value' '([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}'
 leak 'IMEI/IMSI-like digits' '(^|[^0-9])[0-9]{14,15}([^0-9]|$)'
 leak 'ICCID-like digits' '(^|[^0-9])89[0-9]{17,18}([^0-9]|$)'
-leak 'kernel address' '(^|[^0-9A-Za-z])(0x)?ffff[0-9a-f]{12}([^0-9A-Za-z]|$)'
+leak_p() { grep -rPqi -e "$2" "$OUT" && bad="$bad ${1}," || true; }
+# the last page (-4095..-1, error pointers and -errno) is not a kernel address
+leak_p 'kernel address' '(^|[^0-9A-Za-z])(0x)?ffff(?!f{9})[0-9a-f]{12}([^0-9A-Za-z]|$)'
 leak 'MEID-like hex' '(^|[^0-9A-Za-z])[0-9A-F]{14}([^0-9A-Za-z]|$)'
 leak 'coordinates' '-?[0-9]{1,3}\.[0-9]{4,}[ ,;/]+-?[0-9]{1,3}\.[0-9]{4,}|Location\[[a-z]+ [-0-9]'
 leak 'latitude/longitude value' '(latitude|longitude|lat|lng)[ =:]+-?[0-9]'
 leak 'phone number' '\+[0-9][0-9 ().-]{6,}[0-9]|(^|[^0-9.])[0-9]{2,4}[ -][0-9]{3,4}[ -][0-9]{3,4}([^0-9]|$)'
 leak 'serial value' 'serial[A-Za-z0-9_ .-]{0,12}[:=] *"?[^<[:space:]"]'
 leak 'serial value' 'serial +[A-Za-z]*[0-9][A-Za-z0-9]{5,}'
+# anything still following a serial key after the first value
+leak 'serial list element' 'serial[A-Za-z0-9_ .-]{0,12}[:=] *<SERIAL>("?[ ,;]*"[^"<]|[ ,;]+"?[A-Za-z]*[0-9][A-Za-z0-9]{5,})'
 leak 'SSID' 'ssid[A-Za-z_]*[=: ]+[^<[:space:]]'
 if grep -rqF -- "$SERIAL" "$OUT"; then bad="$bad adb serial,"; fi
 while IFS= read -r line; do
