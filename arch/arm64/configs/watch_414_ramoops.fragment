@@ -1,0 +1,11 @@
+# Persistent crash log for bring-up (devices/RAMOOPS_414.md). Merge on top of
+# sprd_sharkle_defconfig + watch_414.fragment (+ watch_414_adf.fragment,
+# watch_414_stock81.fragment), then run olddefconfig, and boot the -ramoops
+# DTB variants. The base defconfig already has these on; this pins them so a
+# later defconfig change cannot silently drop the crash log.
+CONFIG_PSTORE=y
+CONFIG_PSTORE_RAM=y
+CONFIG_PSTORE_CONSOLE=y
+CONFIG_PSTORE_PMSG=y
+# No ftrace zone: the region has no room for it and ftrace is off.
+# CONFIG_PSTORE_FTRACE is not set

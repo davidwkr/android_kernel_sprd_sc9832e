@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * DM63 ADF board (sp9832e-1h10-dm63-adf.dts) with a bigger, uncached ramoops
+ * console zone for bring-up, see devices/RAMOOPS_414.md.
+ */
+
+#include "sp9832e-1h10-dm63-adf.dts"
+#include "sp9832e-ramoops.dtsi"
