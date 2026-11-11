@@ -1769,10 +1769,10 @@ static bool qtaguid_mt(const struct sk_buff *skb, struct xt_action_param *par)
 	res = true;
 
 put_sock_ret_res:
-	if (got_sock)
-		sock_gen_put(sk);
 	if (set_sk_callback_lock)
 		read_unlock_bh(&sk->sk_callback_lock);
+	if (got_sock)
+		sock_gen_put(sk);
 ret_res:
 	MT_DEBUG("qtaguid[%d]: left %d\n", par->hooknum, res);
 	return res;
