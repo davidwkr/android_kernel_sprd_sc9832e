@@ -2918,6 +2918,10 @@ static int kbase_jit_grow(struct kbase_context *kctx,
 	if (!kbase_mem_evictable_unmake(reg->gpu_alloc))
 		goto update_failed;
 
+	/* Already sufficiently backed, nothing to allocate */
+	if (reg->gpu_alloc->nents >= info->commit_pages)
+		goto done;
+
 #ifdef CONFIG_MALI_2MB_ALLOC
 	/* Preallocate memory for the sub-allocation structs */
 	for (i = 0; i != ARRAY_SIZE(prealloc_sas); ++i) {
