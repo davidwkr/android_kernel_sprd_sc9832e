@@ -2,7 +2,7 @@
 # device config. The DT lists three touch candidates, two with drivers here (cst0xx_ts 0x38, hyn_ts 0x5a,
 # sharing the reset/irq GPIOs); the one that answers probes, the other
 # fails probe and releases its GPIOs. btl_ts (Betterlife, 0x2d) is
-# enabled too. Not needed: bd1xxx_hr (no driver in tree). watch_otg.fragment is deliberately not enabled.
+# enabled too. bd1xxx_hr stays unbound, as on stock (no INPUT_SENSORS_BD1XXX). watch_otg.fragment is deliberately not enabled.
 CONFIG_TOUCHSCREEN_CST0XX=y
 CONFIG_TOUCHSCREEN_BTL=y
 CONFIG_TOUCHSCREEN_CST9217=y
