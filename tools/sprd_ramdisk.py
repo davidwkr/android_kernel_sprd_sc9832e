@@ -903,13 +903,14 @@ def tokenize_rc(d):
                     tok.append(9)
                 elif c == 92:
                     tok.append(92)
-                elif c == 13 or c == 10:
-                    # '\ CR LF' and '\ LF' continue the line; '\ CR' alone
-                    # is discarded with the CR, the token goes on
-                    if c == 13:
-                        x += 1
-                        if d[x:x + 1] != b'\n':
-                            continue
+                elif c == 13:
+                    # init steps over the CR only: '\ CR' alone is dropped
+                    # and the token goes on; in '\ CR LF' the LF then ends
+                    # the token and the command (no continuation)
+                    x += 1
+                    continue
+                elif c == 10:
+                    # '\ LF' continues the line, eating the blanks after it
                     x += 1
                     while x < n and d[x] in b' \t':
                         x += 1

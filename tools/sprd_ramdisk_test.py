@@ -277,9 +277,10 @@ class Case(unittest.TestCase):
         # n, r, t and backslash do not skip the letter (as in init)
         self.assertEqual(self.toks(b'\\n.ko\n'), [[b'\nn.ko']])
         self.assertEqual(self.toks(b'x\\tz\n'), [[b'x\ttz']])
-        # CRLF and LF continuations eat the break and following blanks
+        # backslash + CR LF: init steps over the CR only, the LF ends the
+        # command; backslash + LF continues, eating the following blanks
         self.assertEqual(self.toks(b'insmod a.\\\r\n \tko\n'),
-                         [[b'insmod', b'a.ko']])
+                         [[b'insmod', b'a.'], [b'ko']])
         self.assertEqual(self.toks(b'a\\\n b\n'), [[b'ab']])
         # unterminated quote: the token and its command are dropped
         self.assertEqual(self.toks(b'one\ninsmod "a.ko\n'), [[b'one']])
