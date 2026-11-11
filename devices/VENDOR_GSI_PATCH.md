@@ -8,7 +8,8 @@ With system-as-root the first-stage ramdisk only mounts `/system` and `/vendor`.
 | `etc/fstab.sl8541e_1h10` | `/vendor/etc/fstab.sl8541e_1h10` | `mount_all` in the rc above |
 | `ueventd.rc` | `/vendor/ueventd.rc` | ueventd of Android 10+ (`/system/etc/ueventd.rc`, then `/vendor/ueventd.rc`, then `/odm/ueventd.rc`) |
 
-| `devices/common/vendor_gsi/etc/init/gsi_defaults.rc` (shared by both watches) | `/vendor/etc/init/gsi_defaults.rc` | init of Android 10+ parses every `*.rc` in `/vendor/etc/init`; GSI property defaults, see "GSI defaults" |
+| `devices/common/vendor_gsi/etc/init/gsi_defaults.rc` (shared by both watches) | `/vendor/etc/init/gsi_defaults.rc` | init of Android 10+ parses every `*.rc` in `/vendor/etc/init`; the `persist.sys.vndk` fallback, see "GSI defaults" |
+| (edited in place, not a file of the tree) | `/vendor/build.prop` | `ro.config.low_ram=true`, the old file kept as `build.prop.pregsi`; see "GSI defaults" |
 
 All files are `root:root 0644`. SELinux labels: `vendor_configs_file` for the `etc` files; for `/vendor/ueventd.rc` and the modules the label is looked up at install time (see the script). Source of every file: the stock ramdisks in the untouched dumps (DM63 and DW100U-silver ramdisk; read only, the script and the files here never execute anything from them).
 
@@ -116,18 +117,41 @@ On the copy it runs `debugfs -w`: per directory `mkdir`, `set_inode_field mode 0
 
 ## GSI defaults
 
-`gsi_defaults.rc` is one `on early-init` block, installed like the other `etc` files (label from the device's `nonplat_file_contexts`, fallback `vendor_configs_file`; backup of the partition first, `.pregsi` of an existing file, sha256/mode/owner/label read back). Why an rc and not a prop file: the only property files init reads from `/vendor` are the stock `/vendor/build.prop` (and the legacy `/vendor/default.prop` [I: whether Android 14 init still loads it, from memory]), which already exist on the watch. Putting defaults there means rewriting a stock file we do not own, in place, with an ordering against its other `ro.*` lines we cannot see here; a new prop file is read by nobody. A new rc is read by init by directory, and `setprop` from init is not subject to the SELinux property checks of the property service [I]. All three are set in `early-init`, before the `ro.ramsize`/`ro.run.ramconfig` tables of the stock rc and before the framework reads them.
+Two changes carry GSI defaults: `ro.config.low_ram=true` in `/vendor/build.prop`, and `gsi_defaults.rc` with one fallback property (`persist.sys.vndk`). Nothing here sets the app freezer.
 
-| Property | Value | Why | Check on first boot |
-|---|---|---|---|
-| `persist.device_config.activity_manager_native_boot.use_freezer` | `false` | app freezer off: the 4.14 kernel has only the cgroup v1 freezer (`freezer.state`), the GSI task profiles write `cgroup.freeze` (v2); see `devices/GSI_414.md` on `config/gsi-414`. The framework reads this DeviceConfig flag at boot [I: from the task description and memory of `CachedAppOptimizer`]. Harmless on the 4.4 route (no freezer at all) | `getprop persist.device_config.activity_manager_native_boot.use_freezer`; `dumpsys activity settings \| grep -i freezer` |
-| `ro.config.low_ram` | `true` | Android Go behaviour (DM63 1.8 GB, DW100U 2.8 GB) | `getprop ro.config.low_ram` |
-| `persist.sys.vndk` | `27` | the GSI's `rw-system.sh` picks the VNDK 26/27 linker config from it [I: from memory of the phh/TrebleDroid script]; the watches report no VNDK version | `getprop persist.sys.vndk`; `ls /system/etc/ld.config*` and the `linkerconfig` log |
+### `ro.config.low_ram`: in `/vendor/build.prop`, not in an rc
 
-Behaviour that follows from the choice:
+Android Go behaviour (DM63 1.8 GB, DW100U 2.8 GB). Build properties load before `early-init`, and `ro.*` is write-once, so a `setprop ro.config.low_ram true` in an rc cannot change a value any loaded property file already defines (and the stock vendor may define it). The install script therefore edits the property file itself:
 
-- `ro.*` is write-once. The stock rc has `setprop ro.config.low_ram true` for `ramconfig` 2 and 4, and `false` for 8 (`ro.ramsize` 1536M and up; it also sets `zram.disksize` 1024-1536). With the `early-init` write first, the later `false` is refused and logged; `ro.ramsize` itself is set outside the files carried here (open point below), so DM63's real `ramconfig` is not known. The ZRAM/LMK/RTCC tables still apply.
-- `persist.*` set before `/data` is mounted are defaults: init does not write them to `/data/property` at that point [I], and a value already stored there (user, `device_config put`, server flag) replaces them when persistent properties load. To force a value after a first boot, `setprop` it.
+- it reads `/vendor/build.prop` with `adb exec-out cat` (the sha256 of the copy must equal `sha256sum` on the device), edits the copy on the host, and installs it through the same verified path as the other files (`.new`, chown/chmod/chcon, `mv`, sha256 and owner/mode/label read back); before the install it checks that the device file still has the sha256 it read; the old file is kept once as `/vendor/build.prop.pregsi`;
+- every `ro.config.low_ram=...` line becomes `ro.config.low_ram=true` in place; with none, the line is appended (a missing final newline is added first); every other line is byte-identical (checked on the host with `diff` before anything is written); nothing is written if the file already has the line;
+- it refuses (before the backup, nothing written) a file that is not `root:root`, larger than 256 KiB, empty, with NUL or CR bytes, with a line that is not blank, a comment, `key=value` or `import ...`, or without an `ro.vendor.build.*`/`ro.product.vendor.*` line;
+- mode and SELinux label are those the file has now;
+- if `/vendor/default.prop` also sets `ro.config.low_ram` it prints a warning and does not touch that file: which of `default.prop` and `build.prop` wins for a duplicate `ro.*` is not verified here [I: Android 14 init loads `/vendor/default.prop`, then `/vendor/build.prop`].
+
+The stock rc `setprop ro.config.low_ram false` (`ro.run.ramconfig` 8) then fails harmlessly: the property is already set. `ro.ramsize` itself is set outside the files carried here (open point below), so DM63's real `ramconfig` is not known; the ZRAM/LMK/RTCC tables still apply.
+
+Property setting from init and the vendor_init gate: `setprop` in an rc is not free of checks. init runs vendor rc files in a `subcontext` (as `u:r:vendor_init:s0`, so the SELinux property checks and the `vendor_init` namespace rules apply) only when the vendor SELinux version is 28 or higher; below that, vendor rc commands run as `init` itself [I: from memory of `init/subcontext.cpp` and `init/service.cpp`, not verified in source]. Our 8.1 vendor reports SELinux version 27, so its rc commands run as init. That is why the `persist.sys.vndk` setprop below is accepted, not because init bypasses anything; for `ro.config.low_ram` the issue is the write-once rule and load order, not permission.
+
+### `persist.sys.vndk`: fallback only (GSI read-only, `lineage-21-arm64_bvN-vndklite`)
+
+Read from the image with `debugfs -R cat`, nothing executed:
+
+- `/system/etc/init/vndk.rc`: `on post-fs` runs `exec - root -- /system/bin/vndk-detect`, then `/system/bin/rw-system.sh`, then `setprop ro.vndk.version ${persist.sys.vndk}`.
+- `/system/bin/vndk-detect` (shell): `grep -oE 'init_[0-9_]+' /vendor/etc/selinux/nonplat_sepolicy.cil | uniq | sort -n | head -n 1 | sed ... | while read version; do setprop persist.sys.vndk $version; done`. It takes the lowest `init_<N>` token of the vendor sepolicy and writes it, overwriting any earlier value. If the file is missing or has no such token it sets nothing.
+- `/system/bin/rw-system.sh`: `vndk=$(getprop persist.sys.vndk)`, else the digits of `ro.vndk.version`; then `[ "$vndk" = 26 ]`, `= 27`, `-le 27`, `-ge 28`, `-lt 28`... branches (for 26/27: libnfc conf bind mount, `debug.hwui.use_buffer_age false`, `persist.sys.phh.no_present_or_validate true`, sprd keystore handling at `-le 28`, `mnld` at `-le 27`, `ro.product.first_api_level "$vndk"`). With no value, the numeric tests fail ("integer expression expected") and the branches for an 8.1 vendor are skipped.
+
+For our vendor: an Android 8.1 `nonplat_sepolicy.cil` is expected to carry versioned `init_27_0` attributes, so vndk-detect should pick 27 by itself [I: the cil of the watch's vendor was not read; no vendor dump is in this tree]. Our early-init value therefore is not needed in that case and is harmless: it is written earlier (early-init), and vndk-detect overwrites it with the same 27 at post-fs. It matters only when detection finds nothing (cil missing or without `init_<N>`): then it is the only value rw-system.sh sees, because a user-set value in `/data/property` is not loaded until `post-fs-data`, after `rw-system.sh` ran. A different detected number would win over ours; the check below shows it. Check on first boot: `getprop persist.sys.vndk ro.vndk.version` (27 and 27).
+
+### App freezer: not set by the patch
+
+An earlier version set `persist.device_config.activity_manager_native_boot.use_freezer=false`; it is removed: a persist property with that name is not the DeviceConfig API. As far as I remember, Android 14 `CachedAppOptimizer` reads `Settings.Global` `cached_apps_freezer`, then the DeviceConfig flag (the settings database, not a system property), and also checks that the kernel supports the freezer (cgroup v2 `cgroup.freeze`) and disables itself if not [I: from memory of `CachedAppOptimizer`, not verified: the framework is not read here]. What the image shows: `/system/etc/task_profiles.json` and `cgroups.json` define `FreezerState` with controller `freezer` and file `cgroup.freeze` (v2). The 4.14 kernel has only the v1 freezer (`freezer.state`), the 4.4 kernel none (`devices/GSI_414.md` on `config/gsi-414`).
+
+Operator step after the first boot, done by the tester on the watch (a deliberate device write, no script of ours does it): `adb shell settings put global cached_apps_freezer disabled`. Check: `adb shell dumpsys activity | grep -i freez` (the freezer must not be reported enabled). If the freezer already reports disabled before the step, nothing needs to be done.
+
+### Behaviour that follows
+
+- `persist.*` set before `/data` is mounted are defaults: init does not write them to `/data/property` at that point [I], and a value already stored there replaces them when persistent properties load.
 
 ### lmkd: no property set
 
@@ -164,9 +188,9 @@ scripts/vendor_gsi_patch.sh --device dw100u-silver --apply [--backup-dir DIR] [-
 
 ## Tests
 
-`scripts/tests/vendor_gsi_patch_test.sh`: a stub adb (shell function) over a fake device tree, nothing touches a device. It checks: the shared `gsi_defaults.rc` (three properties, no lmk line) is installed on both watches, labelled, mode 0644 and kept as `.pregsi` like the other files; dry run is the default and writes nothing; Magisk and vendor-su modes; files, modes, owners requested and labels (also from a `nonplat_file_contexts` rule); the dump equals the partition; a truncated dump and a mismatching re-read abort before any remount or write; verity is reported and nothing is written (dry run exit 3); wrong `ro.hardware`, a non-`by-name/vendor` block device, a full `/vendor`, an unknown device are refused; modules and the mali switch; `.pregsi` is kept once; other partitions and `/data` are byte-identical afterwards. `bash -n` and, if installed, `shellcheck` run first (not installed on the machine used; not run).
+`scripts/tests/vendor_gsi_patch_test.sh`: a stub adb (shell function) over a fake device tree, nothing touches a device. It checks: the shared `gsi_defaults.rc` (only `persist.sys.vndk`, no freezer, low_ram or lmk line) is installed on both watches, labelled, mode 0644 and kept as `.pregsi` like the other files; the `build.prop` edit (replace in place, append with and without a final newline, duplicates, already true, mode/label kept, `.pregsi`, a `default.prop` warning, and the refusals: CR, NUL, a garbage line, no `ro.vendor.build.*`, empty, oversize, missing); dry run is the default and writes nothing; Magisk and vendor-su modes; files, modes, owners requested and labels (also from a `nonplat_file_contexts` rule); the dump equals the partition; a truncated dump and a mismatching re-read abort before any remount or write; verity is reported and nothing is written (dry run exit 3); wrong `ro.hardware`, a non-`by-name/vendor` block device, a full `/vendor`, an unknown device are refused; modules and the mali switch; `.pregsi` is kept once; other partitions and `/data` are byte-identical afterwards. `bash -n` and, if installed, `shellcheck` run first (not installed on the machine used; not run).
 
-Not verified on hardware: nothing here was run against a watch. First-boot checks: `getprop ro.hardware`, `logcat -b all | grep -i init`, `dmesg | grep -i avc`, `/dev/mali0`, `/dev/adf0`, Wi-Fi/BT modules (`lsmod`), the three GSI default properties. `scripts/first_boot_collect.sh` collects all of these read-only: `devices/FIRST_BOOT.md`.
+Not verified on hardware: nothing here was run against a watch. First-boot checks: `getprop ro.hardware`, `logcat -b all | grep -i init`, `dmesg | grep -i avc`, `/dev/mali0`, `/dev/adf0`, Wi-Fi/BT modules (`lsmod`), `ro.config.low_ram` and `persist.sys.vndk`, the freezer operator step. `scripts/first_boot_collect.sh` collects all of these read-only: `devices/FIRST_BOOT.md`.
 
 ## Open points
 

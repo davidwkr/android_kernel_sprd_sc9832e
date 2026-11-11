@@ -50,7 +50,9 @@ new_fake() {
   head -c 4096 /dev/urandom >"$FAKE/$BLK_REL/system"
   echo system >"$FAKE/system/build.prop"
   echo userdata >"$FAKE/data/sentinel"
-  echo 'ro.vendor=1' >"$FAKE/vendor/build.prop"
+  printf '%s\n' '# vendor build' 'ro.vendor.build.fingerprint=example/watch:8.1.0' 'ro.product.vendor.model=Watch' \
+    'ro.config.low_ram=false' 'ro.zzz=last' >"$FAKE/vendor/build.prop"
+  cp "$FAKE/vendor/build.prop" "$FAKE/build.prop.orig"
   cat >"$FAKE/vendor/etc/selinux/nonplat_file_contexts" <<'EOF'
 # test contexts
 /vendor/etc(/.*)?            u:object_r:vendor_configs_file:s0
@@ -188,7 +190,8 @@ done
 GD=$HERE/../../devices/common/vendor_gsi/etc/init/gsi_defaults.rc
 echo "-- shared GSI defaults rc"
 check "gsi_defaults.rc exists" test -s "$GD"
-check "sets use_freezer false, low_ram true, vndk 27" bash -c "grep -q '^    setprop persist.device_config.activity_manager_native_boot.use_freezer false\$' '$GD' && grep -q '^    setprop ro.config.low_ram true\$' '$GD' && grep -q '^    setprop persist.sys.vndk 27\$' '$GD'"
+check "sets only persist.sys.vndk 27" bash -c "test \"\$(grep -c '^    setprop ' '$GD')\" = 1 && grep -q '^    setprop persist.sys.vndk 27\$' '$GD'"
+check "no use_freezer, no low_ram setprop (not effective from an rc)" bash -c "! grep -v '^#' '$GD' | grep -Eq 'freezer|low_ram'"
 check "sets no lmk property" bash -c "! grep -v '^#' '$GD' | grep -q lmk"
 
 echo "-- dry run is the default"
@@ -201,6 +204,9 @@ check "no backup written" test "$(backups)" = 0
 check "vendor tree unchanged" test "$(vendor_hash)" = "$vb"
 check "no write op on the device" bash -c "! grep -qE 'chown|chcon|remount,rw|setrw' '$FAKE/ops.log' 2>/dev/null"
 check "no exec-in used" bash -c "! grep -q '^exec-in' '$FAKE/adb.log'"
+check "plan lists build.prop with its current label" has '/vendor/build.prop  mode 0644 root:root  label u:object_r:vendor_file:s0  (replaces'
+check "dry run says what changes in build.prop" has 'ro.config.low_ram=false -> ro.config.low_ram=true'
+check "dry run: build.prop untouched, no .pregsi" bash -c "cmp -s '$FAKE/vendor/build.prop' '$FAKE/build.prop.orig' && [ ! -e '$FAKE/vendor/build.prop.pregsi' ]"
 check "plan lists gsi_defaults.rc" has '/vendor/etc/init/gsi_defaults.rc  mode 0644 root:root  label u:object_r:vendor_configs_file:s0'
 check "ueventd label read from the device file_contexts" has 'label u:object_r:vendor_ueventd_file:s0'
 check "etc label from file_contexts" has 'vendor_configs_file'
@@ -220,6 +226,11 @@ check "sha256 file written" test -s "$img.sha256"
 check "rc installed" cmp -s "$FAKE/vendor/etc/init/hw/init.sl8541e_1h10.rc" "$HERE/../../devices/dw100u-silver/vendor_gsi/etc/init/hw/init.sl8541e_1h10.rc"
 check "fstab installed" cmp -s "$FAKE/vendor/etc/fstab.sl8541e_1h10" "$HERE/../../devices/dw100u-silver/vendor_gsi/etc/fstab.sl8541e_1h10"
 check "ueventd.rc installed" cmp -s "$FAKE/vendor/ueventd.rc" "$HERE/../../devices/dw100u-silver/vendor_gsi/ueventd.rc"
+check "build.prop: low_ram replaced in place" test "$(grep -c '^ro.config.low_ram=true$' "$FAKE/vendor/build.prop")" = 1 -a "$(grep -c 'low_ram' "$FAKE/vendor/build.prop")" = 1
+check "build.prop: every other line byte-identical" bash -c "cmp <(grep -v low_ram '$FAKE/vendor/build.prop') <(grep -v low_ram '$FAKE/build.prop.orig')"
+check "build.prop: the same line number" test "$(grep -n low_ram "$FAKE/vendor/build.prop" | cut -d: -f1)" = 4
+check "build.prop: old kept as .pregsi" cmp -s "$FAKE/vendor/build.prop.pregsi" "$FAKE/build.prop.orig"
+check "build.prop: mode and label kept" bash -c "test \"\$(stat -c %a '$FAKE/vendor/build.prop')\" = 644 && grep -q '^/vendor/build.prop u:object_r:vendor_file:s0\$' '$FAKE/labels'"
 check "gsi_defaults.rc installed" cmp -s "$FAKE/vendor/etc/init/gsi_defaults.rc" "$GD"
 check "gsi_defaults.rc label" test "$(label_of /vendor/etc/init/gsi_defaults.rc)" = u:object_r:vendor_configs_file:s0
 check "gsi_defaults.rc mode 644" test "$(stat -c %a "$FAKE/vendor/etc/init/gsi_defaults.rc")" = 644
@@ -243,6 +254,46 @@ check "...and the new one is installed" cmp -s "$FAKE/vendor/etc/init/gsi_defaul
 echo older >"$FAKE/vendor/ueventd.rc"
 run --device dw100u-silver --apply --backup-dir "$T/backup3"
 check "an existing .pregsi is not overwritten" test "$(cat "$FAKE/vendor/ueventd.rc.pregsi")" = old
+
+echo "-- build.prop edit"
+bp_run() { # description for the refusal tests: run, expect refusal, nothing written
+  local d=$1
+  vb=$(vendor_hash)
+  run --device dw100u-silver --apply --backup-dir "$T/bp-$RANDOM"
+  check "$d: refused" test "$RC" != 0
+  check "$d: says so" has 'build.prop'
+  check "$d: vendor unchanged, never remounted" bash -c "test '$(vendor_hash)' = '$vb' && ! grep -q remount '$FAKE/ops.log' 2>/dev/null"
+}
+FAKE_SU=magisk; export FAKE_SU
+new_fake
+printf '%s\n' 'ro.vendor.build.fingerprint=example/watch:8.1.0' 'ro.a=1' >"$FAKE/vendor/build.prop"
+printf 'ro.last=2' >>"$FAKE/vendor/build.prop"
+cp "$FAKE/vendor/build.prop" "$FAKE/build.prop.orig"
+echo "/vendor/build.prop u:object_r:custom_prop:s0" >>"$FAKE/labels"; chmod 600 "$FAKE/vendor/build.prop"
+run --device dw100u-silver --apply --backup-dir "$T/bp1"
+check "no low_ram line, no trailing newline: appended" test "$RC" = 0 -a "$(tail -n 2 "$FAKE/vendor/build.prop" | tr '\n' ' ')" = 'ro.last=2 ro.config.low_ram=true '
+check "...the old content is the exact prefix" bash -c "cmp -n \$(stat -c %s '$FAKE/build.prop.orig') '$FAKE/build.prop.orig' '$FAKE/vendor/build.prop'"
+check "...mode 600 and its own label kept" bash -c "test \"\$(stat -c %a '$FAKE/vendor/build.prop')\" = 600 && grep -q '^/vendor/build.prop u:object_r:custom_prop:s0\$' '$FAKE/labels'"
+check "...old file kept as .pregsi" cmp -s "$FAKE/vendor/build.prop.pregsi" "$FAKE/build.prop.orig"
+new_fake
+printf '%s\n' 'ro.vendor.build.fingerprint=x' 'ro.config.low_ram=true' >"$FAKE/vendor/build.prop"
+run --device dw100u-silver --apply --backup-dir "$T/bp2"
+check "already true: not touched, no .pregsi" bash -c "test '$RC' = 0 && ! [ -e '$FAKE/vendor/build.prop.pregsi' ]"
+check "...says so" has 'already has ro.config.low_ram=true'
+new_fake
+printf '%s\n' 'ro.vendor.build.fingerprint=x' 'ro.config.low_ram=false' 'ro.config.low_ram=1' '#ro.config.low_ram=false' >"$FAKE/vendor/build.prop"
+echo 'ro.config.low_ram=false' >"$FAKE/vendor/default.prop"
+run --device dw100u-silver --apply --backup-dir "$T/bp3"
+check "duplicates: all replaced, the comment kept" test "$RC" = 0 -a "$(grep -c '^ro.config.low_ram=true$' "$FAKE/vendor/build.prop")" = 2 -a "$(grep -c '^#ro.config.low_ram=false$' "$FAKE/vendor/build.prop")" = 1
+check "default.prop with low_ram: warned" has 'default.prop also sets'
+check "...and not edited" test "$(cat "$FAKE/vendor/default.prop")" = ro.config.low_ram=false
+new_fake; printf '%s\r\n' 'ro.vendor.build.fingerprint=x' >"$FAKE/vendor/build.prop"; bp_run "CRLF build.prop"
+new_fake; printf 'ro.vendor.build.fingerprint=x\n\0ro.a=1\n' >"$FAKE/vendor/build.prop"; bp_run "NUL in build.prop"
+new_fake; printf '%s\n' 'ro.vendor.build.fingerprint=x' 'this is not a property' >"$FAKE/vendor/build.prop"; bp_run "garbage line in build.prop"
+new_fake; printf '%s\n' 'ro.a=1' 'ro.b=2' >"$FAKE/vendor/build.prop"; bp_run "build.prop without ro.vendor.build.*"
+new_fake; : >"$FAKE/vendor/build.prop"; bp_run "empty build.prop"
+new_fake; { echo 'ro.vendor.build.fingerprint=x'; head -c 300000 /dev/zero | tr '\0' a; echo; } >"$FAKE/vendor/build.prop"; bp_run "oversize build.prop"
+new_fake; rm "$FAKE/vendor/build.prop"; bp_run "missing build.prop"
 
 echo "-- apply, vendor su (DM63), modules, mali marker"
 FAKE_SU=aosp; export FAKE_SU

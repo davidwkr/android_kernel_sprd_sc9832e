@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Install the vendor GSI patch files (devices/DEVICE/vendor_gsi/) into /vendor
 # of a connected watch, over adb with root. Rationale: devices/VENDOR_GSI_PATCH.md.
-# Files: devices/DEVICE/vendor_gsi/ plus the shared devices/common/vendor_gsi/.
+# Files: devices/DEVICE/vendor_gsi/ plus the shared devices/common/vendor_gsi/,
+# and /vendor/build.prop with ro.config.low_ram=true (pulled, edited on the host,
+# every other line byte-identical, installed like the rest, the old file kept as
+# build.prop.pregsi).
 # Usage: scripts/vendor_gsi_patch.sh --device DEVICE [--apply] [options]
 #   --device DEVICE     dm63 | dw100u-silver (selects the file set)
 #   --dry-run           default: read-only probes on the device, prints the plan
@@ -31,7 +34,7 @@ BLOCKERS=()
 die() { echo "FAIL: $*" >&2; exit 1; }
 say() { echo "== $*"; }
 blocker() { BLOCKERS+=("$*"); echo "BLOCKER: $*"; }
-usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -165,6 +168,21 @@ label_ueventd() {
   fb=$(dev_label /vendor/build.prop)
   fc_label "$1" "${fb:-u:object_r:vendor_file:s0}"
 }
+# the label the file has now (a stock file we edit keeps its label)
+label_keep() {
+  local l
+  l=$(dev_label "$1")
+  [[ $l =~ ^u:object_r:[a-z0-9_]+:s0$ ]] || die "cannot read the SELinux label of $1 ('$l')"
+  printf '%s' "$l"
+}
+plan_label() { # kind dest
+  case $1 in
+    etc) label_etc "$2" ;;
+    ueventd) label_ueventd "$2" ;;
+    buildprop) label_keep "$2" ;;
+    *) label_other "$2" ;;
+  esac
+}
 label_other() {
   local fb
   fb=$(dev_label "$(dirname "$1")")
@@ -211,6 +229,50 @@ build_plan() {
   done
 }
 
+# --- /vendor/build.prop: ro.config.low_ram=true -------------------------------
+# Build properties load before early-init, so an rc setprop cannot change a
+# low_ram already defined there: the line goes into the property file itself.
+BP_LINE=ro.config.low_ram=true
+BP_RE='^ro\.config\.low_ram='
+BP_OLD_SHA=
+prepare_buildprop() {
+  local bp=/vendor/build.prop old=$WORK/build.prop.old new=$WORK/build.prop st mode n dp
+  local LC_ALL=C
+  rexec_out "cat $bp" >"$old" || die "cannot read $bp"
+  BP_OLD_SHA=$(sha256sum "$old" | cut -d' ' -f1)
+  [ "$(rsh "sha256sum $bp" | awk '{print $1}')" = "$BP_OLD_SHA" ] || die "the copy of $bp read over adb differs from the device file: refusing"
+  st=$(dev_stat "$bp")
+  [[ $st =~ ^([0-7]{3,4})\ 0\ 0$ ]] || die "$bp is not root:root with a plain mode ('$st'): refusing"
+  mode=${BASH_REMATCH[1]}; [ "${#mode}" -eq 4 ] || mode=0$mode
+  n=$(stat -c %s "$old")
+  # a vendor build.prop is a small text file of key=value lines
+  { [ "$n" -gt 0 ] && [ "$n" -le 262144 ] \
+    && [ "$(tr -d '\0\r' <"$old" | wc -c)" = "$n" ] \
+    && ! grep -Evq '^([[:space:]]*(#.*)?|[A-Za-z0-9_.-]+=.*|import .*)$' "$old" \
+    && grep -Eq '^ro\.(vendor\.build|product\.vendor)\.' "$old"; } \
+    || die "$bp does not look like a vendor build.prop (size $n, NUL/CR, a line that is not key=value, or no ro.vendor.build.* line): refusing"
+  if grep -Eq "$BP_RE" "$old"; then
+    sed -E "s|$BP_RE.*\$|$BP_LINE|" "$old" >"$new"
+  else
+    cp "$old" "$new"
+    [ -z "$(tail -c 1 "$old")" ] || printf '\n' >>"$new"
+    printf '%s\n' "$BP_LINE" >>"$new"
+  fi
+  # every other line is untouched, and every low_ram line is ours now
+  diff <(grep -Ev "$BP_RE" "$old") <(grep -Ev "$BP_RE" "$new") >/dev/null \
+    || die "internal error: the edit of $bp changed other lines"
+  [ "$(grep -Ec "$BP_RE" "$new")" = "$(grep -Fxc "$BP_LINE" "$new")" ] && grep -Fxq "$BP_LINE" "$new" \
+    || die "internal error: $bp has no clean $BP_LINE after the edit"
+  if cmp -s "$old" "$new"; then
+    echo "$bp already has $BP_LINE: not touched"
+    return 0
+  fi
+  echo "$bp: $(grep -E "$BP_RE" "$old" | tr '\n' ' ')-> $BP_LINE"
+  PLAN+=("buildprop|$new|$bp|$mode")
+  dp=$(rsh 'cat /vendor/default.prop 2>/dev/null' | grep -E "$BP_RE" || true)
+  [ -z "$dp" ] || echo "WARNING: /vendor/default.prop also sets $dp: which of the two files wins is not verified here"
+}
+
 # --- preflight (read only) ---------------------------------------------------
 VENDOR_SRC= VENDOR_FS= VENDOR_OPTS= SIZE=
 vendor_mount() {
@@ -250,6 +312,7 @@ preflight() {
   avail=$(df -Pk "$BACKUP_DIR" | awk 'NR==2{print $4}')
   [ "$avail" -ge $((SIZE / 1024 + 1024)) ] || die "not enough host space in $BACKUP_DIR for the backup"
 
+  prepare_buildprop
   need=0
   for cand in "${PLAN[@]}"; do need=$((need + $(stat -c %s "$(cut -d'|' -f2 <<<"$cand")") + 4096)); done
   avail=$(rsh 'df -k /vendor' | tail -n 1 | awk '{print $(NF-2)}')
@@ -265,11 +328,7 @@ show_plan() {
   say "plan"
   for e in "${PLAN[@]}"; do
     IFS='|' read -r kind host dest mode <<<"$e"
-    case $kind in
-      etc) lbl=$(label_etc "$dest") ;;
-      ueventd) lbl=$(label_ueventd "$dest") ;;
-      *) lbl=$(label_other "$dest") ;;
-    esac
+    lbl=$(plan_label "$kind" "$dest")
     old=$(rsh "sha256sum $dest 2>/dev/null" | awk '{print $1}' || true)
     echo "$dest  mode $mode root:root  label $lbl  ($([ -n "$old" ] && echo "replaces sha256 ${old:0:12}, kept as $dest.pregsi" || echo "new file"))"
   done
@@ -315,11 +374,11 @@ install_file() { # kind host dest mode
   local kind=$1 host=$2 dest=$3 mode=$4 lbl h
   vendor_path "$dest"
   target_ok "$dest"
-  case $kind in
-    etc) lbl=$(label_etc "$dest") ;;
-    ueventd) lbl=$(label_ueventd "$dest") ;;
-    *) lbl=$(label_other "$dest") ;;
-  esac
+  lbl=$(plan_label "$kind" "$dest")
+  if [ "$kind" = buildprop ]; then
+    # the file we edited is the file that is there now
+    [ "$(rsh "sha256sum $dest" | awk '{print $1}')" = "$BP_OLD_SHA" ] || die "$dest changed since it was read: refusing"
+  fi
   h=$(sha256sum "$host" | cut -d' ' -f1)
   rsh_ok "if [ -e $dest ] && [ ! -e $dest.pregsi ]; then cp -p $dest $dest.pregsi; fi" || die "cannot keep the old $dest: $RSH_OUT"
   # staging file: absent (checked in target_ok), created exclusively (noclobber
