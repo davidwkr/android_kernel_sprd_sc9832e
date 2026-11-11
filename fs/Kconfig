@@ -97,6 +97,8 @@ config MANDATORY_FILE_LOCKING
 
 source "fs/crypto/Kconfig"
 
+source "fs/verity/Kconfig"
+
 source "fs/notify/Kconfig"
 
 source "fs/quota/Kconfig"
@@ -239,6 +241,8 @@ source "fs/jffs2/Kconfig"
 source "fs/ubifs/Kconfig"
 source "fs/cramfs/Kconfig"
 source "fs/squashfs/Kconfig"
+source "fs/erofs/Kconfig"
+source "fs/incfs/Kconfig"
 source "fs/freevxfs/Kconfig"
 source "fs/minix/Kconfig"
 source "fs/omfs/Kconfig"

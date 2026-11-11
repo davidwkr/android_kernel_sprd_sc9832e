@@ -38,6 +38,8 @@ extern void proc_remove(struct proc_dir_entry *);
 extern void remove_proc_entry(const char *, struct proc_dir_entry *);
 extern int remove_proc_subtree(const char *, struct proc_dir_entry *);
 
+extern struct pid *tgid_pidfd_to_pid(const struct file *file);
+
 #else /* CONFIG_PROC_FS */
 
 static inline void proc_root_init(void)
@@ -69,6 +71,11 @@ static inline void proc_remove(struct proc_dir_entry *de) {}
 #define remove_proc_entry(name, parent) do {} while (0)
 static inline int remove_proc_subtree(const char *name, struct proc_dir_entry *parent) { return 0; }
 
+static inline struct pid *tgid_pidfd_to_pid(const struct file *file)
+{
+	return ERR_PTR(-EBADF);
+}
+
 #endif /* CONFIG_PROC_FS */
 
 #ifdef CONFIG_PROC_UID
@@ -88,5 +95,11 @@ static inline struct proc_dir_entry *proc_net_mkdir(
 struct ns_common;
 int open_related_ns(struct ns_common *ns,
 		   struct ns_common *(*get_ns)(struct ns_common *ns));
+
+/* get the associated pid namespace for a file in procfs */
+static inline struct pid_namespace *proc_pid_ns(const struct inode *inode)
+{
+	return inode->i_sb->s_fs_info;
+}
 
 #endif /* _LINUX_PROC_FS_H */

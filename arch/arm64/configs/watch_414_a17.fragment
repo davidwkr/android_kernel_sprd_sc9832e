@@ -1,0 +1,41 @@
+# Kernel features newer Android userspace needs (binderfs, pidfd,
+# close_range, userfaultfd, EROFS, incfs, BPF JIT), backported from the
+# Android-17-capable apollo 4.19 kernel. Merge on top of
+# sprd_sharkle_defconfig + watch_414.fragment (+ watch_414_adf.fragment),
+# then run olddefconfig. See devices/A17_KERNEL.md.
+
+# binderfs: per-ipc-namespace binder device nodes (/dev/binderfs), Android 11+ init mounts it
+CONFIG_ANDROID_BINDERFS=y
+
+# pidfd_send_signal/pidfd_open/close_range and CLONE_PIDFD are built
+# unconditionally (no Kconfig symbol); anon_inodes is unconditional too.
+# The only config they rely on is procfs: pidfd fdinfo and
+# pidfd_send_signal() on a /proc/<pid> directory fd.
+CONFIG_PROC_FS=y
+
+# userfaultfd(2): ART's userfaultfd-based concurrent-copying/compacting GC
+# (needs UFFD_USER_MODE_ONLY, UFFDIO_CONTINUE minor faults on shmem and
+# mremap(MREMAP_DONTUNMAP)); vm.unprivileged_userfaultfd defaults to 0.
+CONFIG_USERFAULTFD=y
+
+# EROFS read-only filesystem (system/vendor/product images)
+CONFIG_EROFS_FS=y
+# xattrs, POSIX ACLs and security labels (SELinux contexts live in xattrs)
+CONFIG_EROFS_FS_XATTR=y
+CONFIG_EROFS_FS_POSIX_ACL=y
+CONFIG_EROFS_FS_SECURITY=y
+# LZ4 compressed images
+CONFIG_EROFS_FS_ZIP=y
+
+# fs-verity core (uapi, signature check, measure); incfs implements the
+# ioctls on top of it
+CONFIG_FS_VERITY=y
+# verify verity signatures against the .fs-verity keyring
+CONFIG_FS_VERITY_BUILTIN_SIGNATURES=y
+
+# Incremental FS (adb/PackageManager incremental installs)
+CONFIG_INCREMENTAL_FS=y
+
+# netbpfload writes /proc/sys/net/core/bpf_jit_enable and bpf_jit_kallsyms and
+# aborts boot if either node is missing; arm64 has HAVE_EBPF_JIT.
+CONFIG_BPF_JIT=y
