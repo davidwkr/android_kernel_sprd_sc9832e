@@ -624,12 +624,16 @@ void gsp_core_deinit(struct gsp_core *core)
 	kthread_queue_work(core->kworker, &core->shutdown);
 	kthread_flush_worker(core->kworker);
 
+	/*
+	 * The line is shared: balance disable_irq() for the other users while
+	 * our handler is still there (nothing runs, it returns IRQ_NONE), as
+	 * free_irq() shuts the line down when it removes the last handler.
+	 */
+	enable_irq(core->irq);
 	if (core->irq_requested) {
 		free_irq(core->irq, core);
 		core->irq_requested = false;
 	}
-	/* the line is shared: balance disable_irq() for the other users */
-	enable_irq(core->irq);
 	kthread_destroy_worker(core->kworker);
 	core->kworker = NULL;
 
