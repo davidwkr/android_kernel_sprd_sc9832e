@@ -568,6 +568,14 @@ static void lowmem_mark_oom_victim(struct task_struct *p)
 	mutex_unlock(&oom_lock);
 }
 
+/* The OOM notifier runs from out_of_memory(), which holds oom_lock. */
+static void lowmem_mark_oom_victim_locked(struct task_struct *p)
+{
+	lockdep_assert_held(&oom_lock);
+	if (!oom_killer_disabled)
+		mark_oom_victim(p);
+}
+
 static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 {
 	struct task_struct *tsk;
@@ -869,7 +877,8 @@ static unsigned long multiple_oom_killer(unsigned long *freed)
 		struct task_struct *p;
 		int adj;
 
-		if (tsk->flags & PF_KTHREAD)
+		/* SIGKILL is ignored by global init: never count it as freed */
+		if (tsk->flags & PF_KTHREAD || is_global_init(tsk))
 			continue;
 
 		if (time_before_eq(jiffies, oom_deathpending_timeout)) {
@@ -944,7 +953,7 @@ static unsigned long multiple_oom_killer(unsigned long *freed)
 			task_lock(selected[i]);
 			send_sig(SIGKILL, selected[i], 0);
 			if (selected[i]->mm)
-				lowmem_mark_oom_victim(selected[i]);
+				lowmem_mark_oom_victim_locked(selected[i]);
 			task_unlock(selected[i]);
 
 			lowmem_print(1, "oom: send sigkill to %d (%s) adj %d,"
@@ -982,7 +991,8 @@ static unsigned long oom_killer(unsigned long *freed)
 		struct task_struct *p;
 		int oom_score_adj;
 
-		if (tsk->flags & PF_KTHREAD)
+		/* SIGKILL is ignored by global init: never count it as freed */
+		if (tsk->flags & PF_KTHREAD || is_global_init(tsk))
 			continue;
 
 		if (time_before_eq(jiffies, oom_deathpending_timeout)) {
@@ -1033,7 +1043,7 @@ static unsigned long oom_killer(unsigned long *freed)
 		task_lock(selected);
 		send_sig(SIGKILL, selected, 0);
 		if (selected->mm)
-			lowmem_mark_oom_victim(selected);
+			lowmem_mark_oom_victim_locked(selected);
 		task_unlock(selected);
 
 		lowmem_print(1, "oom: send sigkill to %d (%s),adj %d,size %d\n",
