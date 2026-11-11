@@ -1697,8 +1697,19 @@ static bool qtaguid_mt(const struct sk_buff *skb, struct xt_action_param *par)
 		 * to a full socket, so just ignore the socket.
 		 */
 		if (sk && sk->sk_state == TCP_NEW_SYN_RECV) {
-			sock_gen_put(sk);
-			sk = sk_to_full_sk(sk);
+			struct sock *req_sk = sk;
+
+			/*
+			 * Keep the request sock alive until we hold the
+			 * listener, which only the request sock pins.
+			 */
+			sk = sk_to_full_sk(req_sk);
+			if (sk != req_sk && sk)
+				sock_hold(sk);
+			else
+				sk = NULL;
+			sock_gen_put(req_sk);
+			got_sock = sk;
 		} else if (sk && (!sk_fullsock(sk) || sk->sk_state == TCP_TIME_WAIT)) {
 			sock_gen_put(sk);
 			sk = NULL;
@@ -1790,10 +1801,10 @@ static bool qtaguid_mt(const struct sk_buff *skb, struct xt_action_param *par)
 	res = true;
 
 put_sock_ret_res:
-	if (got_sock)
-		sock_gen_put(sk);
 	if (set_sk_callback_lock)
 		read_unlock_bh(&sk->sk_callback_lock);
+	if (got_sock)
+		sock_gen_put(sk);
 ret_res:
 	MT_DEBUG("qtaguid[%d]: left %d\n", parst->hook, res);
 	return res;
