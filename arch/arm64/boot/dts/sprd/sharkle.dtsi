@@ -315,6 +315,7 @@
 				kcfg-num = <16>;
 				interrupts = <GIC_SPI 51 IRQ_TYPE_LEVEL_HIGH>;
 				iommus = <&iommu_gsp>;
+				sprd,sys-ap-ahb = <&ap_ahb_regs>;
 				clock-names = "clk_gsp",
 					"clk_gsp_parent",
 					"clk_gsp_eb";
