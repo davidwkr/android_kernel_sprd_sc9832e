@@ -79,6 +79,12 @@ The ioctl is reachable from the HAL domain. The 4.4 driver had no bounds on the 
   mandatory: probe fails with a log if the node lacks it. Every regmap write of the reset is checked; if the reset
   fails the core is marked broken: the job in flight is signaled with `-EIO` but its mappings, dma-buf refs, kcfg and
   clocks are leaked on purpose (the block may still do DMA into them), the error is logged once, and new jobs are
-  refused with `-EIO` until reboot.
+  refused with `-EIO` until reboot. The release fence of that job is signaled with `-EIO` too, and the queued
+  jobs are failed with `-EIO` and released normally (the block never touched them).
+- Only the kthread worker ends a job. Admission is closed on the queue itself (broken or removal), so an ioctl
+  past the early check cannot enqueue; removal quiesces the irq line and the timer, then a shutdown work on the
+  worker resets the block, cancels the job in flight and fails the queued ones, and only then is anything freed.
+- The last events of a job are read from the raw interrupt bits (the status register is 0 once masked), so an
+  error raised after DONE fails the job.
 - Found while porting, not fixed here: `drivers/video/adf/adf_fence.c` has no `.wait` in its `dma_fence_ops`, and
   `dma_fence_init()` `BUG_ON`s on that.

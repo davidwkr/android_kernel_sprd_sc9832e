@@ -54,8 +54,10 @@ enum gsp_err_code {
  *
  * All the hardware work is done by one kthread worker: trigger starts the
  * oldest filled kcfg, release (from the irq) or recover (the hang timer)
- * ends it. They never run concurrently, and an event which is not of the
- * job in flight is dropped, so a kcfg is ended exactly once.
+ * ends it, and shutdown (from the removal) cancels the one in flight and
+ * the queued ones. They never run concurrently, and an event which is not
+ * of the job in flight is dropped, so a kcfg is ended exactly once: nothing
+ * but the worker ends one.
  */
 struct gsp_core {
 	char name[32];
@@ -89,6 +91,7 @@ struct gsp_core {
 	struct kthread_work trigger;
 	struct kthread_work release;
 	struct kthread_work recover;
+	struct kthread_work shutdown;
 	struct timer_list timer;
 	/* to keep the order of the release fences the order of the queue */
 	struct mutex submit_lock;

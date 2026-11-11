@@ -32,7 +32,8 @@ struct gsp_workqueue {
 	int fill_cnt;
 	int empty_cnt;
 	wait_queue_head_t empty_wait;
-	bool shutdown;
+	/* nothing is accepted any more: the negative errno the callers get, or 0 */
+	int closed;
 };
 
 void gsp_workqueue_init(struct gsp_workqueue *wq);
@@ -43,10 +44,11 @@ int gsp_workqueue_acquire(struct gsp_workqueue *wq, int num,
 			  struct gsp_kcfg **kcfgs, unsigned int timeout_ms);
 void gsp_workqueue_put(struct gsp_workqueue *wq, struct gsp_kcfg *kcfg);
 
-void gsp_workqueue_push(struct gsp_workqueue *wq, struct gsp_kcfg *kcfg);
+int gsp_workqueue_push(struct gsp_workqueue *wq, struct gsp_kcfg **kcfgs,
+		       int cnt);
 struct gsp_kcfg *gsp_workqueue_pull(struct gsp_workqueue *wq);
 
 int gsp_workqueue_is_filled(struct gsp_workqueue *wq);
-void gsp_workqueue_shutdown(struct gsp_workqueue *wq);
+void gsp_workqueue_close(struct gsp_workqueue *wq, int err);
 
 #endif

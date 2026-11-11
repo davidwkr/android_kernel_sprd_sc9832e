@@ -218,7 +218,8 @@ static int gsp_dev_submit(struct gsp_core *core, struct gsp_kcfg **kcfgs,
 {
 	struct gsp_kcfg *last = kcfgs[cnt - 1];
 	struct sync_file *sf = NULL;
-	struct dma_fence *fence;
+	struct dma_fence *fence = NULL;
+	int ret;
 	int i;
 
 	mutex_lock(&core->submit_lock);
@@ -243,7 +244,21 @@ static int gsp_dev_submit(struct gsp_core *core, struct gsp_kcfg **kcfgs,
 	for (i = 0; i < cnt; i++) {
 		kcfgs[i]->tail = last;
 		gsp_kcfg_get(kcfgs[i]);
-		gsp_workqueue_push(&core->wq, kcfgs[i]);
+	}
+
+	/* a core which stops or broke takes nothing more: checked on the queue */
+	ret = gsp_workqueue_push(&core->wq, kcfgs, cnt);
+	if (ret) {
+		for (i = 0; i < cnt; i++)
+			gsp_kcfg_put(kcfgs[i]);
+		if (sf) {
+			/* the fd was never installed: this drops the file's reference */
+			fput(sf->file);
+			last->data.sig_fen = NULL;
+			dma_fence_put(fence);
+		}
+		mutex_unlock(&core->submit_lock);
+		return ret;
 	}
 
 	if (sf)

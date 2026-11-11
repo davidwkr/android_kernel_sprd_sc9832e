@@ -136,6 +136,23 @@ static void gsp_core_reset_hw(struct gsp_core *core)
 	mutex_lock(&core->lock);
 	core->broken = true;
 	mutex_unlock(&core->lock);
+	/* nothing is queued behind the job any more: the worker drains it */
+	gsp_workqueue_close(&core->wq, -EIO);
+}
+
+/*
+ * Fail the kcfgs nobody started: the hardware never touched them, so they
+ * are released the normal way. Only from the worker, after the queue closed.
+ */
+static void gsp_core_drain(struct gsp_core *core, int status)
+{
+	struct gsp_kcfg *kcfg;
+
+	while ((kcfg = gsp_workqueue_pull(&core->wq))) {
+		gsp_kcfg_cleanup(kcfg, gsp_kcfg_batch_status(kcfg, status));
+		gsp_kcfg_complete(kcfg, status);
+		gsp_kcfg_put(kcfg);
+	}
 }
 
 /*
@@ -153,15 +170,18 @@ static void gsp_core_finish(struct gsp_core *core, struct gsp_kcfg *kcfg,
 
 	/*
 	 * A core which could not be reset may still do DMA: keep the mapping,
-	 * the buffers and the clocks, and only tell the waiters.
+	 * the buffers and the clocks, and only tell the waiters, the release
+	 * fence included. The queued kcfgs never ran: fail them.
 	 */
 	if (core->broken) {
+		gsp_sync_fence_signal(&kcfg->data, -EIO);
 		gsp_kcfg_complete(kcfg, -EIO);
 		mutex_lock(&core->lock);
 		core->current_kcfg = NULL;
 		core->busy = false;
 		mutex_unlock(&core->lock);
 		wake_up_all(&core->idle_wait);
+		gsp_core_drain(core, -EIO);
 		return;
 	}
 
@@ -337,6 +357,24 @@ static void gsp_core_recover(struct kthread_work *work)
 	core->force_calc = 1;
 
 	gsp_core_finish(core, kcfg, -ETIMEDOUT);
+}
+
+/* the removal: cancel the job in flight and fail the queued ones */
+static void gsp_core_shutdown(struct kthread_work *work)
+{
+	struct gsp_core *core = container_of(work, struct gsp_core, shutdown);
+	struct gsp_kcfg *kcfg = core->current_kcfg;
+
+	if (kcfg) {
+		GSP_ERR("core[%d] kcfg[%d] still busy at deinit, reset\n",
+			core->id, gsp_kcfg_to_tag(kcfg));
+		atomic_set(&core->hw_running, 0);
+		gsp_core_reset_hw(core);
+		core->force_calc = 1;
+		gsp_core_finish(core, kcfg, -ECANCELED);
+	}
+
+	gsp_core_drain(core, -ECANCELED);
 }
 
 static void gsp_core_hang_handler(struct timer_list *t)
@@ -517,6 +555,7 @@ int gsp_core_init(struct gsp_core *core)
 	kthread_init_work(&core->trigger, gsp_core_trigger);
 	kthread_init_work(&core->release, gsp_core_release);
 	kthread_init_work(&core->recover, gsp_core_recover);
+	kthread_init_work(&core->shutdown, gsp_core_shutdown);
 
 	worker = kthread_create_worker(0, "gsp-core%d", core->id);
 	if (IS_ERR(worker)) {
@@ -557,52 +596,40 @@ err_timeline:
 }
 
 /*
- * Stop the core: no new kcfg starts nor arms the timer, the hardware is
- * reset and the one in flight ends with an error, and the queued ones are
- * dropped with their fences signaled.
+ * Stop the core. The producers go first: no ioctl queues, no job starts nor
+ * arms the timer, the irq line is quiet and the timer is dead. Then the
+ * worker, the only one which ends jobs, cancels the one in flight (the
+ * hardware is reset) and fails the queued ones, and only then is anything
+ * freed.
  */
 void gsp_core_deinit(struct gsp_core *core)
 {
-	struct gsp_kcfg *kcfg;
-
 	if (!core->inited)
 		return;
 
-	gsp_workqueue_shutdown(&core->wq);
+	gsp_workqueue_close(&core->wq, -ESHUTDOWN);
 
 	mutex_lock(&core->lock);
 	core->stopping = true;
 	mutex_unlock(&core->lock);
 
-	/* the works in flight end: none of them starts or arms anything now */
-	kthread_flush_worker(core->kworker);
+	/*
+	 * The line is quiet from here: the hardware is reset by the worker
+	 * if it runs, and the handler cannot queue a release any more.
+	 */
+	disable_irq(core->irq);
+	/* the timer is armed under the lock which stopping is set under */
+	del_timer_sync(&core->timer);
 
-	kcfg = core->current_kcfg;
-	if (kcfg) {
-		GSP_ERR("core[%d] kcfg[%d] still busy at deinit, reset\n",
-			core->id, gsp_kcfg_to_tag(kcfg));
-		atomic_set(&core->hw_running, 0);
-		gsp_core_reset_hw(core);
-		core->force_calc = 1;
-		/* the worker is idle, so this is the only one ending it */
-		gsp_core_finish(core, kcfg, -ECANCELED);
-	}
+	kthread_queue_work(core->kworker, &core->shutdown);
+	kthread_flush_worker(core->kworker);
 
 	if (core->irq_requested) {
 		free_irq(core->irq, core);
 		core->irq_requested = false;
 	}
-	del_timer_sync(&core->timer);
-	/* flushes the queued works, and stops the thread */
 	kthread_destroy_worker(core->kworker);
 	core->kworker = NULL;
-
-	while ((kcfg = gsp_workqueue_pull(&core->wq))) {
-		gsp_kcfg_cleanup(kcfg,
-				 gsp_kcfg_batch_status(kcfg, -ECANCELED));
-		gsp_kcfg_complete(kcfg, -ECANCELED);
-		gsp_kcfg_put(kcfg);
-	}
 
 	gsp_sync_timeline_destroy(core->timeline);
 	core->timeline = NULL;

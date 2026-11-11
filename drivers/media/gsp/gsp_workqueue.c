@@ -24,7 +24,7 @@ void gsp_workqueue_init(struct gsp_workqueue *wq)
 	init_waitqueue_head(&wq->empty_wait);
 	wq->fill_cnt = 0;
 	wq->empty_cnt = 0;
-	wq->shutdown = false;
+	wq->closed = 0;
 }
 
 /* only while the core is set up: hand a kcfg to the pool and tag it */
@@ -41,7 +41,7 @@ static bool gsp_workqueue_ready(struct gsp_workqueue *wq, int num)
 	bool ready;
 
 	spin_lock_irqsave(&wq->lock, flags);
-	ready = wq->shutdown || wq->empty_cnt >= num;
+	ready = wq->closed || wq->empty_cnt >= num;
 	spin_unlock_irqrestore(&wq->lock, flags);
 
 	return ready;
@@ -56,9 +56,9 @@ int gsp_workqueue_acquire(struct gsp_workqueue *wq, int num,
 
 	for (;;) {
 		spin_lock_irqsave(&wq->lock, flags);
-		if (wq->shutdown) {
+		if (wq->closed) {
 			spin_unlock_irqrestore(&wq->lock, flags);
-			return -ESHUTDOWN;
+			return wq->closed;
 		}
 		if (wq->empty_cnt >= num) {
 			for (i = 0; i < num; i++) {
@@ -95,14 +95,27 @@ void gsp_workqueue_put(struct gsp_workqueue *wq, struct gsp_kcfg *kcfg)
 	wake_up(&wq->empty_wait);
 }
 
-void gsp_workqueue_push(struct gsp_workqueue *wq, struct gsp_kcfg *kcfg)
+/* all or none, and none once the queue is closed: nothing is left behind it */
+int gsp_workqueue_push(struct gsp_workqueue *wq, struct gsp_kcfg **kcfgs,
+		       int cnt)
 {
 	unsigned long flags;
+	int i;
 
 	spin_lock_irqsave(&wq->lock, flags);
-	list_add_tail(&kcfg->list, &wq->fill_head);
-	wq->fill_cnt++;
+	if (wq->closed) {
+		int err = wq->closed;
+
+		spin_unlock_irqrestore(&wq->lock, flags);
+		return err;
+	}
+	for (i = 0; i < cnt; i++) {
+		list_add_tail(&kcfgs[i]->list, &wq->fill_head);
+		wq->fill_cnt++;
+	}
 	spin_unlock_irqrestore(&wq->lock, flags);
+
+	return 0;
 }
 
 struct gsp_kcfg *gsp_workqueue_pull(struct gsp_workqueue *wq)
@@ -133,13 +146,17 @@ int gsp_workqueue_is_filled(struct gsp_workqueue *wq)
 	return ret;
 }
 
-/* fail the waiting and the later acquires */
-void gsp_workqueue_shutdown(struct gsp_workqueue *wq)
+/*
+ * Fail the waiting and the later acquires and pushes with @err (negative).
+ * The first error stays: a core which broke is not shut down later.
+ */
+void gsp_workqueue_close(struct gsp_workqueue *wq, int err)
 {
 	unsigned long flags;
 
 	spin_lock_irqsave(&wq->lock, flags);
-	wq->shutdown = true;
+	if (!wq->closed)
+		wq->closed = err;
 	spin_unlock_irqrestore(&wq->lock, flags);
 
 	wake_up_all(&wq->empty_wait);
