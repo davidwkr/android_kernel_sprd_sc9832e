@@ -273,6 +273,8 @@ static long gsp_dev_trigger(struct gsp_dev *gsp, unsigned int cmd,
 	core = gsp_core_select(gsp);
 	if (!core)
 		return -ENODEV;
+	if (core->broken)
+		return -EIO;
 
 	if (cnt < 1 || cnt > gsp->io_cnt || cnt > core->kcfg_num) {
 		GSP_ERR("request error number kcfgs\n");

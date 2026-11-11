@@ -100,6 +100,8 @@ struct gsp_core {
 	bool busy;
 	bool suspended;
 	bool stopping;
+	/* the reset failed: the hardware may still do DMA, so nothing is freed */
+	bool broken;
 	wait_queue_head_t idle_wait;
 
 	/* the hardware may raise its irq: set from trigger to the end */
@@ -164,7 +166,7 @@ struct gsp_core_ops {
 
 	int __user *(*intercept)(void __user *arg, int index);
 	void (*dump)(struct gsp_core *core);
-	void (*reset)(struct gsp_core *core);
+	int (*reset)(struct gsp_core *core);
 };
 
 int gsp_core_to_id(struct gsp_core *core);

@@ -118,6 +118,27 @@ err:
 }
 
 /*
+ * Stop the hardware. If it cannot be done the core is broken for good: the
+ * hardware may still do DMA, so what the kcfg holds is leaked on purpose.
+ */
+static void gsp_core_reset_hw(struct gsp_core *core)
+{
+	int ret = -ENODEV;
+
+	if (core->ops->reset)
+		ret = core->ops->reset(core);
+	if (!ret)
+		return;
+
+	if (!core->broken)
+		GSP_ERR("core[%d] reset failed: %d, the core is out of service and its buffers are leaked\n",
+			core->id, ret);
+	mutex_lock(&core->lock);
+	core->broken = true;
+	mutex_unlock(&core->lock);
+}
+
+/*
  * End the kcfg the core has pulled: release what it holds, tell the
  * waiters, and look for the next one. Only from the worker.
  */
@@ -129,6 +150,20 @@ static void gsp_core_finish(struct gsp_core *core, struct gsp_kcfg *kcfg,
 	atomic_set(&core->hw_running, 0);
 	/* the handler may be reading the registers: wait before the clocks go */
 	synchronize_irq(core->irq);
+
+	/*
+	 * A core which could not be reset may still do DMA: keep the mapping,
+	 * the buffers and the clocks, and only tell the waiters.
+	 */
+	if (core->broken) {
+		gsp_kcfg_complete(kcfg, -EIO);
+		mutex_lock(&core->lock);
+		core->current_kcfg = NULL;
+		core->busy = false;
+		mutex_unlock(&core->lock);
+		wake_up_all(&core->idle_wait);
+		return;
+	}
 
 	gsp_kcfg_iommu_unmap(kcfg);
 	gsp_kcfg_cleanup(kcfg, gsp_kcfg_batch_status(kcfg, status));
@@ -189,8 +224,8 @@ static int gsp_core_start(struct gsp_core *core, struct gsp_kcfg *kcfg)
 	ret = core->ops->trigger(core);
 	if (ret) {
 		atomic_set(&core->hw_running, 0);
-		if (ret == GSP_K_HW_BUSY_ERR && core->ops->reset)
-			core->ops->reset(core);
+		if (ret == GSP_K_HW_BUSY_ERR)
+			gsp_core_reset_hw(core);
 		return -EIO;
 	}
 
@@ -213,7 +248,7 @@ static void gsp_core_trigger(struct kthread_work *work)
 	int ret;
 
 	mutex_lock(&core->lock);
-	if (core->busy || core->suspended || core->stopping) {
+	if (core->busy || core->suspended || core->stopping || core->broken) {
 		mutex_unlock(&core->lock);
 		return;
 	}
@@ -283,8 +318,7 @@ static void gsp_core_recover(struct kthread_work *work)
 	GSP_ERR("core[%d] kcfg[%d] hung, reset\n", core->id,
 		gsp_kcfg_to_tag(kcfg));
 	core->ops->dump(core);
-	if (core->ops->reset)
-		core->ops->reset(core);
+	gsp_core_reset_hw(core);
 	core->force_calc = 1;
 
 	gsp_core_finish(core, kcfg, -ETIMEDOUT);
@@ -533,8 +567,7 @@ void gsp_core_deinit(struct gsp_core *core)
 		GSP_ERR("core[%d] kcfg[%d] still busy at deinit, reset\n",
 			core->id, gsp_kcfg_to_tag(kcfg));
 		atomic_set(&core->hw_running, 0);
-		if (core->ops->reset)
-			core->ops->reset(core);
+		gsp_core_reset_hw(core);
 		core->force_calc = 1;
 		/* the worker is idle, so this is the only one ending it */
 		gsp_core_finish(core, kcfg, -ECANCELED);
@@ -575,7 +608,10 @@ struct gsp_core *gsp_core_select(struct gsp_dev *gsp)
 		free = core->wq.empty_cnt;
 		spin_unlock_irqrestore(&core->wq.lock, flags);
 
-		if (free > best) {
+		/* a broken core is only picked when it is the last one */
+		if (core->broken)
+			free = -1;
+		if (free > best || !result) {
 			best = free;
 			result = core;
 		}

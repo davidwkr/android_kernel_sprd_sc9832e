@@ -75,6 +75,10 @@ The ioctl is reachable from the HAL domain. The 4.4 driver had no bounds on the 
 - The destination bound takes both work areas (scaled, rotated by odd angles) as written from their positions
   inside `pitch x height`, and every plane of the format up to the lowest row written must be inside the buffer. If the HAL trips it, `dmesg` shows `cfg does not fit its buffers`.
 - A hardware error interrupt fails the kcfg with `-EIO` (4.4 only logged it); the error code is still logged.
-- A hung core is only stopped through the AHB soft reset; 4.4 had no reset for sharkle.
+- A hung core is only stopped through the AHB soft reset; 4.4 had no reset for sharkle. `sprd,sys-ap-ahb` is
+  mandatory: probe fails with a log if the node lacks it. Every regmap write of the reset is checked; if the reset
+  fails the core is marked broken: the job in flight is signaled with `-EIO` but its mappings, dma-buf refs, kcfg and
+  clocks are leaked on purpose (the block may still do DMA into them), the error is logged once, and new jobs are
+  refused with `-EIO` until reboot.
 - Found while porting, not fixed here: `drivers/video/adf/adf_fence.c` has no `.wait` in its `dma_fence_ops`, and
   `dma_fence_init()` `BUG_ON`s on that.

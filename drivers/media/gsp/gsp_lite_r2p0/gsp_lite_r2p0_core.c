@@ -763,11 +763,13 @@ int gsp_lite_r2p0_core_parse_dt(struct gsp_core *c)
 	core->gsp_eb_clk = gsp_lite_r2p0_core_get_clk(c,
 					LITE_R2P0_GSP_EB_CLK, &ret);
 
-	/* only to reset a hung core, so it is optional */
+	/* without it a hung core cannot be stopped, so it is mandatory */
 	core->ahb = syscon_regmap_lookup_by_phandle(c->node,
 						    "sprd,sys-ap-ahb");
 	if (IS_ERR(core->ahb)) {
-		GSP_WARN("no ahb syscon, core reset is limited\n");
+		ret = PTR_ERR(core->ahb);
+		GSP_ERR("no sprd,sys-ap-ahb syscon for the core reset: %d\n",
+			ret);
 		core->ahb = NULL;
 	}
 
@@ -1919,15 +1921,16 @@ int __user *gsp_lite_r2p0_core_intercept(void __user *arg, int index)
 }
 
 /*
- * Stop the run, drop the irq, and pulse the soft reset of the block, if
- * the dts gives the ahb syscon, so that the hardware lets go of the
- * buffers of the kcfg which is about to be released.
+ * Stop the run, drop the irq, and pulse the soft reset of the block, so
+ * that the hardware lets go of the buffers of the kcfg which is about to be
+ * released. An error means the hardware may still run: keep the buffers.
  */
-void gsp_lite_r2p0_core_reset(struct gsp_core *c)
+int gsp_lite_r2p0_core_reset(struct gsp_core *c)
 {
 	struct gsp_lite_r2p0_core *core = (struct gsp_lite_r2p0_core *)c;
 	struct LITE_R2P0_GSP_GLB_CFG_REG run_value;
 	struct LITE_R2P0_GSP_GLB_CFG_REG run_mask;
+	int ret;
 
 	run_value.value = 0;
 	run_mask.value = 0;
@@ -1936,12 +1939,12 @@ void gsp_lite_r2p0_core_reset(struct gsp_core *c)
 			run_value.value, run_mask.value);
 	gsp_lite_r2p0_int_clear_and_disable(c);
 
-	if (!core->ahb)
-		return;
-
-	regmap_update_bits(core->ahb, REG_AP_AHB_AHB_RST,
-			   MASK_AP_AHB_GSP_SOFT_RST, MASK_AP_AHB_GSP_SOFT_RST);
+	ret = regmap_update_bits(core->ahb, REG_AP_AHB_AHB_RST,
+				 MASK_AP_AHB_GSP_SOFT_RST,
+				 MASK_AP_AHB_GSP_SOFT_RST);
+	if (ret)
+		return ret;
 	udelay(10);
-	regmap_update_bits(core->ahb, REG_AP_AHB_AHB_RST,
-			   MASK_AP_AHB_GSP_SOFT_RST, 0);
+	return regmap_update_bits(core->ahb, REG_AP_AHB_AHB_RST,
+				  MASK_AP_AHB_GSP_SOFT_RST, 0);
 }
