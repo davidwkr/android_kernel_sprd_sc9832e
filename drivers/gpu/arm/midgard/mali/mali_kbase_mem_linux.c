@@ -1158,8 +1158,6 @@ static struct kbase_va_region *kbase_mem_from_user_buffer(
 
 	if (pages) {
 		struct device *dev = kctx->kbdev->dev;
-		unsigned long local_size = user_buf->size;
-		unsigned long offset = user_buf->address & ~PAGE_MASK;
 		struct tagged_addr *pa = kbase_get_gpu_phy_pages(reg);
 
 		/* Top bit signifies that this was pinned on import */
@@ -1167,20 +1165,18 @@ static struct kbase_va_region *kbase_mem_from_user_buffer(
 
 		for (i = 0; i < faulted_pages; i++) {
 			dma_addr_t dma_addr;
-			unsigned long min;
 
-			min = MIN(PAGE_SIZE - offset, local_size);
-			dma_addr = dma_map_page(dev, pages[i],
-					offset, min,
+			/* The GPU is given the whole page, so the whole page
+			 * must be mapped for the device, not just the part
+			 * covered by the buffer.
+			 */
+			dma_addr = dma_map_page(dev, pages[i], 0, PAGE_SIZE,
 					DMA_BIDIRECTIONAL);
 			if (dma_mapping_error(dev, dma_addr))
 				goto unwind_dma_map;
 
 			user_buf->dma_addrs[i] = dma_addr;
 			pa[i] = as_tagged(page_to_phys(pages[i]));
-
-			local_size -= min;
-			offset = 0;
 		}
 
 		reg->gpu_alloc->nents = faulted_pages;
