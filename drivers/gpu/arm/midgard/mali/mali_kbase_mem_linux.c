@@ -1329,6 +1329,14 @@ u64 kbase_mem_alias(struct kbase_context *kctx, u64 *flags, u64 stride,
 			reg->gpu_alloc->imported.alias.aliased[i].alloc = kbase_mem_phy_alloc_get(alloc);
 			reg->gpu_alloc->imported.alias.aliased[i].length = ai[i].length;
 			reg->gpu_alloc->imported.alias.aliased[i].offset = ai[i].offset;
+
+			/* Count the alias against the native alloc now, not
+			 * when it is GPU mapped: a same-VA alias is returned
+			 * as a pending cookie that may stay unmapped for a
+			 * while, during which MEM_FLAGS_CHANGE and MEM_COMMIT
+			 * must still treat the native alloc as aliased.
+			 */
+			kbase_mem_phy_alloc_gpu_mapped(alloc);
 		}
 	}
 
