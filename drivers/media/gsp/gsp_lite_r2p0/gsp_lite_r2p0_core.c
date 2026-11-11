@@ -1786,16 +1786,17 @@ static enum gsp_lite_r2p0_planes gsp_lite_r2p0_des_kind(u32 format)
 }
 
 /*
- * The hardware writes the work area of the destination, scaled and then
- * rotated, from the work area position on. All of it, and the second work
- * area, must be inside the pitch x height of the destination, and that
- * inside its buffer.
+ * The hardware writes the two work areas of the destination, scaled and
+ * then rotated: the first from its position on, the second at its
+ * destination position. Both, rotation included, must be inside the
+ * pitch x height of the destination, and the rows up to the lowest one
+ * written must be inside its buffer, for every plane of the format.
  */
 static int gsp_lite_r2p0_verify_des(struct gsp_lite_r2p0_cfg *cfg)
 {
 	struct gsp_lite_r2p0_des_layer_params *p = &cfg->ld1.params;
 	struct gsp_lite_r2p0_misc_cfg *misc = &cfg->misc;
-	u32 out_w, out_h, rows;
+	u32 out_w, out_h, end_x, end_y;
 
 	if (misc->scale_para.scale_en) {
 		out_w = misc->scale_para.scale_rect_out.rect_w;
@@ -1809,22 +1810,29 @@ static int gsp_lite_r2p0_verify_des(struct gsp_lite_r2p0_cfg *cfg)
 	if (p->rot_angle & 1)
 		swap(out_w, out_h);
 
-	if (out_w < 1 || out_h < 1 ||
-	    (u32)misc->workarea1_src_rect.st_x + out_w > p->pitch ||
-	    (u32)misc->workarea1_src_rect.st_y + out_h > p->height)
+	if (out_w < 1 || out_h < 1)
 		return -EINVAL;
 
-	if ((misc->workarea2_src_rect.rect_w || misc->workarea2_src_rect.rect_h) &&
-	    ((u32)misc->workarea2_des_pos.pt_x +
-	     misc->workarea2_src_rect.rect_w > p->pitch ||
-	     (u32)misc->workarea2_des_pos.pt_y +
-	     misc->workarea2_src_rect.rect_h > p->height))
+	end_x = (u32)misc->workarea1_src_rect.st_x + out_w;
+	end_y = (u32)misc->workarea1_src_rect.st_y + out_h;
+
+	if (misc->workarea2_src_rect.rect_w || misc->workarea2_src_rect.rect_h) {
+		u32 w2 = misc->workarea2_src_rect.rect_w;
+		u32 h2 = misc->workarea2_src_rect.rect_h;
+
+		if (p->rot_angle & 1)
+			swap(w2, h2);
+
+		end_x = max(end_x, (u32)misc->workarea2_des_pos.pt_x + w2);
+		end_y = max(end_y, (u32)misc->workarea2_des_pos.pt_y + h2);
+	}
+
+	if (end_x > p->pitch || end_y > p->height)
 		return -EINVAL;
 
-	rows = misc->workarea1_src_rect.st_y + out_h;
 	if (!gsp_lite_r2p0_planes_ok(&cfg->ld1.common,
 				     gsp_lite_r2p0_des_kind(p->img_format),
-				     rows, p->pitch))
+				     end_y, p->pitch))
 		return -EINVAL;
 
 	return 0;
