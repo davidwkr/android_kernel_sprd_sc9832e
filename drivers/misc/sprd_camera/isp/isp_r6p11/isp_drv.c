@@ -337,7 +337,13 @@ static int offline_full_thread_loop(void *arg)
 		if (!dev->is_offline_full_thread_stop) {
 			dev->is_wait_fmcu = 1;
 			wait_for_completion(&dev->fmcu_com);
-			if (!dev->is_offline_full_thread_stop) {
+			/*
+			 * Under the module lock, so PUT_DCAM_RES cannot free the
+			 * FMCU buffer while the capture is set up; skipped when
+			 * the module was disabled meanwhile.
+			 */
+			if (!dev->is_offline_full_thread_stop &&
+			    !sprd_isp_k_lock(dev)) {
 				if (sprd_isp_pipeline_proc_full(arg)) {
 					pr_err("fail to start capture!\n");
 					spin_lock(&isp_mod_lock);
@@ -348,6 +354,7 @@ static int offline_full_thread_loop(void *arg)
 						dev->fmcu_addr_vir);
 					sprd_isp_reset_fmcu();
 				}
+				sprd_isp_k_unlock(dev);
 			}
 		}
 	}
@@ -2427,6 +2434,29 @@ static int ispdrv_mask_3a_req(uint32_t idx)
 	return 0;
 }
 
+/*
+ * Serialise users of the block buffers (isp_block_buf_alloc/free) against
+ * the module disable; fails when the module is not enabled.
+ */
+int sprd_isp_k_lock(struct isp_pipe_dev *dev)
+{
+	enum isp_id iid = ISP_GET_IID(dev->com_idx);
+
+	mutex_lock(&isp_module_sema[iid]);
+	if (atomic_read(&s_isp_users[iid]) == 0) {
+		mutex_unlock(&isp_module_sema[iid]);
+		pr_err("fail to use isp%d, module is disabled\n", iid);
+		return -ENODEV;
+	}
+
+	return 0;
+}
+
+void sprd_isp_k_unlock(struct isp_pipe_dev *dev)
+{
+	mutex_unlock(&isp_module_sema[ISP_GET_IID(dev->com_idx)]);
+}
+
 int sprd_isp_k_ioctl(void *isp_pipe_dev_handle,
 	unsigned int cmd, unsigned long param)
 {
@@ -2497,6 +2527,10 @@ int sprd_isp_k_ioctl(void *isp_pipe_dev_handle,
 	case SPRD_ISP_IO_READ:
 		break;
 	case SPRD_ISP_IO_RAW_CAP:
+		/* the FMCU buffer must not go away under the capture */
+		ret = sprd_isp_k_lock(dev);
+		if (ret)
+			goto exit;
 		mutex_lock(&dev->isp_mutex);
 		pr_info("start isp_raw_cap_proc %p\n", dev);
 		memset((void *)&raw_cap, 0x0, sizeof(struct isp_raw_proc_info));
@@ -2506,10 +2540,12 @@ int sprd_isp_k_ioctl(void *isp_pipe_dev_handle,
 		if (ret != 0) {
 			pr_err("fail to copy_from_user\n");
 			mutex_unlock(&dev->isp_mutex);
+			sprd_isp_k_unlock(dev);
 			goto exit;
 		}
 		ret = isp_raw_cap_proc(dev, &raw_cap);
 		mutex_unlock(&dev->isp_mutex);
+		sprd_isp_k_unlock(dev);
 		break;
 	case SPRD_ISP_IO_WRITE:
 		break;
@@ -2521,7 +2557,12 @@ int sprd_isp_k_ioctl(void *isp_pipe_dev_handle,
 	case SPRD_ISP_IO_INT:
 		break;
 	case SPRD_ISP_IO_CFG_PARAM:
+		/* the blocks use the buffers that PUT_DCAM_RES frees */
+		ret = sprd_isp_k_lock(dev);
+		if (ret)
+			break;
 		ret = isp_cfg_param((void *)param, isp_k_param, dev);
+		sprd_isp_k_unlock(dev);
 		break;
 	case SPRD_ISP_IO_SET_STATIS_BUF:
 #if 0
@@ -2978,6 +3019,10 @@ static int sprd_isp_start_path(void *isp_handle,
 			rtn = isp_offline_set_next_frm(module, off_type, frame);
 			if (rtn) {
 				pr_err("code %d\n", rtn);
+				isp_offline_buf_iommu_unmap(&module->off_desc,
+							    off_type);
+				isp_offline_buf_iommu_unmap_external(
+					&module->off_desc, off_type);
 				return -(rtn);
 			}
 
@@ -3005,6 +3050,10 @@ static int sprd_isp_start_path(void *isp_handle,
 				frame+1);
 			if (rtn) {
 				pr_err("fail to set next frm rtn %d\n", rtn);
+				isp_offline_buf_iommu_unmap(&module->off_desc,
+							    off_type);
+				isp_offline_buf_iommu_unmap_external(
+					&module->off_desc, off_type);
 				return -(rtn);
 			}
 
@@ -4130,10 +4179,10 @@ int sprd_isp_module_dis(void *isp_handle, enum isp_id iid)
 	pr_info("ISP%d: disable isp moduel, in %d\n",
 		iid, atomic_read(&s_isp_users[iid]));
 
-	if (atomic_read(&s_isp_users[iid]) == 0)
-		return rtn;
-
 	mutex_lock(&isp_module_sema[iid]);
+	if (atomic_read(&s_isp_users[iid]) == 0)
+		goto exit;
+
 	if (atomic_dec_return(&s_isp_users[iid]) == 0) {
 		rtn = isp_irq_free(&s_isp_irq[iid], dev);
 		if (rtn) {

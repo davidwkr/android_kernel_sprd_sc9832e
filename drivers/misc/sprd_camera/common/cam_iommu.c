@@ -25,37 +25,85 @@ struct fd_map_dma {
 };
 static LIST_HEAD(dma_buffer_list);
 static DEFINE_SPINLOCK(dma_buffer_lock);
+static unsigned int dma_buffer_count;
 
-static int dma_buffer_list_add(int fd, struct dma_buf *buf)
+/*
+ * Every imported buffer is referenced until the module is released and the
+ * frames keep raw dma_buf pointers that depend on that reference, so an entry
+ * cannot be dropped when one mapping is freed (the same buffer is queued
+ * again and again). The list is cleared when the camera closes. Entries of
+ * replaced buffers stay until then, so a cap would eventually refuse a long
+ * session's legitimate imports (stock has none): only warn once past this.
+ */
+#define DMA_BUFFER_LIST_WARN	1024
+
+/*
+ * Add the imported planes of pfinfo, or none of them: a partial import must
+ * not leave the first plane referenced.
+ */
+static int dma_buffer_list_add(struct pfiommu_info *pfinfo,
+			       unsigned int planes)
 {
-	struct fd_map_dma *fd_dma;
+	struct fd_map_dma *fd_dma[2] = { NULL, NULL };
 	struct fd_map_dma *entry;
 	unsigned long flags;
+	unsigned int need = 0;
+	bool found[2] = { false, false };
+	int i, ret = 0;
 
-	if (!buf)
-		return -EINVAL;
-
-	fd_dma = kzalloc(sizeof(struct fd_map_dma), GFP_KERNEL);
-	if (!fd_dma)
-		return -ENOMEM;
-
-	fd_dma->fd = fd;
-	fd_dma->dma_buf = buf;
-	spin_lock_irqsave(&dma_buffer_lock, flags);
-	list_for_each_entry(entry, &dma_buffer_list, list) {
-		if (fd == entry->fd && buf == entry->dma_buf) {
-			spin_unlock_irqrestore(&dma_buffer_lock, flags);
-			kfree(fd_dma);
-			return 0;
+	for (i = 0; i < 2; i++) {
+		if (!(planes & BIT(i)))
+			continue;
+		fd_dma[i] = kzalloc(sizeof(struct fd_map_dma), GFP_KERNEL);
+		if (!fd_dma[i]) {
+			ret = -ENOMEM;
+			goto free_nodes;
 		}
+		fd_dma[i]->fd = pfinfo->mfd[i];
+		fd_dma[i]->dma_buf = pfinfo->dmabuf_p[i];
 	}
 
-	get_dma_buf(buf);
-	list_add_tail(&fd_dma->list, &dma_buffer_list);
-	spin_unlock_irqrestore(&dma_buffer_lock, flags);
-	pr_info("%s, add 0x%x 0x%p\n", __func__, fd, buf);
+	spin_lock_irqsave(&dma_buffer_lock, flags);
+	for (i = 0; i < 2; i++) {
+		if (!fd_dma[i])
+			continue;
+		list_for_each_entry(entry, &dma_buffer_list, list) {
+			if (fd_dma[i]->fd == entry->fd &&
+			    fd_dma[i]->dma_buf == entry->dma_buf) {
+				found[i] = true;
+				break;
+			}
+		}
+		/* both planes may be the same buffer */
+		if (i == 1 && fd_dma[0] && !found[0] &&
+		    fd_dma[0]->fd == fd_dma[1]->fd &&
+		    fd_dma[0]->dma_buf == fd_dma[1]->dma_buf)
+			found[1] = true;
+		if (!found[i])
+			need++;
+	}
 
-	return 0;
+	if (dma_buffer_count + need > DMA_BUFFER_LIST_WARN)
+		pr_warn_once("%s, %u imported buffers held until close\n",
+			     __func__, dma_buffer_count + need);
+
+	for (i = 0; i < 2; i++) {
+		if (!fd_dma[i] || found[i])
+			continue;
+		get_dma_buf(fd_dma[i]->dma_buf);
+		list_add_tail(&fd_dma[i]->list, &dma_buffer_list);
+		dma_buffer_count++;
+		pr_info("%s, add 0x%x 0x%p\n", __func__,
+			fd_dma[i]->fd, fd_dma[i]->dma_buf);
+		fd_dma[i] = NULL;
+	}
+	spin_unlock_irqrestore(&dma_buffer_lock, flags);
+
+free_nodes:
+	for (i = 0; i < 2; i++)
+		kfree(fd_dma[i]);
+
+	return ret;
 }
 
 void dma_buffer_list_clear(void)
@@ -67,6 +115,7 @@ void dma_buffer_list_clear(void)
 
 	spin_lock_irqsave(&dma_buffer_lock, flags);
 	list_splice_init(&dma_buffer_list, &release_list);
+	dma_buffer_count = 0;
 	spin_unlock_irqrestore(&dma_buffer_lock, flags);
 
 	list_for_each_entry_safe(fd_dma, fd_dma_next, &release_list, list) {
@@ -81,6 +130,7 @@ void dma_buffer_list_clear(void)
 int pfiommu_get_sg_table(struct pfiommu_info *pfinfo)
 {
 	int i, ret;
+	unsigned int got = 0;
 
 	for (i = 0; i < 2; i++) {
 		if (pfinfo->mfd[i] > 0) {
@@ -89,7 +139,8 @@ int pfiommu_get_sg_table(struct pfiommu_info *pfinfo)
 				pr_err("failed to get dma buf %p\n",
 				       pfinfo->dmabuf_p[i]);
 				pfinfo->dmabuf_p[i] = NULL;
-				return -EFAULT;
+				ret = -EFAULT;
+				goto err_put;
 			}
 
 			ret = sprd_ion_get_buffer(-1, pfinfo->dmabuf_p[i],
@@ -100,20 +151,36 @@ int pfiommu_get_sg_table(struct pfiommu_info *pfinfo)
 					i, pfinfo->mfd[i]);
 				dma_buf_put(pfinfo->dmabuf_p[i]);
 				pfinfo->dmabuf_p[i] = NULL;
-				return -EFAULT;
+				ret = -EFAULT;
+				goto err_put;
 			}
-
-			ret = dma_buffer_list_add(pfinfo->mfd[i],
-						  pfinfo->dmabuf_p[i]);
-			dma_buf_put(pfinfo->dmabuf_p[i]);
-			if (ret) {
-				pfinfo->dmabuf_p[i] = NULL;
-				return ret;
-			}
+			got |= BIT(i);
 		}
 	}
 
+	/* the list takes its own references */
+	ret = dma_buffer_list_add(pfinfo, got);
+	if (ret)
+		goto err_put;
+
+	for (i = 0; i < 2; i++)
+		if (got & BIT(i))
+			dma_buf_put(pfinfo->dmabuf_p[i]);
+
 	return 0;
+
+err_put:
+	/* a partial import is dropped as a whole */
+	for (i = 0; i < 2; i++) {
+		if (got & BIT(i)) {
+			dma_buf_put(pfinfo->dmabuf_p[i]);
+			pfinfo->dmabuf_p[i] = NULL;
+			pfinfo->buf[i] = NULL;
+			pfinfo->size[i] = 0;
+		}
+	}
+
+	return ret;
 }
 
 int  pfiommu_put_sg_table(void)
