@@ -204,9 +204,8 @@ static int __maybe_unused sprd_vibrator_suspend(struct device *dev)
 static SIMPLE_DEV_PM_OPS(sprd_vibrator_pm_ops, sprd_vibrator_suspend, NULL);
 
 static const struct of_device_id sprd_vibrator_of_match[] = {
+	/* SC2731/SC2723 also need their RTC vibrator clock enabled: not here */
 	{ .compatible = "sprd,sc2721-vibrator", .data = &sc2721_data },
-	{ .compatible = "sprd,sc2731-vibrator", .data = &sc2721_data },
-	{ .compatible = "sprd,sc2723t-vibrator", .data = &sc2721_data },
 	{ .compatible = "sprd,sc2720-vibrator", .data = &sc2720_data },
 	{ }
 };
