@@ -27,6 +27,7 @@
 #       and are not in a GSI: path_wrapper, count, dhcpcd_* and iprenew_*.
 #   C9  whitespace only: tabs to spaces, trailing blanks, runs of blank lines.
 #   C10 the commented-out "#start path_wrapper" and "# exec resize2fs" dropped.
+#   C11 service srtd dropped: /vendor/xbin/srtd does not exist on either watch.
 # Differences from the DW100U-silver ramdisk (kept: they are the stock difference):
 #   - "start ylog" is commented out (DW100U-silver starts it in post-fs-data).
 #   - no gpio-keys hsc_disabled_keys chown/chmod, no /dev/gh3x2x, /dev/och1970
@@ -695,14 +696,6 @@ on property:debug.sysdump.enabled=true
 on property:debug.sysdump.enabled=false
     write /proc/sprd_sysdump "off"
     setprop persist.sys.sysdump off
-
-# SRT server
-service srtd /vendor/xbin/srtd
-    class main
-    socket srtserver stream 0777 system system
-    user root
-    group root
-    oneshot
 
 service gpsd /vendor/bin/gpsd
     class core

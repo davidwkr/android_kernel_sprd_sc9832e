@@ -11,8 +11,9 @@
 # probing, change "wait,encryptable=footer,check" to "wait,check" and the
 # sdcard "voldmanaged=...,encryptable=footer" to "voldmanaged=...".
 # "emmc" (/misc) is a raw partition: fs_mgr skips it in mount_all, the entry
-# stays for recovery/uncrypt. The /productinfo mount point is created by fs_mgr
-# in the ramdisk root, which has to be writable.
+# stays for recovery/uncrypt. The /productinfo mount point has to exist in the
+# GSI root, which is read-only: add it to the image with
+# scripts/gsi_add_mountpoints.sh (devices/VENDOR_GSI_PATCH.md).
 # <src>                                         <mnt_point>  <type>  <mnt_flags and options>             <fs_mgr_flags>
 
 /dev/block/platform/soc/soc:ap-ahb/20600000.sdio/by-name/userdata /data        f2fs noatime,nosuid,nodev,discard,inline_xattr,inline_data wait,encryptable=footer,check

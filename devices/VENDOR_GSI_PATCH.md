@@ -44,10 +44,11 @@ IDs match the header comment of the rc. "Common" is the `init.common.rc` part of
 | C3 | Common, `on fs` | `ubiattach 0 ubipac` | removed | raw-NAND (UBI) only; these watches are eMMC (`by-name` on `20600000.sdio`). Not every init version still knows the command |
 | C4 | Common, `on fs` | `mount_all /fstab.${ro.hardware}` | `mount_all /vendor/etc/fstab.${ro.hardware}` | the ramdisk `/fstab.*` is gone. Plain `mount_all` (no `--early`/`--late`): all entries mount in `fs`, as in stock |
 | C10 | Common, `on fs` | `# exec /sbin/resize2fs -ef /fstab.${ro.hardware}`, `#start path_wrapper` | removed | comments about things that do not exist in a GSI |
+| C11 | device rc | `service srtd /vendor/xbin/srtd` (class main, root, `socket srtserver` 0777) | removed | `/vendor/xbin/srtd` does not exist on either watch (checked on both: no binary, no socket), so it is dead stock configuration |
 | C5 | Common, `on post-fs-data` | `mkdir /etc/wifi 0770 wifi wifi` | removed | `/etc` is `/system/etc`, read-only |
 | C6 | Common, `on post-fs` | `insmod /lib/modules/mali.ko` | `#mali-module: insmod /vendor/lib/modules/mali.ko` (comment) | the ramdisk path is gone. See "Kernel modules" |
 | C7 | device rc, `on post-fs-data` | `insmod /lib/modules/sprdbt_tty.ko`, `insmod /lib/modules/sprd_fm.ko` | same with `/vendor/lib/modules/` | module location |
-| C7 | device rc, `on post-fs-data` | (none) | `insmod /vendor/lib/modules/sprdwl_ng.ko` | no rc loads `sprdwl_ng.ko` in the stock ramdisk although the ramdisk carries it; something in the stock userspace loads it by its `/lib/modules` path, which a GSI does not have. A second insmod by a stock HAL fails with EEXIST and is harmless |
+| C7 | device rc, `on post-fs-data` | (none) | `insmod /vendor/lib/modules/sprdwl_ng.ko` | no rc loads `sprdwl_ng.ko` in the stock ramdisk although the ramdisk carries it; the Wi-Fi HAL loads it (see "Kernel modules"). Pre-loading it from the rc is fine: the HAL checks `/proc/modules` first |
 | C8 | Common | `service path_wrapper /sbin/path_wrapper` (critical, seclabel `path_wrapper`) | removed | `/sbin/path_wrapper` is not in the ramdisk, it was never started (`#start path_wrapper`), and a GSI policy has no `path_wrapper` domain |
 | C8 | Common | `service count /system/xbin/count` (class main, root, socket 0777) | removed | binary of the stock `/system`, not in a GSI; as `class main` it would only log an exec failure |
 | C8 | Common | `dhcpcd_wlan0`, `dhcpcd_p2p`, `dhcpcd_ipv6`, `iprenew_wlan0`, `iprenew_p2p`, `dhcpcd_bnep0`, `iprenew_bnep0`, `dhcpcd_bt-pan`, `iprenew_bt-pan` | removed | `/system/bin/dhcpcd`: a GSI of Android 9+ has no dhcpcd (the framework runs its own DHCP client), all are `disabled`/`oneshot` |
@@ -64,8 +65,34 @@ Everything else in the rc is stock, line for line (about 780 lines): the sensor,
 | `userdata` f2fs, then ext4 | `/data` | stock flags, `wait,encryptable=footer,check` | `encryptable=footer` is legacy full-disk encryption: a GSI keeps it only up to Android 10. If userdata carries a crypto footer from the stock system, a GSI that expects FBE or none cannot mount it without a wipe. For Android 11+ remove `encryptable=footer` (documented in the file header); not changed here, to keep the stock flags |
 | `cache` ext4 | `/cache` | stock | |
 | usb `auto` vfat, sdcard `auto` vfat | `auto` | stock `voldmanaged=...` | sdcard entry has `encryptable=footer` too (same note) |
-| `prodnv` ext4 | `/productinfo` | stock | the mount point is not in the GSI image: fs_mgr creates it, which needs a writable root (the ramdisk `/`). If the root is the read-only system image the mount fails: then mount at `/mnt/vendor/productinfo` instead and change the `/productinfo` paths in the rc |
+| `prodnv` ext4 | `/productinfo` | stock | kept at `/productinfo`: the stock vendor depends on the path (`/vendor/etc/init/charge.rc`, the `/productinfo` paths in the rc: WCN `wcn`, `sensor_calibration_data`). The GSI root is the read-only system image and has no such directory, so the mount would fail; the directory is added to the image instead, see "Root directories a GSI lacks" |
 | `misc` emmc | `/misc` | `defaults defaults` | raw partition: fs_mgr skips it in `mount_all`, the line stays for recovery/uncrypt |
+
+## Root directories a GSI lacks
+
+A GSI is system-as-root: `/` is the read-only system image. Everything the merged rc files and the fstab name at the root of the filesystem has to exist there or be created by init in a tmpfs. Absolute root-level paths used (both rc files and the fstab): `/sys /proc /dev /data /cache /storage /mnt /system /vendor /productinfo /res /bin /misc /devices`, compared with the root of the downloaded GSI (`acct apex bin bt_firmware bugreports cache config d data data_mirror debug_ramdisk dev efs etc init init.environ.rc linkerconfig metadata mnt odm odm_dlkm oem persist postinstall proc product sbin sdcard sec_storage second_stage_resources storage sys system system_dlkm system_ext vendor vendor_dlkm firmware`):
+
+| Path | In the GSI root | Used for | Handling |
+|---|---|---|---|
+| `/productinfo` | **missing** | `prodnv` mount point; `chown`/`chmod`/`mkdir` in the rc, WCN and sensor calibration, stock `/vendor/etc/init/charge.rc` | `scripts/gsi_add_mountpoints.sh` adds it (below) |
+| `/res` | missing | `symlink /system/res /res` in the rc (`on fs`) | not a mount point or a data directory: the rc line fails on the read-only root (init logs it, the boot goes on). Nothing in the vendor files reads `/res` (it served the stock charger images, and charger mode is out of scope). Not added |
+| `/bin` | present | `symlink /system/bin /bin` in the rc | the symlink fails with EEXIST, harmless |
+| `/misc`, `/devices` | n/a | the `misc` fstab entry (raw `emmc`, skipped by `mount_all`) and the sdcard/usb `/devices/...` sysfs patterns | not paths in the root |
+| `/data /cache /storage /mnt /dev /proc /sys /system /vendor` | present | mount points and tmpfs | none |
+
+Also in the stock ramdisk root: `/lib` (the `.ko` files, see "Kernel modules": they go to `/vendor/lib/modules`), `/sbin` (present in the GSI), `/oem` (present), `/charger`, `/default.prop`, `/etc`, `/sdcard`, `/bugreports` (present in the GSI as symlinks or directories). The stock `/vendor` rc files could not be checked here (no dump of the stock vendor partition in this tree): of them only `/vendor/etc/init/charge.rc` is known to use `/productinfo`. To check on a stock watch: `adb shell 'grep -rhoE "(^|[ =:\"])/[a-z_]+" /vendor/etc/init | sort -u'` (read-only), and compare with the list above.
+
+### `scripts/gsi_add_mountpoints.sh`
+
+```
+scripts/gsi_add_mountpoints.sh --label u:object_r:TYPE:s0 --output OUT.img IN.img
+```
+
+Works on a copy: `IN.img` is only read, `OUT.img` must not exist (it is removed again on any failure). `IN.img` has to be a raw ext4 image: an Android sparse image (magic `3aff26ed`) is refused, convert it first with `simg2img system.img system.raw.img`. Needs `debugfs` and `e2fsck` (e2fsprogs). An image with `shared_blocks` (deduplicated, read-only) cannot be opened read-write by debugfs and the script stops with that message; so does an image without a free block or inode.
+
+On the copy it runs `debugfs -w`: `mkdir /productinfo`, `set_inode_field mode 040755`, `uid 0`, `gid 0`, `ea_set security.selinux` (label plus the terminating NUL, as the Android labelling code stores it). Mode and owner are what fs_mgr made in the stock ramdisk root (`mkdir(mount_point, 0755)`, root:root; the stock `init.*.rc` and `fstab` have no other chmod/chown for the mount point). The `chown system system /productinfo` / `chmod 0771` in the rc apply to the mounted `prodnv` root, not to the mount point. Then it verifies with `debugfs stat`, `ea_get` and `ls` (directory, 0755, 0:0, label, empty) and `e2fsck -fn` (must exit 0).
+
+`--label` is required, not guessed. Take it from the watch's own vendor file contexts, so the mount point has the label the vendor policy expects for `/productinfo`: `adb shell grep productinfo /vendor/etc/selinux/nonplat_file_contexts` (`/vendor/etc/selinux/plat_file_contexts` is the other file of the stock policy), and use the context of the `/productinfo` entry, `u:object_r:TYPE:s0`. If the entry is `/productinfo(/.*)?`, the directory itself matches it. The GSI image is an input and is not committed. Flash `OUT.img` as `system` (the script does not touch a device). Test: `scripts/tests/gsi_add_mountpoints_test.sh` (synthetic ext4 image: directory, mode, owner, xattr, input untouched, refusals).
 
 ## Kernel modules
 
@@ -73,9 +100,9 @@ Everything else in the rc is stock, line for line (about 780 lines): the sensor,
 
 | Module | Used for | How it loads now |
 |---|---|---|
-| `mali.ko` | GPU (`/dev/mali0`) | built into the kernel on the 4.14 trees (nothing to load; leave the `#mali-module:` line commented; not checked in this 4.4 tree). The 4.4.302 tree of this branch still builds it out of tree (`scripts/watch_build.sh`): put it in `/vendor/lib/modules` and uncomment the line; `scripts/vendor_gsi_patch.sh --modules-dir` does both when `mali.ko` is in the dir |
+| `mali.ko` | GPU (`/dev/mali0`) | 4.14 route: built into the kernel (`CONFIG_MALI_MIDGARD=y`), nothing to load, the `#mali-module:` line stays commented. 4.4 route (the 4.4.302 tree of this branch, `scripts/watch_build.sh`): `mali.ko` is a module, it must go to `/vendor/lib/modules` and the line must be uncommented; `scripts/vendor_gsi_patch.sh --modules-dir` does both when `mali.ko` is in the dir |
 | `sprdbt_tty.ko`, `sprd_fm.ko` | Bluetooth tty, FM | modules in every tree here: `insmod /vendor/lib/modules/...` from `post-fs-data` (the rc does it); the script installs them from `--modules-dir` |
-| `sprdwl_ng.ko` | WLAN (`CONFIG_SPRDWL_NG=m`) | module: `insmod` line added, same location |
+| `sprdwl_ng.ko` | WLAN (`CONFIG_SPRDWL_NG=m`) | module, loaded by the Wi-Fi HAL: `libwifi-hal` checks `/proc/modules` first and only then loads the module from the path compiled into the HAL (`WIFI_DRIVER_MODULE_PATH` of the vendor build, not checked on the watch; a stock Android 8.1 one is a `/lib/modules` path, which a GSI does not have). The `insmod` from the rc runs first, so the HAL finds it loaded and skips its own load; if the HAL tries its own path, make sure the module is also there |
 
 Build all of them against the exact kernel `Image` that boots (vermagic): `watch_build.sh` puts `Image` and the four `.ko` in `OUTDIR/DEVICE/`. The ramdisk `.ko` of the stock kernel do not load on another kernel. The script reads `vermagic=` from each file and prints it; the stock copies cannot be taken from the watch (they are in the boot image, not in a mounted filesystem). A module-less kernel (everything `=y`) needs no `--modules-dir`, and the three `insmod` lines then fail harmlessly: delete them.
 
@@ -104,8 +131,7 @@ Not verified on hardware: nothing here was run against a watch. First-boot check
 
 ## Open points
 
-- Where `sprdwl_ng.ko` is loaded in the stock system (not an rc in the ramdisk; check `/system` and `/vendor` of a stock watch for the loader and its path).
+- Which path the Wi-Fi HAL (`libwifi-hal`, `WIFI_DRIVER_MODULE_PATH`) of the stock vendor uses for `sprdwl_ng.ko` (not checked on a watch).
 - Which stock file sets `ro.ramsize` (the ZRAM/LMK/hwui tables key on it) and where the `zram` service (`start zram`) is defined: neither is in the ramdisk; if they were in the ramdisk `default.prop` (a link to `system/etc/prop.default`) a GSI has to provide them.
 - `wpa_supplicant` and `p2p_supplicant` have no `interface` lines for the Android 10+ HIDL/AIDL supplicant HAL; a GSI's Wi-Fi needs them (vendor service declarations, not done here).
-- `srtd` (`/vendor/xbin/srtd`) runs as root with a world-writable socket (`0777`), stock design; kept because it is vendor functionality. Review before shipping.
 - The `/sys/devices/system/cpu/cpu* /cpufreq/interactive/*` lines in the stock `ueventd` have a space after `cpu*` and probably never match; left as stock.
