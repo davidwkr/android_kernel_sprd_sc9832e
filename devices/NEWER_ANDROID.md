@@ -46,8 +46,8 @@ header (id check OK, AVB hash stale: unlocked watches only). Not committed, in `
 
 | Watch | Image | sha256 |
 |---|---|---|
-| DM63 | `dm63_414_gsi_a14.img` | `2110f92bab0ffed1885c58dc1c3454087582d853b590d0bb6f11396dccac815d` |
-| DW100U silver | `dw100u-silver_414_gsi_a14.img` | `5f648d0c76a54a494d4ab8674aab5bcd1914fbe0ebf973d65c776d01cd864afc` |
+| DM63 | `dm63_414_gsi_a14.img` | `997f8c13169dfa5aeac223cc643c506783730b9fa3375d6054a544b345affb84` |
+| DW100U silver | `dw100u-silver_414_gsi_a14.img` | `762be4b45a9c6e5ea485dce92c19c3346c10d5c227cbe94815a516ddc54f10cc` |
 
 Before a test boot: full backup of boot, system and vendor; vendor patch with `scripts/vendor_gsi_patch.sh`
 (vendor backup first, dry run by default); a copy of the GSI with `/productinfo` added by

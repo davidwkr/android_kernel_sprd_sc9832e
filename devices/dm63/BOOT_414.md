@@ -4,13 +4,13 @@
 committed); it is kept in `~/.cache/dm63-414-candidate/dm63_414_adf_candidate.img`. This is a bring-up image, built the same way as the K18 one: see
 `../k18/BOOT_414.md` for the commands, the contents and what to expect, which apply here except as noted.
 
-Built from `kernel-4.14` commit `ed4285470c9a` (2026-11-11), kernel release 4.14.336+, config `sprd_sharkle_defconfig` +
+Built from `kernel-4.14` commit `cfe3fd4ff26e` (2026-11-11), kernel release 4.14.336+, config `sprd_sharkle_defconfig` +
 `watch_414.fragment` + `watch_414_adf.fragment` + `watch_414_stock81.fragment`, DTB `sp9832e-1h10-dm63-adf.dtb` in a new SPRD DT table with the stock header and entry
 fields (board id `0x2668`, rev 1), on a copy of the stock DM63 boot image; in its ramdisk the 4.14 builds of sprdwl_ng.ko, sprdbt_tty.ko and sprd_fm.ko
 (`devices/WCN_414_PORT.md`, debug info stripped) replace the 4.4.83 ones, and the stale 4.4.83 `mali.ko` with its `insmod` line is removed
 (`tools/sprd_ramdisk.py remove-module`). Build script: `devices/build_414_stock81.sh`.
 
-sha256 `5d49dfa56d8891f7d10dc7679a797617a694766f5c11db6a5a096a75b13adcda`
+sha256 `423c515de75efa1aebdaef45b0892f8e22a646fe9ad24dc1461885c7bf18502f`
 
 What this build adds over the first candidates (all reviewed, compile-tested only):
 - the stock `android,fstab` node in the DT (`sp9832e-watch-firmware.dtsi`): without it 8.1 init mounts neither `/system` nor `/vendor`;
