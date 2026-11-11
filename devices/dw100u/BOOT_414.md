@@ -4,13 +4,13 @@
 committed); it is kept in `~/.cache/dw100u-silver-414-candidate/dw100u-silver_414_adf_candidate.img`. This is a bring-up image, built the same way as the K18 one: see
 `../k18/BOOT_414.md` for the commands, the contents and what to expect, which apply here except as noted.
 
-Built from `kernel-4.14` commit `33bb6dde037d` (2026-11-11), kernel release 4.14.336+, config `sprd_sharkle_defconfig` +
+Built from `kernel-4.14` commit `ed4285470c9a` (2026-11-11), kernel release 4.14.336+, config `sprd_sharkle_defconfig` +
 `watch_414.fragment` + `watch_414_adf.fragment` + `watch_414_stock81.fragment`, DTB `sp9832e-1h10-dw100u-silver-adf.dtb` in a new SPRD DT table with the stock header and entry
 fields (board id `0x2668`, rev 1), on a copy of the stock DW100U silver boot image; in its ramdisk the 4.14 builds of sprdwl_ng.ko, sprdbt_tty.ko and sprd_fm.ko
 (`devices/WCN_414_PORT.md`, debug info stripped) replace the 4.4.83 ones, and the stale 4.4.83 `mali.ko` with its `insmod` line is removed
 (`tools/sprd_ramdisk.py remove-module`). Build script: `devices/build_414_stock81.sh`.
 
-sha256 `bfde75c5b99728b7359b67eedf31ca76a1fb98359e70a42d34a200eca227ba5a`
+sha256 `a9dcf1c30c4e016d3e443a4059bc89e7c440427397b957facbebe4ba6210383f`
 
 What this build adds over the first candidates (all reviewed, compile-tested only):
 - the stock `android,fstab` node in the DT (`sp9832e-watch-firmware.dtsi`): without it 8.1 init mounts neither `/system` nor `/vendor`;

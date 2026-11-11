@@ -45,3 +45,38 @@ later releases.
 - `KBASE_IOCTL_TLSTREAM_ACQUIRE` returns `-EPERM` without `CAP_SYS_ADMIN`. Profiling tools that use the timeline
   stream (gator, the vendor timeline) need root. The normal graphics path does not use it.
 - `MEM_COMMIT` on a JIT region fails with `-EINVAL`. Unverified against the stock blob until a GPU run on a watch.
+
+## First boot: grep dmesg for "mali: refused"
+
+Each refusal above logs one line (the error code is unchanged):
+`mali: refused <operation> from <comm> (tgid <n>)`. The limit is the kernel
+default for `dev_warn_ratelimited()`, 10 messages per 5 s per call site, not
+once only, so a busy loop is still sampled. After the first boot run
+`dmesg | grep 'mali: refused'`. A hit identifies the refused operation and the
+task that asked for it; by itself it does not establish that the vendor
+library depends on that operation (a probing or fuzzing process produces the
+same line). The operations:
+
+- `TLSTREAM_ACQUIRE without CAP_SYS_ADMIN`
+- `MMU page-table dump mmap without CAP_SYS_ADMIN`
+- `tracking page mmap larger than one page`
+- `MEM_COMMIT on a JIT region`
+- `MEM_COMMIT under a kernel mapping`
+- `MEM_FLAGS_CHANGE on a JIT region`
+- `MEM_FLAGS_CHANGE under a kernel mapping`
+- `MEM_ALIAS of a JIT region`
+- `MEM_ALIAS with stride * nents overflowing the address range`
+- `MEM_ALIAS with an offset beyond the aliased allocation`
+- `MEM_ALIAS with offset + length beyond the aliased allocation`
+- `CPU mmap of an imported user buffer`
+- `CPU mmap of an evictable region`
+- `CPU fault on an imported user buffer`
+- `kernel vmap of an imported user buffer`
+- `kernel vmap of an evictable or JIT region`
+- `debug copy of an empty or wrapping buffer`
+- `debug copy of an oversized buffer`
+
+For the kernel vmap lines the process is whichever one ran the soft job, which
+may be a kernel worker rather than the GPU library. MEM_FREE on a JIT region
+already logged `kbase_mem_free called on JIT memory` before this change.
+
