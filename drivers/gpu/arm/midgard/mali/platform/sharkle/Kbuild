@@ -14,3 +14,9 @@
 
 
 obj-y += mali_kbase_config_sharkle.o
+
+# Tell backend/gpu/mali_kbase_devfreq.c it can use this platform's
+# kbase_platform_get_init_freq()/kbase_platform_set_freq() instead of the
+# generic kbdev->clock ("clk_mali") path. Only defined when this Kbuild is
+# included, i.e. only for CONFIG_MALI_PLATFORM_NAME="sharkle".
+ccflags-y += -DMALI_PLATFORM_HAS_SET_FREQ

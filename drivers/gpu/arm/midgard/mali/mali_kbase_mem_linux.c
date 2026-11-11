@@ -30,6 +30,7 @@
 #include <linux/compat.h>
 #include <linux/kernel.h>
 #include <linux/bug.h>
+#include <linux/capability.h>
 #include <linux/mm.h>
 #include <linux/mman.h>
 #include <linux/fs.h>
@@ -229,7 +230,7 @@ void kbase_phy_alloc_mapping_put(struct kbase_context *kctx,
 
 struct kbase_va_region *kbase_mem_alloc(struct kbase_context *kctx,
 		u64 va_pages, u64 commit_pages, u64 extent, u64 *flags,
-		u64 *gpu_va)
+		u64 *gpu_va, bool jit_alloc)
 {
 	int zone;
 	struct kbase_va_region *reg;
@@ -299,6 +300,14 @@ struct kbase_va_region *kbase_mem_alloc(struct kbase_context *kctx,
 
 	if (kbase_update_region_flags(kctx, reg, *flags) != 0)
 		goto invalid_flags;
+
+	/* A JIT region must carry KBASE_REG_JIT before it is published to the
+	 * address space below: MEM_FREE, MEM_FLAGS_CHANGE and MEM_ALIAS refuse
+	 * JIT regions, so setting the flag after kbase_mem_alloc() returned
+	 * left a window in which they could still act on it (CVE-2022-38181).
+	 */
+	if (jit_alloc)
+		reg->flags |= KBASE_REG_JIT;
 
 	if (kbase_reg_prepare_native(reg, kctx) != 0) {
 		dev_err(dev, "Failed to prepare region");
@@ -701,6 +710,15 @@ int kbase_mem_evictable_make(struct kbase_mem_phy_alloc *gpu_alloc)
 	kbase_mem_shrink_cpu_mapping(kctx, gpu_alloc->reg,
 			0, gpu_alloc->nents);
 
+	/*
+	 * Finish the reclaim accounting and mark the region before the
+	 * shrinker can see the allocation: once it is on the eviction list the
+	 * shrinker may free the backing (and drop alloc->nents) at any time,
+	 * so accounting done afterwards would subtract the wrong page count.
+	 */
+	kbase_mem_evictable_mark_reclaim(gpu_alloc);
+	gpu_alloc->reg->flags |= KBASE_REG_DONT_NEED;
+
 	mutex_lock(&kctx->jit_evict_lock);
 	/* This allocation can't already be on a list. */
 	WARN_ON(!list_empty(&gpu_alloc->evict_node));
@@ -711,9 +729,6 @@ int kbase_mem_evictable_make(struct kbase_mem_phy_alloc *gpu_alloc)
 	 */
 	list_add(&gpu_alloc->evict_node, &kctx->evict_list);
 	mutex_unlock(&kctx->jit_evict_lock);
-	kbase_mem_evictable_mark_reclaim(gpu_alloc);
-
-	gpu_alloc->reg->flags |= KBASE_REG_DONT_NEED;
 	return 0;
 }
 
@@ -813,6 +828,10 @@ int kbase_mem_flags_change(struct kbase_context *kctx, u64 gpu_addr, unsigned in
 	 * (CVE-2022-38181).
 	 */
 	if (reg->flags & KBASE_REG_JIT)
+		goto out_unlock;
+
+	/* no eviction under a kernel mapping (kbase_vmap_prot) */
+	if (atomic_read(&reg->gpu_alloc->kernel_mappings) > 0)
 		goto out_unlock;
 
 	/* Is the region being transitioning between not needed and needed? */
@@ -1115,14 +1134,17 @@ static struct kbase_va_region *kbase_mem_from_user_buffer(
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 6, 0)
 	/* 4.4 stable (4.4.168+) has the gup_flags form of get_user_pages() */
 	faulted_pages = get_user_pages(current, current->mm, address, *va_pages,
-			reg->flags & KBASE_REG_GPU_WR ? FOLL_WRITE : 0,
+			reg->flags & (KBASE_REG_CPU_WR | KBASE_REG_GPU_WR) ?
+					FOLL_WRITE : 0,
 			pages, NULL);
 #elif LINUX_VERSION_CODE < KERNEL_VERSION(4, 9, 0)
 	faulted_pages = get_user_pages(address, *va_pages,
-			reg->flags & KBASE_REG_GPU_WR, 0, pages, NULL);
+			reg->flags & (KBASE_REG_CPU_WR | KBASE_REG_GPU_WR),
+			0, pages, NULL);
 #else
 	faulted_pages = get_user_pages(address, *va_pages,
-			reg->flags & KBASE_REG_GPU_WR ? FOLL_WRITE : 0,
+			reg->flags & (KBASE_REG_CPU_WR | KBASE_REG_GPU_WR) ?
+					FOLL_WRITE : 0,
 			pages, NULL);
 #endif
 
@@ -1136,8 +1158,6 @@ static struct kbase_va_region *kbase_mem_from_user_buffer(
 
 	if (pages) {
 		struct device *dev = kctx->kbdev->dev;
-		unsigned long local_size = user_buf->size;
-		unsigned long offset = user_buf->address & ~PAGE_MASK;
 		struct tagged_addr *pa = kbase_get_gpu_phy_pages(reg);
 
 		/* Top bit signifies that this was pinned on import */
@@ -1145,20 +1165,18 @@ static struct kbase_va_region *kbase_mem_from_user_buffer(
 
 		for (i = 0; i < faulted_pages; i++) {
 			dma_addr_t dma_addr;
-			unsigned long min;
 
-			min = MIN(PAGE_SIZE - offset, local_size);
-			dma_addr = dma_map_page(dev, pages[i],
-					offset, min,
+			/* The GPU is given the whole page, so the whole page
+			 * must be mapped for the device, not just the part
+			 * covered by the buffer.
+			 */
+			dma_addr = dma_map_page(dev, pages[i], 0, PAGE_SIZE,
 					DMA_BIDIRECTIONAL);
 			if (dma_mapping_error(dev, dma_addr))
 				goto unwind_dma_map;
 
 			user_buf->dma_addrs[i] = dma_addr;
 			pa[i] = as_tagged(page_to_phys(pages[i]));
-
-			local_size -= min;
-			offset = 0;
 		}
 
 		reg->gpu_alloc->nents = faulted_pages;
@@ -1224,8 +1242,9 @@ u64 kbase_mem_alias(struct kbase_context *kctx, u64 *flags, u64 stride,
 	if (!nents)
 		goto bad_nents;
 
-	if ((nents * stride) > (U64_MAX / PAGE_SIZE))
-		/* 64-bit address range is the max */
+	if (nents > (U64_MAX / PAGE_SIZE) / stride)
+		/* 64-bit address range is the max; divide so the check itself
+		 * cannot wrap the multiplication below */
 		goto bad_size;
 
 	/* calculate the number of pages this alias will cover */
@@ -1296,6 +1315,10 @@ u64 kbase_mem_alias(struct kbase_context *kctx, u64 *flags, u64 stride,
 				goto bad_handle; /* Free region */
 			if (aliasing_reg->flags & KBASE_REG_DONT_NEED)
 				goto bad_handle; /* Ephemeral region */
+			if (aliasing_reg->flags & KBASE_REG_JIT)
+				goto bad_handle; /* JIT region: its backing can be
+						  * reclaimed under the alias
+						  * after JIT_FREE */
 			if (!(aliasing_reg->flags & KBASE_REG_GPU_CACHED))
 				goto bad_handle; /* GPU uncached memory */
 			if (!aliasing_reg->gpu_alloc)
@@ -1319,12 +1342,20 @@ u64 kbase_mem_alias(struct kbase_context *kctx, u64 *flags, u64 stride,
 			/* check against the alloc's size */
 			if (ai[i].offset > alloc->nents)
 				goto bad_handle; /* beyond end */
-			if (ai[i].offset + ai[i].length > alloc->nents)
+			if (ai[i].length > alloc->nents - ai[i].offset)
 				goto bad_handle; /* beyond end */
 
 			reg->gpu_alloc->imported.alias.aliased[i].alloc = kbase_mem_phy_alloc_get(alloc);
 			reg->gpu_alloc->imported.alias.aliased[i].length = ai[i].length;
 			reg->gpu_alloc->imported.alias.aliased[i].offset = ai[i].offset;
+
+			/* Count the alias against the native alloc now, not
+			 * when it is GPU mapped: a same-VA alias is returned
+			 * as a pending cookie that may stay unmapped for a
+			 * while, during which MEM_FLAGS_CHANGE and MEM_COMMIT
+			 * must still treat the native alloc as aliased.
+			 */
+			kbase_mem_phy_alloc_gpu_mapped(alloc);
 		}
 	}
 
@@ -1609,8 +1640,16 @@ int kbase_mem_commit(struct kbase_context *kctx, u64 gpu_addr, u64 new_pages)
 	/* can't be mapped more than once on the GPU */
 	if (atomic_read(&reg->gpu_alloc->gpu_mappings) > 1)
 		goto out_unlock;
+	/* can't change the backing under a kernel mapping (kbase_vmap_prot) */
+	if (atomic_read(&reg->gpu_alloc->kernel_mappings) > 0)
+		goto out_unlock;
 	/* can't grow regions which are ephemeral */
 	if (reg->flags & KBASE_REG_DONT_NEED)
+		goto out_unlock;
+	/* JIT regions are owned by the kernel (kbase_jit_grow/free); resizing
+	 * one from user space would race with them (GHSL-2023-005).
+	 */
+	if (reg->flags & KBASE_REG_JIT)
 		goto out_unlock;
 
 	if (new_pages == reg->gpu_alloc->nents) {
@@ -1755,7 +1794,7 @@ static int kbase_cpu_vm_fault(struct vm_fault *vmf)
 	KBASE_DEBUG_ASSERT(map->kctx);
 	KBASE_DEBUG_ASSERT(map->alloc);
 
-	rel_pgoff = vmf->pgoff - map->region->start_pfn;
+	rel_pgoff = vmf->pgoff - map->start_pfn;
 
 	kbase_gpu_vm_lock(map->kctx);
 	if (rel_pgoff >= map->alloc->nents)
@@ -1763,6 +1802,13 @@ static int kbase_cpu_vm_fault(struct vm_fault *vmf)
 
 	/* Fault on access to DONT_NEED regions */
 	if (map->alloc->reg && (map->alloc->reg->flags & KBASE_REG_DONT_NEED))
+		goto locked_bad_fault;
+
+	/* Never insert the pinned pages of an imported user buffer: the PTEs
+	 * would outlive the pin once the external resource is released
+	 * (CVE-2022-36449). The importer already has the host mapping.
+	 */
+	if (map->alloc->type == KBASE_MEM_TYPE_IMPORTED_USER_BUF)
 		goto locked_bad_fault;
 
 	/* insert all valid pages from the fault location */
@@ -1885,6 +1931,12 @@ static int kbase_cpu_mmap(struct kbase_context *kctx,
 		vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
 	}
 
+	/* A cookie mmap of an imported user buffer only reserves its SAME_VA
+	 * GPU address: map no pages (see kbase_cpu_vm_fault()).
+	 */
+	if (reg->cpu_alloc->type == KBASE_MEM_TYPE_IMPORTED_USER_BUF)
+		nr_pages = 0;
+
 	if (!kaddr) {
 		unsigned long addr = vma->vm_start + aligned_offset;
 
@@ -1914,6 +1966,8 @@ static int kbase_cpu_mmap(struct kbase_context *kctx,
 	}
 
 	map->region = reg;
+	map->start_pfn = reg->start_pfn;
+	map->nr_pages = reg->nr_pages;
 	map->free_on_close = free_on_close;
 	map->kctx = kctx;
 	map->alloc = kbase_mem_phy_alloc_get(reg->cpu_alloc);
@@ -1937,6 +1991,14 @@ static int kbase_mmu_dump_mmap(struct kbase_context *kctx, struct vm_area_struct
 	int err = 0;
 
 	dev_dbg(kctx->kbdev->dev, "in kbase_mmu_dump_mmap\n");
+
+	/* The dump exposes raw GPU page-table physical addresses and PTEs,
+	 * which leak the physical memory layout to whatever opened this
+	 * device node. Restrict it to privileged callers.
+	 */
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+
 	size = (vma->vm_end - vma->vm_start);
 	nr_pages = size >> PAGE_SHIFT;
 
@@ -2174,6 +2236,34 @@ int kbase_mmap(struct file *file, struct vm_area_struct *vma)
 			}
 #endif /* CONFIG_DMA_SHARED_BUFFER */
 
+			/* An imported user buffer's pages are GUP-pinned only
+			 * while current_mapping_usage_count is non-zero and are
+			 * released as soon as it drops to zero, through several
+			 * unpin paths. A second CPU mapping of its GPU VA would
+			 * keep pointing at those pages after they are unpinned
+			 * and reused, giving user space CPU access to unrelated
+			 * memory (CVE-2022-36449). Refuse to create one rather
+			 * than try to invalidate it on every unpin path. The
+			 * cookie mmap that reserves a SAME_VA import cannot be
+			 * refused: kbase_cpu_mmap() and kbase_cpu_vm_fault()
+			 * never insert the pages of such a buffer instead.
+			 */
+			if (reg->cpu_alloc->type ==
+					KBASE_MEM_TYPE_IMPORTED_USER_BUF) {
+				err = -EINVAL;
+				goto out_unlock;
+			}
+
+			/* An evictable region (e.g. a freed JIT allocation in
+			 * the pool) can be reclaimed without another CPU
+			 * invalidation, so new PTEs must not be inserted into
+			 * it; kbase_cpu_vm_fault() refuses it too.
+			 */
+			if (reg->flags & KBASE_REG_DONT_NEED) {
+				err = -EINVAL;
+				goto out_unlock;
+			}
+
 			if (reg->cpu_alloc->type == KBASE_MEM_TYPE_ALIAS) {
 				/* initial params check for aliased dumping map */
 				if (nr_pages > reg->gpu_alloc->imported.alias.stride ||
@@ -2342,6 +2432,22 @@ void *kbase_vmap_prot(struct kbase_context *kctx, u64 gpu_addr, size_t size,
 	if (!reg || (reg->flags & KBASE_REG_FREE))
 		goto out_unlock;
 
+	/* Nothing the shrinker can reclaim: a JIT region is made evictable by
+	 * JIT_FREE while the mapping lives (an evictable region is refused in
+	 * kbase_vmap_phy_pages()).
+	 */
+	if (reg->flags & KBASE_REG_JIT)
+		goto out_unlock;
+
+	/* Imported user buffers are backed by GUP-pinned pages owned by the
+	 * external-resource tracking (current_mapping_usage_count), not by the
+	 * references taken here. That tracking can unpin and release the pages
+	 * at any time, so refuse to vmap them rather than leave a kernel
+	 * mapping that outlives its backing pages (CVE-2022-36449).
+	 */
+	if (reg->gpu_alloc->type == KBASE_MEM_TYPE_IMPORTED_USER_BUF)
+		goto out_unlock;
+
 	/* check access permissions can be satisfied
 	 * Intended only for checking KBASE_REG_{CPU,GPU}_{RD,WR}
 	 */
@@ -2357,6 +2463,12 @@ void *kbase_vmap_prot(struct kbase_context *kctx, u64 gpu_addr, size_t size,
 		goto fail_vmap_phy_pages;
 
 	addr = map->addr;
+
+	/* Counted under reg_lock: while it is non-zero MEM_FLAGS_CHANGE will
+	 * not make the region evictable and MEM_COMMIT will not change its
+	 * backing, so the mapped pages stay until kbase_vunmap().
+	 */
+	atomic_inc(&map->gpu_alloc->kernel_mappings);
 
 out_unlock:
 	kbase_gpu_vm_unlock(kctx);
@@ -2402,6 +2514,8 @@ static void kbase_vunmap_phy_pages(struct kbase_context *kctx,
 void kbase_vunmap(struct kbase_context *kctx, struct kbase_vmap_struct *map)
 {
 	kbase_vunmap_phy_pages(kctx, map);
+	/* only now may the backing be evicted or changed again */
+	atomic_dec(&map->gpu_alloc->kernel_mappings);
 	map->cpu_alloc = kbase_mem_phy_alloc_put(map->cpu_alloc);
 	map->gpu_alloc = kbase_mem_phy_alloc_put(map->gpu_alloc);
 }

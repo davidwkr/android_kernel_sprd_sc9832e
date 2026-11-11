@@ -71,6 +71,11 @@ struct kbase_cpu_mapping {
 	struct   kbase_mem_phy_alloc *alloc;
 	struct   kbase_context *kctx;
 	struct   kbase_va_region *region;
+	/* region->start_pfn and nr_pages at mmap time: the region can be
+	 * freed while the CPU mapping (which only references the
+	 * allocation) lives on */
+	u64      start_pfn;
+	size_t   nr_pages;
 	int      count;
 	int      free_on_close;
 };
@@ -108,6 +113,8 @@ struct kbase_aliased {
 struct kbase_mem_phy_alloc {
 	struct kref           kref; /* number of users of this alloc */
 	atomic_t              gpu_mappings;
+	/* kernel mappings from kbase_vmap_prot(), see kbase_vunmap() */
+	atomic_t              kernel_mappings;
 	size_t                nents; /* 0..N */
 	struct tagged_addr    *pages; /* N elements, only 0..nents are valid */
 
@@ -435,6 +442,7 @@ static inline struct kbase_mem_phy_alloc *kbase_alloc_create(
 
 	kref_init(&alloc->kref);
 	atomic_set(&alloc->gpu_mappings, 0);
+	atomic_set(&alloc->kernel_mappings, 0);
 	alloc->nents = 0;
 	alloc->pages = (void *)(alloc + 1);
 	INIT_LIST_HEAD(&alloc->mappings);

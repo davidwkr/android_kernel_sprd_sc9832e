@@ -667,7 +667,7 @@ static int kbase_api_mem_alloc(struct kbase_context *kctx,
 	reg = kbase_mem_alloc(kctx, alloc->in.va_pages,
 			alloc->in.commit_pages,
 			alloc->in.extent,
-			&flags, &gpu_va);
+			&flags, &gpu_va, false);
 
 	if (!reg)
 		return -ENOMEM;
@@ -879,6 +879,12 @@ static int kbase_api_get_context_id(struct kbase_context *kctx,
 static int kbase_api_tlstream_acquire(struct kbase_context *kctx,
 		struct kbase_ioctl_tlstream_acquire *acquire)
 {
+	/* The summary stream carries raw kernel context and device pointers
+	 * (CVE-2023-26083). Restrict it to privileged callers.
+	 */
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+
 	return kbase_tlstream_acquire(kctx, acquire->flags);
 }
 
