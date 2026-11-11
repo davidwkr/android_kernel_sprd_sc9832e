@@ -18,3 +18,25 @@ CONFIG_PROC_FS=y
 # (needs UFFD_USER_MODE_ONLY, UFFDIO_CONTINUE minor faults on shmem and
 # mremap(MREMAP_DONTUNMAP)); vm.unprivileged_userfaultfd defaults to 0.
 CONFIG_USERFAULTFD=y
+
+# Kernel features needed by Android 17 userspace. Merge on top of
+# sprd_sharkle_defconfig + watch_414.fragment (+ watch_414_adf.fragment),
+# then run olddefconfig. See devices/A17_KERNEL.md.
+
+# EROFS read-only filesystem (system/vendor/product images)
+CONFIG_EROFS_FS=y
+# xattrs, POSIX ACLs and security labels (SELinux contexts live in xattrs)
+CONFIG_EROFS_FS_XATTR=y
+CONFIG_EROFS_FS_POSIX_ACL=y
+CONFIG_EROFS_FS_SECURITY=y
+# LZ4 compressed images
+CONFIG_EROFS_FS_ZIP=y
+
+# fs-verity core (uapi, signature check, measure); incfs implements the
+# ioctls on top of it
+CONFIG_FS_VERITY=y
+# verify verity signatures against the .fs-verity keyring
+CONFIG_FS_VERITY_BUILTIN_SIGNATURES=y
+
+# Incremental FS (adb/PackageManager incremental installs)
+CONFIG_INCREMENTAL_FS=y
