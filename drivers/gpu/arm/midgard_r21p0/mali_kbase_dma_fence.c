@@ -294,9 +294,12 @@ void kbase_dma_fence_add_reservation(struct reservation_object *resv,
 	unsigned int i;
 
 	for (i = 0; i < info->dma_fence_resv_count; i++) {
-		/* Duplicate resource, ignore */
-		if (info->resv_objs[i] == resv)
+		/* Duplicate resource: keep the strongest access asked for */
+		if (info->resv_objs[i] == resv) {
+			if (exclusive)
+				set_bit(i, info->dma_fence_excl_bitmap);
 			return;
+		}
 	}
 
 	info->resv_objs[info->dma_fence_resv_count] = resv;
