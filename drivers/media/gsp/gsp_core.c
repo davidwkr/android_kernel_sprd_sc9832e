@@ -151,6 +151,7 @@ static void gsp_core_finish(struct gsp_core *core, struct gsp_kcfg *kcfg,
 
 static int gsp_core_start(struct gsp_core *core, struct gsp_kcfg *kcfg)
 {
+	unsigned long flags;
 	int ret;
 
 	/* the acquire fences first: no clock runs while we wait for them */
@@ -170,7 +171,12 @@ static int gsp_core_start(struct gsp_core *core, struct gsp_kcfg *kcfg)
 		return ret;
 	}
 
-	atomic_set(&core->irq_status, 0);
+	/* a new job: the events of the former ones are not for it */
+	spin_lock_irqsave(&core->event_lock, flags);
+	core->job_gen++;
+	core->irq_status = 0;
+	spin_unlock_irqrestore(&core->event_lock, flags);
+
 	atomic_set(&core->hw_running, 1);
 	ret = core->ops->trigger(core);
 	if (ret) {
@@ -219,11 +225,18 @@ static void gsp_core_release(struct kthread_work *work)
 {
 	struct gsp_core *core = container_of(work, struct gsp_core, release);
 	struct gsp_kcfg *kcfg = core->current_kcfg;
-	int status = atomic_xchg(&core->irq_status, 0);
+	unsigned long flags;
+	u32 status, gen;
 	int ret = 0;
 
-	/* the kcfg may have been ended by the hang timer already */
-	if (!kcfg || !atomic_read(&core->hw_running))
+	spin_lock_irqsave(&core->event_lock, flags);
+	status = core->irq_status;
+	gen = core->irq_gen;
+	core->irq_status = 0;
+	spin_unlock_irqrestore(&core->event_lock, flags);
+
+	/* the kcfg may have been ended already, and another one started */
+	if (!kcfg || !atomic_read(&core->hw_running) || gen != core->job_gen)
 		return;
 
 	if (core->ops->release)
@@ -242,8 +255,14 @@ static void gsp_core_recover(struct kthread_work *work)
 {
 	struct gsp_core *core = container_of(work, struct gsp_core, recover);
 	struct gsp_kcfg *kcfg = core->current_kcfg;
+	unsigned long flags;
+	u32 gen;
 
-	if (!kcfg || !atomic_read(&core->hw_running))
+	spin_lock_irqsave(&core->event_lock, flags);
+	gen = core->hang_gen;
+	spin_unlock_irqrestore(&core->event_lock, flags);
+
+	if (!kcfg || !atomic_read(&core->hw_running) || gen != core->job_gen)
 		return;
 
 	GSP_ERR("core[%d] kcfg[%d] hung, reset\n", core->id,
@@ -259,6 +278,11 @@ static void gsp_core_recover(struct kthread_work *work)
 static void gsp_core_hang_handler(struct timer_list *t)
 {
 	struct gsp_core *core = from_timer(core, t, timer);
+	unsigned long flags;
+
+	spin_lock_irqsave(&core->event_lock, flags);
+	core->hang_gen = core->job_gen;
+	spin_unlock_irqrestore(&core->event_lock, flags);
 
 	kthread_queue_work(core->kworker, &core->recover);
 }
@@ -266,6 +290,7 @@ static void gsp_core_hang_handler(struct timer_list *t)
 static irqreturn_t gsp_core_irq_handler(int irq, void *data)
 {
 	struct gsp_core *core = data;
+	unsigned long flags;
 	int status;
 
 	/* the line is shared, and the hardware only runs for a kcfg */
@@ -276,7 +301,11 @@ static irqreturn_t gsp_core_irq_handler(int irq, void *data)
 	if (!status)
 		return IRQ_NONE;
 
-	atomic_or(status, &core->irq_status);
+	spin_lock_irqsave(&core->event_lock, flags);
+	core->irq_status |= status;
+	core->irq_gen = core->job_gen;
+	spin_unlock_irqrestore(&core->event_lock, flags);
+
 	kthread_queue_work(core->kworker, &core->release);
 
 	return IRQ_HANDLED;
@@ -327,6 +356,7 @@ int gsp_core_alloc(struct gsp_core **pcore, const struct gsp_core_ops *ops,
 	gsp_workqueue_init(&core->wq);
 	mutex_init(&core->lock);
 	mutex_init(&core->submit_lock);
+	spin_lock_init(&core->event_lock);
 	init_waitqueue_head(&core->idle_wait);
 
 	/* read core id from dts as an identifier to distinguish multi-cores */

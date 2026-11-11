@@ -54,7 +54,8 @@ enum gsp_err_code {
  *
  * All the hardware work is done by one kthread worker: trigger starts the
  * oldest filled kcfg, release (from the irq) or recover (the hang timer)
- * ends it. They never run concurrently, so a kcfg is ended exactly once.
+ * ends it. They never run concurrently, and an event which is not of the
+ * job in flight is dropped, so a kcfg is ended exactly once.
  */
 struct gsp_core {
 	char name[32];
@@ -103,8 +104,19 @@ struct gsp_core {
 
 	/* the hardware may raise its irq: set from trigger to the end */
 	atomic_t hw_running;
-	/* GSP_IRQ_* of the irq, for the release work */
-	atomic_t irq_status;
+	/*
+	 * The events of the hardware and of the hang timer name the job they
+	 * belong to by its generation, which grows for every job started, so
+	 * that the worker ignores the ones of a job which is over already.
+	 * event_lock protects them.
+	 */
+	spinlock_t event_lock;
+	u32 job_gen;
+	/* GSP_IRQ_* of the irq, and the job it was for */
+	u32 irq_status;
+	u32 irq_gen;
+	/* the job the hang timer fired for */
+	u32 hang_gen;
 	/* what the kcfg in flight has switched on, to undo it at the end */
 	bool prepared;
 	bool iommu_on;
