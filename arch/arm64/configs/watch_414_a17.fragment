@@ -1,0 +1,12 @@
+# Kernel features needed by Android 17 userspace. Merge on top of
+# sprd_sharkle_defconfig + watch_414.fragment (+ watch_414_adf.fragment),
+# then run olddefconfig. See devices/A17_KERNEL.md.
+
+# EROFS read-only filesystem (system/vendor/product images)
+CONFIG_EROFS_FS=y
+# xattrs, POSIX ACLs and security labels (SELinux contexts live in xattrs)
+CONFIG_EROFS_FS_XATTR=y
+CONFIG_EROFS_FS_POSIX_ACL=y
+CONFIG_EROFS_FS_SECURITY=y
+# LZ4 compressed images
+CONFIG_EROFS_FS_ZIP=y
