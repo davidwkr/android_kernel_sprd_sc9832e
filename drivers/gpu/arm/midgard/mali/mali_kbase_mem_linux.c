@@ -1227,8 +1227,9 @@ u64 kbase_mem_alias(struct kbase_context *kctx, u64 *flags, u64 stride,
 	if (!nents)
 		goto bad_nents;
 
-	if ((nents * stride) > (U64_MAX / PAGE_SIZE))
-		/* 64-bit address range is the max */
+	if (nents > (U64_MAX / PAGE_SIZE) / stride)
+		/* 64-bit address range is the max; divide so the check itself
+		 * cannot wrap the multiplication below */
 		goto bad_size;
 
 	/* calculate the number of pages this alias will cover */
@@ -1322,7 +1323,7 @@ u64 kbase_mem_alias(struct kbase_context *kctx, u64 *flags, u64 stride,
 			/* check against the alloc's size */
 			if (ai[i].offset > alloc->nents)
 				goto bad_handle; /* beyond end */
-			if (ai[i].offset + ai[i].length > alloc->nents)
+			if (ai[i].length > alloc->nents - ai[i].offset)
 				goto bad_handle; /* beyond end */
 
 			reg->gpu_alloc->imported.alias.aliased[i].alloc = kbase_mem_phy_alloc_get(alloc);
