@@ -618,6 +618,7 @@ static int kbase_debug_copy_prepare(struct kbase_jd_atom *katom)
 		 */
 		if (!user_buffers[i].size ||
 		    addr + user_buffers[i].size - 1 < addr) {
+			KBASE_LOG_REFUSAL(katom->kctx, "debug copy of an empty or wrapping buffer");
 			ret = -EINVAL;
 			goto out_cleanup;
 		}
@@ -625,6 +626,7 @@ static int kbase_debug_copy_prepare(struct kbase_jd_atom *katom)
 		last_page_addr = end_page_addr & PAGE_MASK;
 		nr_pages64 = (last_page_addr - page_addr) / PAGE_SIZE + 1;
 		if (nr_pages64 > INT_MAX / sizeof(struct page *)) {
+			KBASE_LOG_REFUSAL(katom->kctx, "debug copy of an oversized buffer");
 			ret = -EINVAL;
 			goto out_cleanup;
 		}

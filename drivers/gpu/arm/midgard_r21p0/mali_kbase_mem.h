@@ -1151,4 +1151,13 @@ int kbase_zone_cache_build(struct kbase_mem_phy_alloc *alloc);
  */
 void kbase_zone_cache_clear(struct kbase_mem_phy_alloc *alloc);
 
+/* One rate-limited line per request refused for security reasons, so a first
+ * boot shows whether the vendor GPU library depends on it. Never log kernel
+ * pointers or addresses here.
+ */
+#define KBASE_LOG_REFUSAL(kctx, op) \
+	dev_warn_ratelimited((kctx)->kbdev->dev, \
+			"mali: refused %s from %s (tgid %d)\n", \
+			(op), current->comm, current->tgid)
+
 #endif				/* _KBASE_MEM_H_ */
