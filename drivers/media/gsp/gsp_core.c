@@ -171,6 +171,14 @@ static int gsp_core_start(struct gsp_core *core, struct gsp_kcfg *kcfg)
 		return ret;
 	}
 
+	/* no job starts once the core is stopping */
+	mutex_lock(&core->lock);
+	if (core->stopping) {
+		mutex_unlock(&core->lock);
+		return -ECANCELED;
+	}
+	mutex_unlock(&core->lock);
+
 	/* a new job: the events of the former ones are not for it */
 	spin_lock_irqsave(&core->event_lock, flags);
 	core->job_gen++;
@@ -186,8 +194,15 @@ static int gsp_core_start(struct gsp_core *core, struct gsp_kcfg *kcfg)
 		return -EIO;
 	}
 
-	mod_timer(&core->timer,
-		  jiffies + msecs_to_jiffies(GSP_CORE_TIMER_OUT));
+	/*
+	 * Never arm the timer once the core is stopping: the teardown ends
+	 * the job itself, and the timer must stay dead after it.
+	 */
+	mutex_lock(&core->lock);
+	if (!core->stopping)
+		mod_timer(&core->timer,
+			  jiffies + msecs_to_jiffies(GSP_CORE_TIMER_OUT));
+	mutex_unlock(&core->lock);
 	return 0;
 }
 
@@ -493,9 +508,9 @@ err_timeline:
 }
 
 /*
- * Stop the core: no new kcfg starts, the one in flight is given a chance
- * to finish (or the hang timer ends it), and the queued ones are dropped
- * with their fences signaled.
+ * Stop the core: no new kcfg starts nor arms the timer, the hardware is
+ * reset and the one in flight ends with an error, and the queued ones are
+ * dropped with their fences signaled.
  */
 void gsp_core_deinit(struct gsp_core *core)
 {
@@ -510,10 +525,20 @@ void gsp_core_deinit(struct gsp_core *core)
 	core->stopping = true;
 	mutex_unlock(&core->lock);
 
-	if (!wait_event_timeout(core->idle_wait, !core->busy,
-				msecs_to_jiffies(GSP_CORE_TIMER_OUT +
-						 GSP_WAIT_FENCE_TIMEOUT)))
-		GSP_ERR("core[%d] still busy at deinit\n", core->id);
+	/* the works in flight end: none of them starts or arms anything now */
+	kthread_flush_worker(core->kworker);
+
+	kcfg = core->current_kcfg;
+	if (kcfg) {
+		GSP_ERR("core[%d] kcfg[%d] still busy at deinit, reset\n",
+			core->id, gsp_kcfg_to_tag(kcfg));
+		atomic_set(&core->hw_running, 0);
+		if (core->ops->reset)
+			core->ops->reset(core);
+		core->force_calc = 1;
+		/* the worker is idle, so this is the only one ending it */
+		gsp_core_finish(core, kcfg, -ECANCELED);
+	}
 
 	if (core->irq_requested) {
 		free_irq(core->irq, core);
