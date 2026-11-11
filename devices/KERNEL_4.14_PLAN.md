@@ -179,7 +179,7 @@ Next:
 
 ### 6.1 Status 2026-11-11 (compile and review only, nothing booted)
 
-Merged into `kernel-4.14` (`33bb6dde037d` for the current images), each through the final review:
+Merged into `kernel-4.14` (`ed4285470c9a` for the current images, with the Mali r21p0 JIT, timeline and user-buffer fixes), each through the final review:
 - Stock DT `android,fstab` node restored on every watch (`sp9832e-watch-firmware.dtsi`); 8.1 init mounts
   `/system` and `/vendor` only from it.
 - `watch_414_stock81.fragment` for the stock 8.1 userspace (the base defconfig comes from SPRD's Android 10
