@@ -2198,6 +2198,16 @@ int kbase_mmap(struct file *file, struct vm_area_struct *vma)
 			}
 #endif /* CONFIG_DMA_SHARED_BUFFER */
 
+			/* An evictable region (e.g. a freed JIT allocation in
+			 * the pool) can be reclaimed without another CPU
+			 * invalidation, so new PTEs must not be inserted into
+			 * it; kbase_cpu_vm_fault() refuses it too.
+			 */
+			if (reg->flags & KBASE_REG_DONT_NEED) {
+				err = -EINVAL;
+				goto out_unlock;
+			}
+
 			if (reg->cpu_alloc->type == KBASE_MEM_TYPE_ALIAS) {
 				/* initial params check for aliased dumping map */
 				if (nr_pages > reg->gpu_alloc->imported.alias.stride ||
