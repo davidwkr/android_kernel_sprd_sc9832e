@@ -71,9 +71,11 @@ struct kbase_cpu_mapping {
 	struct   kbase_mem_phy_alloc *alloc;
 	struct   kbase_context *kctx;
 	struct   kbase_va_region *region;
-	/* region->start_pfn at mmap time: the region can be freed while the
-	 * CPU mapping (which only references the allocation) lives on */
+	/* region->start_pfn and nr_pages at mmap time: the region can be
+	 * freed while the CPU mapping (which only references the
+	 * allocation) lives on */
 	u64      start_pfn;
+	size_t   nr_pages;
 	int      count;
 	int      free_on_close;
 };
