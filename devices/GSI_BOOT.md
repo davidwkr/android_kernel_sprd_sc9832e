@@ -31,6 +31,15 @@ Placement **[S]**: `fs_mgr_fstab.cpp` `GetFstabPath()` tries, for each of the bo
 
 If the DT has `firmware/android/fstab`, first-stage init uses it (`ReadFirstStageFstab()` reads the DT first and falls back to the default fstab only when that fails) **[S]**. The stock DT and the in-tree DTS of this repo have one (`wait,avb`, from `sharkle-board-common.dtsi` and each board file), which is what the 8.1 ramdisk expects. A GSI image needs a DT variant without that node: on the 4.14 tree, `sp9832e-1h10-dm63-adf-gsi.dts` and `sp9832e-1h10-dw100u-silver-adf-gsi.dts` (branch `config/gsi-414`, `devices/GSI_414.md`). Do not pack the stock DT table with a GSI.
 
+### /second_stage_resources in the GSI root
+
+The A14 first-stage init always mounts a tmpfs on `/second_stage_resources` and, in `SwitchRoot("/system")`, creates that directory under the new root and moves the mount there; a failure is fatal. The GSI is mounted read-only, so the `mkdir` fails (EROFS) unless the directory is already in the image. The directory in the ramdisk does not help: it is the old root. So with the A14 init the GSI root must already contain `/second_stage_resources`:
+
+- Android 12+ GSIs have it.
+- Android 10 and 11 GSIs do not (it appears in the root directory list of `system/core/rootdir/Android.mk` from Android 12). Either add it to a copy of the image (`scripts/gsi_add_mountpoints.sh` on branch `devices/vendor-gsi-patch` adds root directories to a copy of a raw ext4 GSI image with `debugfs`) or use a first-stage init from the same Android release as the GSI.
+
+**[I]** from a code review; not checked against `first_stage_mount.cpp`, `switch_root.cpp` or the `Android.mk` of android11/android12-release (no access to the source from here).
+
 ## The vendor patch
 
 The stock 8.1 ramdisk carries the device rc files at its root: `init.sl8541e_1h10.rc`, `init.sl8541e_1h10.usb.rc`, `init.storage.rc`, `init.ram.rc`, `init.common.rc`, `init.environ.rc`, `init.recovery.sl8541e_1h10.rc`, plus `fstab.sl8541e_1h10` and `/sbin` binaries **[R]**. The first-stage ramdisk above has none of them, and a GSI's init reads vendor rc files from `/vendor/etc/init` (`hw/init.${ro.hardware}.rc` for the hardware one) **[I]**. So the vendor partition has to be patched: put the device rc files (adapted: 8.1 syntax, `/sbin` paths, `mount_all` of the fstab, services running from the ramdisk) under `/vendor/etc/init/hw/`, and the fstab as `/vendor/etc/fstab.sl8541e_1h10` for `mount_all`. The kernel modules (`mali.ko`, `sprdbt_tty.ko`, `sprd_fm.ko`, `sprdwl_ng.ko`) are loaded by `insmod` lines from those rc files in stock; they must come from `/vendor/lib/modules` then. The patch is on branch `devices/vendor-gsi-patch` (`devices/VENDOR_GSI_PATCH.md`).
