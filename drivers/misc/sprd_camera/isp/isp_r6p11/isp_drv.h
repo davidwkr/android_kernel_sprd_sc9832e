@@ -893,6 +893,8 @@ int set_isp_path_cfg(void *isp_handle, enum isp_path_index path_index,
 	enum isp_cfg_id id, void *param);
 int sprd_isp_module_en(void *isp_handle, enum isp_id iid);
 int sprd_isp_module_dis(void *isp_handle, enum isp_id iid);
+int sprd_isp_k_lock(struct isp_pipe_dev *dev);
+void sprd_isp_k_unlock(struct isp_pipe_dev *dev);
 int sprd_isp_dev_init(void **isp_pipe_dev_handle, enum isp_id iid);
 int sprd_isp_dev_deinit(void *isp_dev_handle, enum isp_id iid);
 int sprd_isp_drv_init(struct platform_device *pdev);

@@ -3758,7 +3758,12 @@ static int sprd_statistics_k_ioctl(void *dev_handle, struct camera_info *info,
 		}
 
 		if (isp_param.sub_block == DCAM_BLOCK_2D_LSC) {
+			/* the weight buffer is freed by the ISP disable */
+			ret = sprd_isp_k_lock(dev);
+			if (ret)
+				goto exit;
 			ret = dcam_k_cfg_2d_lsc(&isp_param, isp_k_param, idx);
+			sprd_isp_k_unlock(dev);
 		} else if (isp_param.sub_block == DCAM_BLOCK_PDAF) {
 			ret = dcam_k_cfg_pdaf(&isp_param, idx,
 				&info->dcam_path[CAMERA_PDAF_PATH].pdaf_ctrl);
