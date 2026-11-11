@@ -27,8 +27,9 @@
 #
 # --init is refused unless its sha256 equals --init-sha256 and its ELF
 # headers describe a static executable for --arch (class, byte order,
-# machine, type, program headers; no PT_INTERP). The file is only parsed,
-# never executed. The fstab is refused unless every line has 5 fields,
+# machine, type, header sizes, program headers, PT_LOAD bounds and
+# alignment, entry point in an executable segment; no PT_INTERP). The file
+# is only parsed, never executed. The fstab is refused unless every line has 5 fields,
 # mounts /system or /vendor (once each, /system required) and carries
 # first_stage_mount, and has no avb flag unless --allow-avb is given.
 #
@@ -54,6 +55,7 @@ ELF_ARCH = {      # name: (EI_CLASS, e_machine, e_phentsize)
 }
 PT_LOAD = 1
 PT_INTERP = 3
+PF_X = 1
 ET_EXEC = 2
 ET_DYN = 3
 FSTAB_MOUNTS = ('/system', '/vendor')
@@ -71,7 +73,12 @@ DIRS = (
     # A10+ extras
     'metadata',              # /metadata mount point (A10+ first stage)
     'debug_ramdisk',         # A11+ tmpfs: userdebug adb_debug.prop
-    'second_stage_resources',  # A13+ tmpfs handed to the second stage
+    # Android 12+ tmpfs handed to the second stage. A14 init mounts it and
+    # SwitchRoot("/system") moves it to the same name under the GSI root,
+    # failing the boot if that directory is missing and cannot be created
+    # (read-only system). This directory alone does not create it in the GSI
+    # root: the GSI image must already have /second_stage_resources.
+    'second_stage_resources',
     # the real file systems
     'system',                # the GSI system image (system-as-root)
     'vendor',                # the stock vendor partition
@@ -124,15 +131,50 @@ def check_init(d, arch):
         raise Error('init: %d program headers' % phnum)
     if phoff < (52 if cls == 1 else 64) or phoff + phnum * phsz > len(d):
         raise Error('init: program header table outside the file')
+    ver = struct.unpack_from('<I', d, 20)[0]
+    ehsz = struct.unpack_from('<H', d, 40 if cls == 1 else 52)[0]
+    width = 32 if cls == 1 else 64
+    if ver != 1:
+        raise Error('init: e_version %d' % ver)
+    if ehsz != (52 if cls == 1 else 64):
+        raise Error('init: e_ehsize %d is wrong for the class' % ehsz)
+    top = 1 << width
     loads = 0
+    entry_ok = False
     for i in range(phnum):
-        ptype = struct.unpack_from('<I', d, phoff + i * phsz)[0]
+        o = phoff + i * phsz
+        ptype = struct.unpack_from('<I', d, o)[0]
         if ptype == PT_INTERP:
             raise Error('init: has PT_INTERP, it is dynamically linked; '
                         'first-stage init must be static')
-        loads += ptype == PT_LOAD
+        if ptype != PT_LOAD:
+            continue
+        loads += 1
+        if cls == 1:
+            _, off, vaddr, _, filesz, memsz, flags, align = \
+                struct.unpack_from('<IIIIIIII', d, o)
+        else:
+            _, flags, off, vaddr, _, filesz, memsz, align = \
+                struct.unpack_from('<IIQQQQQQ', d, o)
+        if off + filesz > len(d):
+            raise Error('init: PT_LOAD %d data outside the file' % i)
+        if memsz == 0 or filesz > memsz:
+            raise Error('init: PT_LOAD %d sizes: filesz %d, memsz %d'
+                        % (i, filesz, memsz))
+        if vaddr + memsz > top:
+            raise Error('init: PT_LOAD %d wraps the address space' % i)
+        if align & (align - 1):
+            raise Error('init: PT_LOAD %d p_align %d not a power of two'
+                        % (i, align))
+        if align > 1 and off % align != vaddr % align:
+            raise Error('init: PT_LOAD %d p_offset and p_vaddr not '
+                        'congruent modulo p_align' % i)
+        if flags & PF_X and vaddr <= entry < vaddr + memsz:
+            entry_ok = True
     if not loads:
         raise Error('init: no PT_LOAD segment')
+    if not entry_ok:
+        raise Error('init: e_entry not inside an executable PT_LOAD')
 
 
 def check_fstab(d, allow_avb):

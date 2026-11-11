@@ -27,22 +27,45 @@ VND = SYS.replace(b'system', b'vendor')
 
 
 def elf(cls=1, mach=40, typ=2, ptypes=(1, 1), data=1, phentsize=None,
-        phoff=None):
-    """Minimal ELF: header plus the program header table."""
+        phoff=None, loads=None, entry=0x8000, version=1, ehsize=None):
+    """Minimal ELF: header, program header table, 4 bytes of code.
+
+    Each PT_LOAD in ptypes gets one segment from loads (a dict of
+    p_offset, p_filesz, p_memsz, p_vaddr, p_align, p_flags); the default
+    maps the code word at 0x8000 as R+X.
+    """
     sz = 32 if cls == 1 else 56
     ps = sz if phentsize is None else phentsize
     hsz = 52 if cls == 1 else 64
     off = hsz if phoff is None else phoff
+    code = off + len(ptypes) * sz
     ident = b'\x7fELF' + bytes([cls, data, 1]) + b'\0' * 9
+    eh = hsz if ehsize is None else ehsize
     if cls == 1:
-        h = ident + struct.pack('<HHIIIIIHHHHHH', typ, mach, 1, 0x8000, off,
-                                0, 0, hsz, ps, len(ptypes), 0, 0, 0)
+        h = ident + struct.pack('<HHIIIIIHHHHHH', typ, mach, version, entry,
+                                off, 0, 0, eh, ps, len(ptypes), 0, 0, 0)
     else:
-        h = ident + struct.pack('<HHIQQQIHHHHHH', typ, mach, 1, 0x8000, off,
-                                0, 0, hsz, ps, len(ptypes), 0, 0, 0)
+        h = ident + struct.pack('<HHIQQQIHHHHHH', typ, mach, version, entry,
+                                off, 0, 0, eh, ps, len(ptypes), 0, 0, 0)
     h = h.ljust(hsz, b'\0')
-    return h.ljust(off, b'\0') + b''.join(
-        struct.pack('<I', t).ljust(sz, b'\0') for t in ptypes) + b'code'
+    ph = b''
+    for t in ptypes:
+        if t == 1:
+            L = dict(offset=code, filesz=4, memsz=4, vaddr=0x8000, align=4,
+                     flags=5)
+            L.update(loads or {})
+            if cls == 1:
+                e = struct.pack('<IIIIIIII', t, L['offset'], L['vaddr'],
+                                L['vaddr'], L['filesz'], L['memsz'],
+                                L['flags'], L['align'])
+            else:
+                e = struct.pack('<IIQQQQQQ', t, L['flags'], L['offset'],
+                                L['vaddr'], L['vaddr'], L['filesz'],
+                                L['memsz'], L['align'])
+        else:
+            e = struct.pack('<I', t)
+        ph += e.ljust(sz, b'\0')
+    return h.ljust(off, b'\0') + ph + b'code'
 
 
 STATIC = elf()
@@ -175,6 +198,42 @@ class Case(unittest.TestCase):
             self.refused(msg, init=init)
         self.assertEqual(self.run_tool(init=elf(typ=3), out='pie.gz'
                                        ).returncode, 0)
+
+    def test_init_load_checks(self):
+        big = 0xffffff00
+        for init, msg in (
+                (elf(version=0), 'e_version'),
+                (elf(ehsize=40), 'e_ehsize'),
+                (elf(loads=dict(filesz=0, memsz=0)), 'sizes'),
+                (elf(ptypes=(1,), loads=dict(offset=big, filesz=4096,
+                                             memsz=1)), 'outside the file'),
+                (elf(loads=dict(offset=big, filesz=4096, memsz=1)),
+                 'outside the file'),
+                (elf(loads=dict(filesz=4, memsz=2)), 'sizes'),
+                (elf(loads=dict(vaddr=0xfffffffe, memsz=4)), 'wraps'),
+                (elf(loads=dict(align=3)), 'power of two'),
+                (elf(loads=dict(align=0x1000)), 'not congruent'),
+                (elf(loads=dict(flags=4)), 'executable PT_LOAD'),
+                (elf(entry=0x9000), 'executable PT_LOAD'),
+                (elf(entry=0x8004), 'executable PT_LOAD')):
+            self.refused(msg, init=init)
+        a64 = dict(cls=2, mach=183)
+        self.refused('e_ehsize', init=elf(ehsize=52, **a64),
+                     extra=('--arch', 'arm64'))
+        self.refused('wraps', init=elf(loads=dict(vaddr=(1 << 64) - 2,
+                                                  memsz=4), **a64),
+                     extra=('--arch', 'arm64'))
+        self.refused('outside the file', init=elf(
+            loads=dict(offset=(1 << 64) - 8, filesz=16, memsz=16), **a64),
+            extra=('--arch', 'arm64'))
+        # the code word sits at file offset 116 (52 + 2 * 32)
+        for ld, ent in ((dict(align=0), 0x8000), (dict(align=1), 0x8000),
+                        (dict(align=0x1000, vaddr=0x8074), 0x8074)):
+            r = self.run_tool(init=elf(loads=ld, entry=ent), out='ok.gz')
+            self.assertEqual(r.returncode, 0, (ld, r.stderr))
+        # entry in the second of two segments, the first not executable
+        two = elf(ptypes=(1, 1))
+        self.assertEqual(self.run_tool(init=two, out='two.gz').returncode, 0)
 
     def test_arch(self):
         a64 = elf(cls=2, mach=183)
