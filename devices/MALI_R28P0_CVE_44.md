@@ -123,3 +123,27 @@ branch was not compiled.
   assume the vendor user space does not need them; unverified on a device.
 - Code outside the paths above (replay, vinstr, hwcnt, IPA, ...) was not
   reviewed.
+
+## First boot: grep dmesg for "mali: refused"
+
+Each refusal above logs one rate-limited line (the error code is unchanged):
+`mali: refused <operation> from <comm> (tgid <n>)`. After the first boot run
+`dmesg | grep 'mali: refused'`; any hit names the vendor library call that
+depends on a refused operation. The operations:
+
+- `TLSTREAM_ACQUIRE without CAP_SYS_ADMIN`
+- `MMU page-table dump mmap without CAP_SYS_ADMIN`
+- `MEM_COMMIT on a JIT region`
+- `MEM_COMMIT under a kernel mapping`
+- `MEM_FLAGS_CHANGE under a kernel mapping`
+- `MEM_ALIAS of a JIT region`
+- `CPU mmap of an imported user buffer`
+- `CPU mmap of an evictable region`
+- `CPU fault on an imported user buffer`
+- `kernel vmap of a JIT region`
+- `kernel vmap of an imported user buffer`
+- `debug copy of an empty or wrapping buffer`
+- `debug copy of an oversized buffer`
+
+For the kernel vmap lines the process is whichever one ran the soft job, which
+may be a kernel worker rather than the GPU library.

@@ -831,8 +831,10 @@ int kbase_mem_flags_change(struct kbase_context *kctx, u64 gpu_addr, unsigned in
 		goto out_unlock;
 
 	/* no eviction under a kernel mapping (kbase_vmap_prot) */
-	if (atomic_read(&reg->gpu_alloc->kernel_mappings) > 0)
+	if (atomic_read(&reg->gpu_alloc->kernel_mappings) > 0) {
+		KBASE_LOG_REFUSAL(kctx, "MEM_FLAGS_CHANGE under a kernel mapping");
 		goto out_unlock;
+	}
 
 	/* Is the region being transitioning between not needed and needed? */
 	prev_needed = (KBASE_REG_DONT_NEED & reg->flags) == KBASE_REG_DONT_NEED;
@@ -1315,10 +1317,12 @@ u64 kbase_mem_alias(struct kbase_context *kctx, u64 *flags, u64 stride,
 				goto bad_handle; /* Free region */
 			if (aliasing_reg->flags & KBASE_REG_DONT_NEED)
 				goto bad_handle; /* Ephemeral region */
-			if (aliasing_reg->flags & KBASE_REG_JIT)
+			if (aliasing_reg->flags & KBASE_REG_JIT) {
+				KBASE_LOG_REFUSAL(kctx, "MEM_ALIAS of a JIT region");
 				goto bad_handle; /* JIT region: its backing can be
 						  * reclaimed under the alias
 						  * after JIT_FREE */
+			}
 			if (!(aliasing_reg->flags & KBASE_REG_GPU_CACHED))
 				goto bad_handle; /* GPU uncached memory */
 			if (!aliasing_reg->gpu_alloc)
@@ -1641,16 +1645,20 @@ int kbase_mem_commit(struct kbase_context *kctx, u64 gpu_addr, u64 new_pages)
 	if (atomic_read(&reg->gpu_alloc->gpu_mappings) > 1)
 		goto out_unlock;
 	/* can't change the backing under a kernel mapping (kbase_vmap_prot) */
-	if (atomic_read(&reg->gpu_alloc->kernel_mappings) > 0)
+	if (atomic_read(&reg->gpu_alloc->kernel_mappings) > 0) {
+		KBASE_LOG_REFUSAL(kctx, "MEM_COMMIT under a kernel mapping");
 		goto out_unlock;
+	}
 	/* can't grow regions which are ephemeral */
 	if (reg->flags & KBASE_REG_DONT_NEED)
 		goto out_unlock;
 	/* JIT regions are owned by the kernel (kbase_jit_grow/free); resizing
 	 * one from user space would race with them (GHSL-2023-005).
 	 */
-	if (reg->flags & KBASE_REG_JIT)
+	if (reg->flags & KBASE_REG_JIT) {
+		KBASE_LOG_REFUSAL(kctx, "MEM_COMMIT on a JIT region");
 		goto out_unlock;
+	}
 
 	if (new_pages == reg->gpu_alloc->nents) {
 		/* no change */
@@ -1808,8 +1816,10 @@ static int kbase_cpu_vm_fault(struct vm_fault *vmf)
 	 * would outlive the pin once the external resource is released
 	 * (CVE-2022-36449). The importer already has the host mapping.
 	 */
-	if (map->alloc->type == KBASE_MEM_TYPE_IMPORTED_USER_BUF)
+	if (map->alloc->type == KBASE_MEM_TYPE_IMPORTED_USER_BUF) {
+		KBASE_LOG_REFUSAL(map->kctx, "CPU fault on an imported user buffer");
 		goto locked_bad_fault;
+	}
 
 	/* insert all valid pages from the fault location */
 	i = rel_pgoff;
@@ -1996,8 +2006,10 @@ static int kbase_mmu_dump_mmap(struct kbase_context *kctx, struct vm_area_struct
 	 * which leak the physical memory layout to whatever opened this
 	 * device node. Restrict it to privileged callers.
 	 */
-	if (!capable(CAP_SYS_ADMIN))
+	if (!capable(CAP_SYS_ADMIN)) {
+		KBASE_LOG_REFUSAL(kctx, "MMU page-table dump mmap without CAP_SYS_ADMIN");
 		return -EPERM;
+	}
 
 	size = (vma->vm_end - vma->vm_start);
 	nr_pages = size >> PAGE_SHIFT;
@@ -2250,6 +2262,7 @@ int kbase_mmap(struct file *file, struct vm_area_struct *vma)
 			 */
 			if (reg->cpu_alloc->type ==
 					KBASE_MEM_TYPE_IMPORTED_USER_BUF) {
+				KBASE_LOG_REFUSAL(kctx, "CPU mmap of an imported user buffer");
 				err = -EINVAL;
 				goto out_unlock;
 			}
@@ -2260,6 +2273,7 @@ int kbase_mmap(struct file *file, struct vm_area_struct *vma)
 			 * it; kbase_cpu_vm_fault() refuses it too.
 			 */
 			if (reg->flags & KBASE_REG_DONT_NEED) {
+				KBASE_LOG_REFUSAL(kctx, "CPU mmap of an evictable region");
 				err = -EINVAL;
 				goto out_unlock;
 			}
@@ -2436,8 +2450,10 @@ void *kbase_vmap_prot(struct kbase_context *kctx, u64 gpu_addr, size_t size,
 	 * JIT_FREE while the mapping lives (an evictable region is refused in
 	 * kbase_vmap_phy_pages()).
 	 */
-	if (reg->flags & KBASE_REG_JIT)
+	if (reg->flags & KBASE_REG_JIT) {
+		KBASE_LOG_REFUSAL(kctx, "kernel vmap of a JIT region");
 		goto out_unlock;
+	}
 
 	/* Imported user buffers are backed by GUP-pinned pages owned by the
 	 * external-resource tracking (current_mapping_usage_count), not by the
@@ -2445,8 +2461,10 @@ void *kbase_vmap_prot(struct kbase_context *kctx, u64 gpu_addr, size_t size,
 	 * at any time, so refuse to vmap them rather than leave a kernel
 	 * mapping that outlives its backing pages (CVE-2022-36449).
 	 */
-	if (reg->gpu_alloc->type == KBASE_MEM_TYPE_IMPORTED_USER_BUF)
+	if (reg->gpu_alloc->type == KBASE_MEM_TYPE_IMPORTED_USER_BUF) {
+		KBASE_LOG_REFUSAL(kctx, "kernel vmap of an imported user buffer");
 		goto out_unlock;
+	}
 
 	/* check access permissions can be satisfied
 	 * Intended only for checking KBASE_REG_{CPU,GPU}_{RD,WR}

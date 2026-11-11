@@ -1492,5 +1492,13 @@ static inline void kbase_mem_pool_unlock(struct kbase_mem_pool *pool)
  */
 void kbase_mem_evictable_mark_reclaim(struct kbase_mem_phy_alloc *alloc);
 
+/* One rate-limited line per request refused for security reasons, so a first
+ * boot shows whether the vendor GPU library depends on it. Never log kernel
+ * pointers or addresses here.
+ */
+#define KBASE_LOG_REFUSAL(kctx, op) \
+	dev_warn_ratelimited((kctx)->kbdev->dev, \
+			"mali: refused %s from %s (tgid %d)\n", \
+			(op), current->comm, current->tgid)
 
 #endif				/* _KBASE_MEM_H_ */
