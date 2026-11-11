@@ -1,0 +1,22 @@
+# /vendor/etc/init/gsi_defaults.rc: property defaults for a GSI on the DM63 and
+# DW100U-silver watches (same file for both). Rationale and the [I] marks:
+# devices/VENDOR_GSI_PATCH.md, "GSI defaults".
+# Read by init from /vendor/etc/init (Android 10+ parses that directory). Set in
+# early-init, before the stock memory tables in init.sl8541e_1h10.rc run (they
+# fire on ro.ramsize / ro.run.ramconfig), so these values are the first writes.
+# An ro.* property can be set only once: the later stock "setprop
+# ro.config.low_ram false" (ramconfig=8) is refused by init and logged.
+# persist.* set here before /data is mounted are defaults: a value kept in
+# /data/property by the user or a server flag replaces them at post-fs-data.
+#
+# Not set on purpose: any ro.lmk.* property, see the doc (lmkd autodetects).
+
+on early-init
+    # app freezer off: the 4.14 kernel has only the cgroup v1 freezer, the GSI
+    # profiles write cgroup.freeze (v2); the 4.4 kernel has neither
+    setprop persist.device_config.activity_manager_native_boot.use_freezer false
+    # Android Go behaviour: DM63 has 1.8 GB, DW100U 2.8 GB
+    setprop ro.config.low_ram true
+    # the GSI rw-system.sh picks the VNDK 26/27 linker config from this; the
+    # watches report no VNDK version
+    setprop persist.sys.vndk 27

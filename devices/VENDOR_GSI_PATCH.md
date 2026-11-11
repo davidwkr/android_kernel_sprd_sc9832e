@@ -8,7 +8,9 @@ With system-as-root the first-stage ramdisk only mounts `/system` and `/vendor`.
 | `etc/fstab.sl8541e_1h10` | `/vendor/etc/fstab.sl8541e_1h10` | `mount_all` in the rc above |
 | `ueventd.rc` | `/vendor/ueventd.rc` | ueventd of Android 10+ (`/system/etc/ueventd.rc`, then `/vendor/ueventd.rc`, then `/odm/ueventd.rc`) |
 
-All files are `root:root 0644`. SELinux labels: `vendor_configs_file` for the two `etc` files; for `/vendor/ueventd.rc` and the modules the label is looked up at install time (see the script). Source of every file: the stock ramdisks in the untouched dumps (DM63 and DW100U-silver ramdisk; read only, the script and the files here never execute anything from them).
+| `devices/common/vendor_gsi/etc/init/gsi_defaults.rc` (shared by both watches) | `/vendor/etc/init/gsi_defaults.rc` | init of Android 10+ parses every `*.rc` in `/vendor/etc/init`; GSI property defaults, see "GSI defaults" |
+
+All files are `root:root 0644`. SELinux labels: `vendor_configs_file` for the `etc` files; for `/vendor/ueventd.rc` and the modules the label is looked up at install time (see the script). Source of every file: the stock ramdisks in the untouched dumps (DM63 and DW100U-silver ramdisk; read only, the script and the files here never execute anything from them).
 
 The two ramdisks differ only in `init.sl8541e_1h10.rc` and `init.common.rc` (the `ueventd*.rc`, `fstab`, `init.ram.rc`, `init.storage.rc`, the empty `init.sl8541e_1h10.usb.rc` and the four `.ko` names are the same; the `.ko` bytes differ), so the two directories differ in the rc only:
 
@@ -112,6 +114,25 @@ On the copy it runs `debugfs -w`: per directory `mkdir`, `set_inode_field mode 0
 
 `--label` is required, not guessed. For `/second_stage_resources` it is only a mount point covered by a tmpfs: use the GSI's own label for an unlisted root entry, from the GSI's `/system/etc/selinux/plat_file_contexts`: the rule that matches `/` or a root entry such as `/debug_ramdisk`. Read it without mounting: `debugfs -R 'cat /system/etc/selinux/plat_file_contexts' IN.img | grep -E 'debug_ramdisk|^/ '` and take the `u:object_r:TYPE:s0` of that rule. For `/productinfo`, take it from the watch's own vendor file contexts, so the mount point has the label the vendor policy expects for `/productinfo`: `adb shell grep productinfo /vendor/etc/selinux/nonplat_file_contexts` (`/vendor/etc/selinux/plat_file_contexts` is the other file of the stock policy), and use the context of the `/productinfo` entry, `u:object_r:TYPE:s0`. If the entry is `/productinfo(/.*)?`, the directory itself matches it. The GSI image is an input and is not committed. Flash `OUT.img` as `system` (the script does not touch a device). Test: `scripts/tests/gsi_add_mountpoints_test.sh` (synthetic ext4 image: directory, mode, owner, xattr, input untouched, refusals).
 
+## GSI defaults
+
+`gsi_defaults.rc` is one `on early-init` block, installed like the other `etc` files (label from the device's `nonplat_file_contexts`, fallback `vendor_configs_file`; backup of the partition first, `.pregsi` of an existing file, sha256/mode/owner/label read back). Why an rc and not a prop file: the only property files init reads from `/vendor` are the stock `/vendor/build.prop` (and the legacy `/vendor/default.prop` [I: whether Android 14 init still loads it, from memory]), which already exist on the watch. Putting defaults there means rewriting a stock file we do not own, in place, with an ordering against its other `ro.*` lines we cannot see here; a new prop file is read by nobody. A new rc is read by init by directory, and `setprop` from init is not subject to the SELinux property checks of the property service [I]. All three are set in `early-init`, before the `ro.ramsize`/`ro.run.ramconfig` tables of the stock rc and before the framework reads them.
+
+| Property | Value | Why | Check on first boot |
+|---|---|---|---|
+| `persist.device_config.activity_manager_native_boot.use_freezer` | `false` | app freezer off: the 4.14 kernel has only the cgroup v1 freezer (`freezer.state`), the GSI task profiles write `cgroup.freeze` (v2); see `devices/GSI_414.md` on `config/gsi-414`. The framework reads this DeviceConfig flag at boot [I: from the task description and memory of `CachedAppOptimizer`]. Harmless on the 4.4 route (no freezer at all) | `getprop persist.device_config.activity_manager_native_boot.use_freezer`; `dumpsys activity settings \| grep -i freezer` |
+| `ro.config.low_ram` | `true` | Android Go behaviour (DM63 1.8 GB, DW100U 2.8 GB) | `getprop ro.config.low_ram` |
+| `persist.sys.vndk` | `27` | the GSI's `rw-system.sh` picks the VNDK 26/27 linker config from it [I: from memory of the phh/TrebleDroid script]; the watches report no VNDK version | `getprop persist.sys.vndk`; `ls /system/etc/ld.config*` and the `linkerconfig` log |
+
+Behaviour that follows from the choice:
+
+- `ro.*` is write-once. The stock rc has `setprop ro.config.low_ram true` for `ramconfig` 2 and 4, and `false` for 8 (`ro.ramsize` 1536M and up; it also sets `zram.disksize` 1024-1536). With the `early-init` write first, the later `false` is refused and logged; `ro.ramsize` itself is set outside the files carried here (open point below), so DM63's real `ramconfig` is not known. The ZRAM/LMK/RTCC tables still apply.
+- `persist.*` set before `/data` is mounted are defaults: init does not write them to `/data/property` at that point [I], and a value already stored there (user, `device_config put`, server flag) replaces them when persistent properties load. To force a value after a first boot, `setprop` it.
+
+### lmkd: no property set
+
+The vendor patch is shared by both kernels, so it does not choose. 4.14 route: the in-kernel LMK is off (`GSI_414.md`: Android 14 lmkd uses PSI, PSI is on in that config). 4.4 route: no PSI, the in-kernel `lowmemorykiller` stays. Not setting `ro.lmk.use_psi` or any other `ro.lmk.*` leaves lmkd to its own detection: as far as I remember, lmkd uses the in-kernel interface when `/sys/module/lowmemorykiller/parameters/minfree` is writable, otherwise PSI, and `ro.lmk.use_psi` defaults to true [I: both from memory of `lmkd.cpp`, not verified in source]. Forcing `ro.lmk.use_psi=true` on 4.4 could make lmkd fail to register PSI triggers (no `/proc/pressure`) or run with no killer; forcing it `false` on 4.14 would need `ro.lmk.use_minfree_levels` and the old kernel driver. The stock rc still writes `sys.lmk.*`, `lmk.autocalc` and `/sys/module/lowmemorykiller/parameters/enable_adaptive_lmk`; on 4.14 the module path does not exist and the write fails harmlessly. Check: `scripts/first_boot_collect.sh` collects `/proc/pressure/*` and `logcat | grep lmkd` shows which interface lmkd chose. If a route needs forcing, ship it with the kernel, not here.
+
 ## Kernel modules
 
 `init` of a GSI can only load modules from a mounted filesystem, and the stock ones live in the ramdisk (`/lib/modules`, in the boot image), which is not used any more. What loads each one now:
@@ -143,9 +164,9 @@ scripts/vendor_gsi_patch.sh --device dw100u-silver --apply [--backup-dir DIR] [-
 
 ## Tests
 
-`scripts/tests/vendor_gsi_patch_test.sh`: a stub adb (shell function) over a fake device tree, nothing touches a device. It checks: dry run is the default and writes nothing; Magisk and vendor-su modes; files, modes, owners requested and labels (also from a `nonplat_file_contexts` rule); the dump equals the partition; a truncated dump and a mismatching re-read abort before any remount or write; verity is reported and nothing is written (dry run exit 3); wrong `ro.hardware`, a non-`by-name/vendor` block device, a full `/vendor`, an unknown device are refused; modules and the mali switch; `.pregsi` is kept once; other partitions and `/data` are byte-identical afterwards. `bash -n` and, if installed, `shellcheck` run first (not installed on the machine used; not run).
+`scripts/tests/vendor_gsi_patch_test.sh`: a stub adb (shell function) over a fake device tree, nothing touches a device. It checks: the shared `gsi_defaults.rc` (three properties, no lmk line) is installed on both watches, labelled, mode 0644 and kept as `.pregsi` like the other files; dry run is the default and writes nothing; Magisk and vendor-su modes; files, modes, owners requested and labels (also from a `nonplat_file_contexts` rule); the dump equals the partition; a truncated dump and a mismatching re-read abort before any remount or write; verity is reported and nothing is written (dry run exit 3); wrong `ro.hardware`, a non-`by-name/vendor` block device, a full `/vendor`, an unknown device are refused; modules and the mali switch; `.pregsi` is kept once; other partitions and `/data` are byte-identical afterwards. `bash -n` and, if installed, `shellcheck` run first (not installed on the machine used; not run).
 
-Not verified on hardware: nothing here was run against a watch. First-boot checks: `getprop ro.hardware`, `logcat -b all | grep -i init`, `dmesg | grep -i avc`, `/dev/mali0`, `/dev/adf0`, Wi-Fi/BT modules (`lsmod`).
+Not verified on hardware: nothing here was run against a watch. First-boot checks: `getprop ro.hardware`, `logcat -b all | grep -i init`, `dmesg | grep -i avc`, `/dev/mali0`, `/dev/adf0`, Wi-Fi/BT modules (`lsmod`), the three GSI default properties. `scripts/first_boot_collect.sh` collects all of these read-only: `devices/FIRST_BOOT.md`.
 
 ## Open points
 

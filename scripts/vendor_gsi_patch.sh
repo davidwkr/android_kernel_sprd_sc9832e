@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Install the vendor GSI patch files (devices/DEVICE/vendor_gsi/) into /vendor
 # of a connected watch, over adb with root. Rationale: devices/VENDOR_GSI_PATCH.md.
+# Files: devices/DEVICE/vendor_gsi/ plus the shared devices/common/vendor_gsi/.
 # Usage: scripts/vendor_gsi_patch.sh --device DEVICE [--apply] [options]
 #   --device DEVICE     dm63 | dw100u-silver (selects the file set)
 #   --dry-run           default: read-only probes on the device, prints the plan
@@ -30,7 +31,7 @@ BLOCKERS=()
 die() { echo "FAIL: $*" >&2; exit 1; }
 say() { echo "== $*"; }
 blocker() { BLOCKERS+=("$*"); echo "BLOCKER: $*"; }
-usage() { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -48,10 +49,13 @@ while [ $# -gt 0 ]; do
 done
 case $DEVICE in dm63|dw100u-silver) ;; *) usage ;; esac
 
-SRC=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/devices/$DEVICE/vendor_gsi
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+SRC=$ROOT/devices/$DEVICE/vendor_gsi
+COMMON=$ROOT/devices/common/vendor_gsi
 for f in etc/init/hw/init.sl8541e_1h10.rc etc/fstab.sl8541e_1h10 ueventd.rc; do
   [ -f "$SRC/$f" ] || die "missing $SRC/$f"
 done
+[ -f "$COMMON/etc/init/gsi_defaults.rc" ] || die "missing $COMMON/etc/init/gsi_defaults.rc"
 RW=0
 WORK=$(mktemp -d)
 # a failed run must not leave /vendor read-write: RW stays 1 until read-only is
@@ -174,6 +178,7 @@ build_plan() {
   cp "$SRC/etc/init/hw/init.sl8541e_1h10.rc" "$WORK/init.rc"
   cp "$SRC/etc/fstab.sl8541e_1h10" "$WORK/fstab"
   cp "$SRC/ueventd.rc" "$WORK/ueventd.rc"
+  cp "$COMMON/etc/init/gsi_defaults.rc" "$WORK/gsi_defaults.rc"
   local m
   MOD_FOUND=()
   if [ -n "$MODULES_DIR" ]; then
@@ -192,7 +197,8 @@ build_plan() {
   esac
   PLAN=("etc|$WORK/init.rc|/vendor/etc/init/hw/init.sl8541e_1h10.rc|0644"
         "etc|$WORK/fstab|/vendor/etc/fstab.sl8541e_1h10|0644"
-        "ueventd|$WORK/ueventd.rc|/vendor/ueventd.rc|0644")
+        "ueventd|$WORK/ueventd.rc|/vendor/ueventd.rc|0644"
+        "etc|$WORK/gsi_defaults.rc|/vendor/etc/init/gsi_defaults.rc|0644")
   for m in "${MOD_FOUND[@]:-}"; do
     [ -n "$m" ] || continue
     PLAN+=("other|$MODULES_DIR/$m.ko|/vendor/lib/modules/$m.ko|0644")

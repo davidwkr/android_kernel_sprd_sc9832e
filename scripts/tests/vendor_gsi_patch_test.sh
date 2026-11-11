@@ -179,11 +179,17 @@ check "bash -n" bash -n "$SCRIPT"
 if command -v shellcheck >/dev/null; then check "shellcheck" shellcheck "$SCRIPT"; else echo "skip shellcheck (not installed)"; fi
 
 echo "-- shipped fstabs and rc files"
-for d in "$HERE"/../../devices/*/vendor_gsi; do
+for d in "$HERE"/../../devices/{dm63,dw100u-silver}/vendor_gsi; do
   n=$(basename "$(dirname "$d")")
   check "$n fstab: no encryptable/forceencrypt/fileencryption" bash -c "! grep -v '^#' '$d/etc/fstab.sl8541e_1h10' | grep -Eq 'encryptable|forceencrypt|fileencryption'"
   check "$n rc: no mknod (not an init command)" bash -c "! grep -Eq '^[[:space:]]*mknod ' '$d/etc/init/hw/init.sl8541e_1h10.rc'"
 done
+
+GD=$HERE/../../devices/common/vendor_gsi/etc/init/gsi_defaults.rc
+echo "-- shared GSI defaults rc"
+check "gsi_defaults.rc exists" test -s "$GD"
+check "sets use_freezer false, low_ram true, vndk 27" bash -c "grep -q '^    setprop persist.device_config.activity_manager_native_boot.use_freezer false\$' '$GD' && grep -q '^    setprop ro.config.low_ram true\$' '$GD' && grep -q '^    setprop persist.sys.vndk 27\$' '$GD'"
+check "sets no lmk property" bash -c "! grep -v '^#' '$GD' | grep -q lmk"
 
 echo "-- dry run is the default"
 new_fake; unset FAKE_SU; FAKE_SU=magisk; export FAKE_SU
@@ -195,6 +201,7 @@ check "no backup written" test "$(backups)" = 0
 check "vendor tree unchanged" test "$(vendor_hash)" = "$vb"
 check "no write op on the device" bash -c "! grep -qE 'chown|chcon|remount,rw|setrw' '$FAKE/ops.log' 2>/dev/null"
 check "no exec-in used" bash -c "! grep -q '^exec-in' '$FAKE/adb.log'"
+check "plan lists gsi_defaults.rc" has '/vendor/etc/init/gsi_defaults.rc  mode 0644 root:root  label u:object_r:vendor_configs_file:s0'
 check "ueventd label read from the device file_contexts" has 'label u:object_r:vendor_ueventd_file:s0'
 check "etc label from file_contexts" has 'vendor_configs_file'
 run --device dw100u-silver --apply --dry-run --backup-dir "$BK"
@@ -213,6 +220,9 @@ check "sha256 file written" test -s "$img.sha256"
 check "rc installed" cmp -s "$FAKE/vendor/etc/init/hw/init.sl8541e_1h10.rc" "$HERE/../../devices/dw100u-silver/vendor_gsi/etc/init/hw/init.sl8541e_1h10.rc"
 check "fstab installed" cmp -s "$FAKE/vendor/etc/fstab.sl8541e_1h10" "$HERE/../../devices/dw100u-silver/vendor_gsi/etc/fstab.sl8541e_1h10"
 check "ueventd.rc installed" cmp -s "$FAKE/vendor/ueventd.rc" "$HERE/../../devices/dw100u-silver/vendor_gsi/ueventd.rc"
+check "gsi_defaults.rc installed" cmp -s "$FAKE/vendor/etc/init/gsi_defaults.rc" "$GD"
+check "gsi_defaults.rc label" test "$(label_of /vendor/etc/init/gsi_defaults.rc)" = u:object_r:vendor_configs_file:s0
+check "gsi_defaults.rc mode 644" test "$(stat -c %a "$FAKE/vendor/etc/init/gsi_defaults.rc")" = 644
 check "mode 644" test "$(stat -c %a "$FAKE/vendor/ueventd.rc")" = 644
 check "ueventd label" test "$(label_of /vendor/ueventd.rc)" = u:object_r:vendor_ueventd_file:s0
 check "etc label" test "$(label_of /vendor/etc/fstab.sl8541e_1h10)" = u:object_r:vendor_configs_file:s0
@@ -225,6 +235,11 @@ check "no write outside /vendor in the adb log" bash -c "! grep -E '> *(/data|/s
 echo old >"$FAKE/vendor/ueventd.rc"
 run --device dw100u-silver --apply --backup-dir "$T/backup2"
 check "old file kept as .pregsi" test "$(cat "$FAKE/vendor/ueventd.rc.pregsi")" = old
+rm -f "$FAKE/vendor/etc/init/gsi_defaults.rc.pregsi"
+echo oldrc >"$FAKE/vendor/etc/init/gsi_defaults.rc"
+run --device dw100u-silver --apply --backup-dir "$T/backup2b"
+check "old gsi_defaults.rc kept as .pregsi" test "$(cat "$FAKE/vendor/etc/init/gsi_defaults.rc.pregsi")" = oldrc
+check "...and the new one is installed" cmp -s "$FAKE/vendor/etc/init/gsi_defaults.rc" "$GD"
 echo older >"$FAKE/vendor/ueventd.rc"
 run --device dw100u-silver --apply --backup-dir "$T/backup3"
 check "an existing .pregsi is not overwritten" test "$(cat "$FAKE/vendor/ueventd.rc.pregsi")" = old
@@ -239,6 +254,7 @@ check "root mode aosp" has 'root: aosp'
 check "modules installed" test -f "$FAKE/vendor/lib/modules/sprdwl_ng.ko" -a -f "$FAKE/vendor/lib/modules/mali.ko"
 check "module label from file_contexts" test "$(label_of /vendor/lib/modules/mali.ko)" = u:object_r:vendor_kmod_file:s0
 check "mali insmod switched on" grep -q '^    insmod /vendor/lib/modules/mali.ko' "$FAKE/vendor/etc/init/hw/init.sl8541e_1h10.rc"
+check "dm63 also gets gsi_defaults.rc" cmp -s "$FAKE/vendor/etc/init/gsi_defaults.rc" "$GD"
 check "device partitions untouched" test "$(tree_hash)" = "$before"
 rm "$T/mods/mali.ko" "$T/mods/sprd_fm.ko"
 new_fake
