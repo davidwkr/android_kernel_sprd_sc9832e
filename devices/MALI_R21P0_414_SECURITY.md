@@ -5,7 +5,7 @@ A read-only review of the SPRD Mali Midgard r28p0 fork listed four issues and as
 
 | # | Finding | Status |
 |---|---------|--------|
-| 1 | JIT regions writable through `MEM_COMMIT` (GHSL-2023-005 pattern) | not applicable as described, see below |
+| 1 | JIT regions writable through `MEM_COMMIT` (GHSL-2023-005 pattern) | race not present; hardening `f7627ae3d536` (as on 4.4) |
 | 2 | CVE-2023-6241: GPU fault worker grows a JIT region while `kbase_jit_grow()` has dropped its locks | not applicable: no `kbase_jit_grow()`, no lock drop |
 | 3 | `kbase_jit_free()` trims before taking `reg_lock` | not applicable: `kbase_jit_free()` does not trim |
 | 4 | CVE-2023-26083: `TLSTREAM_ACQUIRE` without a capability check | fixed in 1e84a2977793 |
@@ -25,13 +25,12 @@ later releases.
 - `kbase_jit_free()` takes `reg_lock` first and only clears `ACTIVE_JIT_ALLOC` and moves the region to the pool
   (`kbase_mem_evictable_make_jit()`). There is no initial trim (no `kbase_mem_shrink_*`, no page release), so there
   is no window between CPU-mapping invalidation and page release.
-- `MEM_COMMIT` on an *active* JIT region is still accepted. It cannot desynchronise the backing from the GPU
-  mapping (same lock, same helpers as any growable region), so it was left alone rather than break an unknown
-  userspace use. If the stock blob is shown never to do it, refusing `KBASE_REG_JIT_OWNED` in
-  `kbase_mem_commit()` is a one-line hardening, consistent with the MEM_FREE/MEM_FLAGS_CHANGE refusals.
+- The race is not present, but `kbase_mem_commit()` now refuses `KBASE_REG_JIT_OWNED` regions (`f7627ae3d536`,
+  the same hardening as the 4.4 r21p0, and what later ARM releases do): the kernel sizes JIT regions, userspace
+  must not resize them, consistent with the MEM_FREE/MEM_FLAGS_CHANGE/MEM_ALIAS refusals.
 
 ## ABI notes
 
 - `KBASE_IOCTL_TLSTREAM_ACQUIRE` returns `-EPERM` without `CAP_SYS_ADMIN`. Profiling tools that use the timeline
   stream (gator, the vendor timeline) need root. The normal graphics path does not use it.
-- `MEM_COMMIT` on JIT regions is unchanged (still accepted, see above).
+- `MEM_COMMIT` on a JIT region fails with `-EINVAL`. Unverified against the stock blob until a GPU run on a watch.
