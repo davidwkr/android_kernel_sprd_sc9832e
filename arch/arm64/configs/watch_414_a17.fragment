@@ -1,27 +1,22 @@
+# Kernel features newer Android userspace needs (binderfs, pidfd,
+# close_range, userfaultfd, EROFS, incfs, BPF JIT), backported from the
+# Android-17-capable apollo 4.19 kernel. Merge on top of
+# sprd_sharkle_defconfig + watch_414.fragment (+ watch_414_adf.fragment),
+# then run olddefconfig. See devices/A17_KERNEL.md.
+
 # binderfs: per-ipc-namespace binder device nodes (/dev/binderfs), Android 11+ init mounts it
 CONFIG_ANDROID_BINDERFS=y
 
-# Kernel features Android 17 userspace needs (see devices/A17_KERNEL.md).
-# Merge on top of sprd_sharkle_defconfig + watch_414.fragment, then run
-# olddefconfig.
-#
 # pidfd_send_signal/pidfd_open/close_range and CLONE_PIDFD are built
 # unconditionally (no Kconfig symbol); anon_inodes is unconditional too.
 # The only config they rely on is procfs: pidfd fdinfo and
 # pidfd_send_signal() on a /proc/<pid> directory fd.
 CONFIG_PROC_FS=y
 
-# Android 17 userspace kernel features on the 4.14 watch kernel. Merge on top
-# of watch_414.fragment (see devices/A17_KERNEL.md).
-
 # userfaultfd(2): ART's userfaultfd-based concurrent-copying/compacting GC
 # (needs UFFD_USER_MODE_ONLY, UFFDIO_CONTINUE minor faults on shmem and
 # mremap(MREMAP_DONTUNMAP)); vm.unprivileged_userfaultfd defaults to 0.
 CONFIG_USERFAULTFD=y
-
-# Kernel features needed by Android 17 userspace. Merge on top of
-# sprd_sharkle_defconfig + watch_414.fragment (+ watch_414_adf.fragment),
-# then run olddefconfig. See devices/A17_KERNEL.md.
 
 # EROFS read-only filesystem (system/vendor/product images)
 CONFIG_EROFS_FS=y
@@ -40,9 +35,6 @@ CONFIG_FS_VERITY_BUILTIN_SIGNATURES=y
 
 # Incremental FS (adb/PackageManager incremental installs)
 CONFIG_INCREMENTAL_FS=y
-
-# Kernel features needed by Android 17 userspace. Merge on top of
-# sprd_sharkle_defconfig after watch_414.fragment, see devices/A17_KERNEL.md
 
 # netbpfload writes /proc/sys/net/core/bpf_jit_enable and bpf_jit_kallsyms and
 # aborts boot if either node is missing; arm64 has HAVE_EBPF_JIT.

@@ -1,5 +1,11 @@
 # Android 17 kernel features on the 4.14 watch kernel
 
+**Read first:** unmodified Android refuses this kernel from Android 15 on. AOSP's network BPF loader
+(`NetBpfLoad.cpp`) requires 4.14 for Android 14, 4.19 for Android 15 and 5.4 (and a BPF JIT) for later
+releases, and init reboots when it fails (see the BPF section). So these backports serve Android 14
+(Go), the newest release that runs on 4.14 as is; Android 15 to 17 would also need a patched loader in
+our own ROM build, which is not done here.
+
 Reference: Xiaomi apollo 4.19 (`kernel_xiaomi_apollo`). Config lines live in
 `arch/arm64/configs/watch_414_a17.fragment`.
 
@@ -231,7 +237,6 @@ arm64 when `USERFAULTFD=y`); `UFFDIO_CONTINUE` is `_IOWR(0xAA, 0x07, ...)`.
    feature probe result); if the probe fails ART falls back to the previous
    collector, so a missing feature shows up as that fallback rather than a crash.
 
-# Android 17 userspace: kernel features (4.14)
 
 Reference: the Xiaomi apollo 4.19 kernel (`kernel_xiaomi_apollo`, HEAD
 3b4b0017b71f) that boots Android 17. Config lives in
@@ -311,7 +316,6 @@ CONFIG_INCREMENTAL_FS=y
 4. Check `dmesg` for lockdep/KASAN reports while reading compressed
    EROFS files under memory pressure.
 
-# Android 17 kernel requirements (4.14 watch kernel)
 
 Reference: Xiaomi apollo 4.19 kernel (boots Android 17). Config fragment:
 `arch/arm64/configs/watch_414_a17.fragment`.
