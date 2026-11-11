@@ -701,6 +701,19 @@ void gsp_lite_r2p0_core_disable(struct gsp_core *c)
 	clk_disable_unprepare(core->gsp_clk);
 }
 
+/* the status stays, so that the last events can still be collected */
+void gsp_lite_r2p0_core_irq_mask(struct gsp_core *c)
+{
+	struct LITE_R2P0_GSP_GSP_INT_REG value, mask;
+
+	value.value = 0;
+	mask.value = 0;
+	mask.INT_GSP_EN = 1;
+	mask.INT_GERR_EN = 1;
+	gsp_core_reg_update(LITE_R2P0_GSP_GSP_INT(c->base),
+			    value.value, mask.value);
+}
+
 /*
  * The line is shared: only what the status says is ours is cleared and
  * disabled, and 0 is returned if the gsp did not raise anything.

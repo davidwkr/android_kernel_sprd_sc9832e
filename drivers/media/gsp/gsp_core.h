@@ -160,6 +160,8 @@ struct gsp_core_ops {
 	 * raised, and return it as GSP_IRQ_*, or 0 if it is not ours
 	 */
 	int (*irq_ack)(struct gsp_core *core);
+	/* mask the interrupts, keeping their status */
+	void (*irq_mask)(struct gsp_core *core);
 
 	int (*enable)(struct gsp_core *core);
 	void (*disable)(struct gsp_core *core);

@@ -45,6 +45,7 @@ static const struct gsp_core_ops gsp_lite_r2p0_core_ops = {
 	.enable = gsp_lite_r2p0_core_enable,
 	.disable = gsp_lite_r2p0_core_disable,
 	.intercept = gsp_lite_r2p0_core_intercept,
+	.irq_mask = gsp_lite_r2p0_core_irq_mask,
 	.reset = gsp_lite_r2p0_core_reset,
 	.dump = gsp_lite_r2p0_core_dump,
 };

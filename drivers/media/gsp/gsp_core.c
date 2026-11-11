@@ -279,15 +279,30 @@ static void gsp_core_release(struct kthread_work *work)
 	u32 status, gen;
 	int ret = 0;
 
-	spin_lock_irqsave(&core->event_lock, flags);
-	status = core->irq_status;
-	gen = core->irq_gen;
-	core->irq_status = 0;
-	spin_unlock_irqrestore(&core->event_lock, flags);
-
 	/* the kcfg may have been ended already, and another one started */
+	spin_lock_irqsave(&core->event_lock, flags);
+	gen = core->irq_gen;
+	spin_unlock_irqrestore(&core->event_lock, flags);
 	if (!kcfg || !atomic_read(&core->hw_running) || gen != core->job_gen)
 		return;
+
+	/*
+	 * Close the collection of events first: mask the interrupts and wait
+	 * for the handler, so that an error after DONE is in the status that
+	 * decides the result. Only the worker starts jobs, so it is still ours.
+	 */
+	if (core->ops->irq_mask)
+		core->ops->irq_mask(core);
+	atomic_set(&core->hw_running, 0);
+	synchronize_irq(core->irq);
+
+	/* what the hardware raised but the handler did not see */
+	status = core->ops->irq_ack(core);
+
+	spin_lock_irqsave(&core->event_lock, flags);
+	status |= core->irq_status;
+	core->irq_status = 0;
+	spin_unlock_irqrestore(&core->event_lock, flags);
 
 	if (core->ops->release)
 		ret = core->ops->release(core);
