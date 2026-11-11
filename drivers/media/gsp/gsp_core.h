@@ -14,6 +14,7 @@
 #ifndef _GSP_CORE_H
 #define _GSP_CORE_H
 
+#include <linux/bitops.h>
 #include <linux/clk.h>
 #include <linux/kthread.h>
 #include <linux/list.h>
@@ -32,6 +33,10 @@ struct gsp_core_ops;
 struct gsp_dev;
 struct gsp_kcfg;
 struct gsp_sync_timeline;
+
+/* what the core ops return from irq_ack */
+#define GSP_IRQ_DONE	BIT(0)
+#define GSP_IRQ_ERR	BIT(1)
 
 /* what the core ops return from trigger */
 enum gsp_err_code {
@@ -98,6 +103,8 @@ struct gsp_core {
 
 	/* the hardware may raise its irq: set from trigger to the end */
 	atomic_t hw_running;
+	/* GSP_IRQ_* of the irq, for the release work */
+	atomic_t irq_status;
 	/* what the kcfg in flight has switched on, to undo it at the end */
 	bool prepared;
 	bool iommu_on;
@@ -134,8 +141,11 @@ struct gsp_core_ops {
 	int (*trigger)(struct gsp_core *core);
 	/* after the irq: nonzero if the hardware flagged an error */
 	int (*release)(struct gsp_core *core);
-	/* clear and disable the irq, from the handler */
-	void (*irq_ack)(struct gsp_core *core);
+	/*
+	 * from the handler: clear and disable what the status says is
+	 * raised, and return it as GSP_IRQ_*, or 0 if it is not ours
+	 */
+	int (*irq_ack)(struct gsp_core *core);
 
 	int (*enable)(struct gsp_core *core);
 	void (*disable)(struct gsp_core *core);

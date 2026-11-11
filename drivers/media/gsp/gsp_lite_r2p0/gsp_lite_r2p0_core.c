@@ -701,9 +701,37 @@ void gsp_lite_r2p0_core_disable(struct gsp_core *c)
 	clk_disable_unprepare(core->gsp_clk);
 }
 
-void gsp_lite_r2p0_core_irq_ack(struct gsp_core *c)
+/*
+ * The line is shared: only what the status says is ours is cleared and
+ * disabled, and 0 is returned if the gsp did not raise anything.
+ */
+int gsp_lite_r2p0_core_irq_ack(struct gsp_core *c)
 {
-	gsp_lite_r2p0_int_clear_and_disable(c);
+	struct LITE_R2P0_GSP_GSP_INT_REG sts, value, mask;
+	int ret = 0;
+
+	sts.value = gsp_core_reg_read(LITE_R2P0_GSP_GSP_INT(c->base));
+	value.value = 0;
+	mask.value = 0;
+
+	if (sts.INT_GSP_STS) {
+		mask.INT_GSP_EN = 1;
+		mask.INT_GSP_CLR = 1;
+		value.INT_GSP_CLR = 1;
+		ret |= GSP_IRQ_DONE;
+	}
+	if (sts.INT_GERR_STS) {
+		mask.INT_GERR_EN = 1;
+		mask.INT_GERR_CLR = 1;
+		value.INT_GERR_CLR = 1;
+		ret |= GSP_IRQ_ERR;
+	}
+
+	if (ret)
+		gsp_core_reg_update(LITE_R2P0_GSP_GSP_INT(c->base),
+				value.value, mask.value);
+
+	return ret;
 }
 
 static struct clk *gsp_lite_r2p0_core_get_clk(struct gsp_core *core,

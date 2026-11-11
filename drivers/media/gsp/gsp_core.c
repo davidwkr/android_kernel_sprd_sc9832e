@@ -127,6 +127,8 @@ static void gsp_core_finish(struct gsp_core *core, struct gsp_kcfg *kcfg,
 	/* the hang timer only queues work, so it is safe to wait for it */
 	del_timer_sync(&core->timer);
 	atomic_set(&core->hw_running, 0);
+	/* the handler may be reading the registers: wait before the clocks go */
+	synchronize_irq(core->irq);
 
 	gsp_kcfg_iommu_unmap(kcfg);
 	gsp_kcfg_cleanup(kcfg, status);
@@ -168,6 +170,7 @@ static int gsp_core_start(struct gsp_core *core, struct gsp_kcfg *kcfg)
 		return ret;
 	}
 
+	atomic_set(&core->irq_status, 0);
 	atomic_set(&core->hw_running, 1);
 	ret = core->ops->trigger(core);
 	if (ret) {
@@ -216,6 +219,7 @@ static void gsp_core_release(struct kthread_work *work)
 {
 	struct gsp_core *core = container_of(work, struct gsp_core, release);
 	struct gsp_kcfg *kcfg = core->current_kcfg;
+	int status = atomic_xchg(&core->irq_status, 0);
 	int ret = 0;
 
 	/* the kcfg may have been ended by the hang timer already */
@@ -224,6 +228,11 @@ static void gsp_core_release(struct kthread_work *work)
 
 	if (core->ops->release)
 		ret = core->ops->release(core);
+	if (status & GSP_IRQ_ERR) {
+		GSP_ERR("core[%d] kcfg[%d] hardware error\n", core->id,
+			gsp_kcfg_to_tag(kcfg));
+		ret = -EIO;
+	}
 
 	gsp_core_finish(core, kcfg, ret ? -EIO : 0);
 }
@@ -257,12 +266,17 @@ static void gsp_core_hang_handler(struct timer_list *t)
 static irqreturn_t gsp_core_irq_handler(int irq, void *data)
 {
 	struct gsp_core *core = data;
+	int status;
 
 	/* the line is shared, and the hardware only runs for a kcfg */
 	if (!atomic_read(&core->hw_running))
 		return IRQ_NONE;
 
-	core->ops->irq_ack(core);
+	status = core->ops->irq_ack(core);
+	if (!status)
+		return IRQ_NONE;
+
+	atomic_or(status, &core->irq_status);
 	kthread_queue_work(core->kworker, &core->release);
 
 	return IRQ_HANDLED;
