@@ -283,10 +283,14 @@ Known, not fixed (not reachable on these watches, or root-only):
 
 ### First boot: grep dmesg for "mali: refused"
 
-Each refusal above logs one rate-limited line (the error code is unchanged):
-`mali: refused <operation> from <comm> (tgid <n>)`. After the first boot run
-`dmesg | grep 'mali: refused'`; any hit names the vendor library call that
-depends on a refused operation. The operations:
+Each refusal above logs one line (the error code is unchanged):
+`mali: refused <operation> from <comm> (tgid <n>)`. The limit is the kernel
+default for `dev_warn_ratelimited()`, 10 messages per 5 s per call site, not
+once only, so a busy loop is still sampled. After the first boot run
+`dmesg | grep 'mali: refused'`. A hit identifies the refused operation and the
+task that asked for it; by itself it does not establish that the vendor
+library depends on that operation (a probing or fuzzing process produces the
+same line). The operations:
 
 - `TLSTREAM_ACQUIRE without CAP_SYS_ADMIN`
 - `MMU page-table dump mmap without CAP_SYS_ADMIN`
@@ -296,6 +300,9 @@ depends on a refused operation. The operations:
 - `MEM_FLAGS_CHANGE on a JIT region`
 - `MEM_FLAGS_CHANGE under a kernel mapping`
 - `MEM_ALIAS of a JIT region`
+- `MEM_ALIAS with stride * nents overflowing the address range`
+- `MEM_ALIAS with an offset beyond the aliased allocation`
+- `MEM_ALIAS with offset + length beyond the aliased allocation`
 - `CPU mmap of an imported user buffer`
 - `CPU mmap of an evictable region`
 - `CPU fault on an imported user buffer`
