@@ -30,7 +30,9 @@
 #       entries and all other bytes of those files and of their headers
 #       (except c_filesize) stay identical; the .rc files are tokenized like
 #       init does, an insmod command that spans lines or has a quote or a
-#       backslash, and any other token containing NAME, are refused
+#       backslash, any other token containing NAME, and any .rc file that
+#       still contains NAME once backslashes, quotes, CR and LF are stripped,
+#       are refused
 #
 # The ramdisk is the file written by "sprd_bootimg.py unpack". Compression is
 # detected by magic: gzip and xz are handled; lz4 (legacy or frame) and
@@ -845,7 +847,7 @@ def patch_filesize(hdr, n):
 
 def tokenize_rc(d):
     """Port of next_token() in Android 8.1 (O-MR1) system/core/init/
-    tokenizer.cpp, with the parser's grouping of tokens into commands (a
+    parser.cpp, with the parser's grouping of tokens into commands (a
     NEWLINE ends one). Returns [(tokens, start, end, multiline)], one per
     non-empty command: the byte span d[start:end] it came from and whether
     that span crosses a physical line (a continuation or a quoted newline)."""
@@ -884,8 +886,9 @@ def tokenize_rc(d):
                 while x < n and d[x] != 34:
                     tok.append(d[x])
                     x += 1
-                if x < n:
-                    x += 1
+                if x >= n:              # unterminated: init returns EOF, the
+                    return cmds         # token and its command are dropped
+                x += 1
                 continue
             if c == 92:                 # '\\'
                 x += 1
@@ -893,19 +896,27 @@ def tokenize_rc(d):
                     break
                 c = d[x]
                 if c == 110:
-                    tok.append(10)
-                elif c == 114:
-                    tok.append(13)
-                elif c == 116:
+                    tok.append(10)      # as in init, no x += 1 for n, r, t
+                elif c == 114:          # and '\\': the letter is then copied
+                    tok.append(13)      # again as an ordinary char ('\n.ko'
+                elif c == 116:          # is LF + 'n.ko')
                     tok.append(9)
-                elif c == 10 or (c == 13 and d[x + 1:x + 2] == b'\n'):
-                    x += 1 + (c == 13)
+                elif c == 92:
+                    tok.append(92)
+                elif c == 13 or c == 10:
+                    # '\ CR LF' and '\ LF' continue the line; '\ CR' alone
+                    # is discarded with the CR, the token goes on
+                    if c == 13:
+                        x += 1
+                        if d[x:x + 1] != b'\n':
+                            continue
+                    x += 1
                     while x < n and d[x] in b' \t':
                         x += 1
                     continue
                 else:
-                    tok.append(c)       # includes '\\' itself
-                x += 1
+                    tok.append(c)       # unknown escape: copy
+                    x += 1
                 continue
             tok.append(c)
             x += 1
@@ -925,7 +936,10 @@ def drop_insmod(data, paths, fn):
     is dropped (whole line, ending included); any other insmod of PATH is
     refused. The caller refuses any left-over token that contains a module
     name, which also rejects an unrelated NAME.debug.ko: refusing is the
-    safe side. Comments are not tokens and are ignored."""
+    safe side. Comments are not tokens and are ignored. The caller also
+    runs a second check that does not depend on the tokenizer: the data left
+    in each .rc file, with every backslash, quote, CR and LF removed, must not
+    contain a module name at all (this can only add refusals)."""
     if b'\0' in data:
         raise Error('%s: NUL byte; refusing' % fn)
     keep = []
@@ -994,7 +1008,7 @@ def cmd_remove_module(a):
         data, k, t = drop_insmod(data, paths, '/' + n)
         for x in paths:
             lines[x] += k[x]
-        toks.append((n, t))
+        toks.append((n, t, data))
         if len(data) != e.f['filesize']:
             if e.f['nlink'] != 1:
                 raise Error('/%s is a hard link (nlink %d); not supported' %
@@ -1004,10 +1018,11 @@ def cmd_remove_module(a):
         if not lines[x]:
             raise Error('no "insmod %s" line in the .rc files at the root' %
                         x.decode())
-    for n, t in toks:
+    for n, t, data in toks:
+        raw = data.translate(None, b'\\"\r\n')
         for x in paths:
             m = x.rsplit(b'/', 1)[-1]
-            if any(m in y for y in t):
+            if any(m in y for y in t) or m in raw:
                 raise Error('/%s: %s is referenced in a form other than '
                             '"insmod %s"; fix it by hand' %
                             (n, m.decode(), x.decode()))
