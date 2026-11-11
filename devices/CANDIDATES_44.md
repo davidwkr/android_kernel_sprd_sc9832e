@@ -5,13 +5,13 @@ built by `devices/build_candidates_44.sh` into `~/.cache/{dm63,dw100u-silver}-ca
 
 ## Current images (2026-11-11)
 
-Built from `devices/k18-mali-candidate` commit `473cf4593ee3`, which is `security-backports` (`3973e1f88cf1`)
+Built from `devices/k18-mali-candidate` commit `5c4c1f6a6f69`, which is `security-backports` (`3973e1f88cf1`)
 plus the Mali r21p0 candidate work.
 
 | Watch | Image | sha256 |
 |---|---|---|
-| DM63 | `dm63_mali_candidate.img` | `6a48626d195e6ba26a0e0525bdd53990e5ac03515d6f67ec26e77bd10285b196` |
-| DW100U silver | `dw100u-silver_mali_candidate.img` | `ced565041c485d2dd147760d5c25acd0c942b3db654b9b1eb330ea659ac9b570` |
+| DM63 | `dm63_mali_candidate.img` | `636debbd9e6c900b52b6307374ac66dd9d3ca7c14029eb3c5c6eeb56244900c9` |
+| DW100U silver | `dw100u-silver_mali_candidate.img` | `1ace1d3b94daf102a3dd04fc2b9633c6e6771379d9c1ea3acee7634a59f23be6` |
 
 ## What they contain
 
@@ -21,7 +21,8 @@ plus the Mali r21p0 candidate work.
 - 2026-11-11 additions: `xt_qtaguid` unlock-before-put, low memory killer OOM locking / copied victim name /
   init skipped (`fixes/stock-driver-bugs`); AF6837 compass on the DM63, OCH1970 hall sensor on the DW100U
   (`dm63_sensors`, `dw100u_sensors` fragments); Mali r21p0 fence fixes (dormant: the fence code is not built on
-  4.4).
+  4.4); Mali r21p0 CVE-2023-4272 (whole-page user-buffer DMA), CVE-2023-26083 (timeline stream needs root),
+  `MEM_COMMIT` refused on JIT regions, JIT failure-path rollback (`fixes/mali-r21p0-jit-44`).
 - On a copy of each stock boot image: the ramdisk modules `mali.ko`, `sprdwl_ng.ko`, `sprdbt_tty.ko` and
   `sprd_fm.ko` replaced by this build's (vermagic and `module_layout` CRC checked by `tools/sprd_ramdisk.py`),
   `init.watch_tweaks.rc` added (`devices/common/`). The stock DT and the rest of the ramdisk are unchanged.
