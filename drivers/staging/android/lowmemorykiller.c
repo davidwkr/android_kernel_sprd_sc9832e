@@ -554,6 +554,20 @@ static int test_task_state(struct task_struct *p, int state)
 
 static DEFINE_MUTEX(scan_mutex);
 
+/*
+ * mark_oom_victim() must be called with oom_lock held and not after the
+ * OOM killer was disabled. We may be in reclaim context, so never sleep
+ * for the lock; the SIGKILL has already been sent anyway.
+ */
+static void lowmem_mark_oom_victim(struct task_struct *p)
+{
+	if (!mutex_trylock(&oom_lock))
+		return;
+	if (!oom_killer_disabled)
+		mark_oom_victim(p);
+	mutex_unlock(&oom_lock);
+}
+
 static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 {
 	struct task_struct *tsk;
@@ -752,7 +766,7 @@ static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 		 * task should have access to the memory reserves.
 		 */
 		if (selected->mm)
-			mark_oom_victim(selected);
+			lowmem_mark_oom_victim(selected);
 		task_unlock(selected);
 		trace_lowmemory_kill(selected, cache_size, cache_limit, free);
 		si_swapinfo(&si);
@@ -930,7 +944,7 @@ static unsigned long multiple_oom_killer(unsigned long *freed)
 			task_lock(selected[i]);
 			send_sig(SIGKILL, selected[i], 0);
 			if (selected[i]->mm)
-				mark_oom_victim(selected[i]);
+				lowmem_mark_oom_victim(selected[i]);
 			task_unlock(selected[i]);
 
 			lowmem_print(1, "oom: send sigkill to %d (%s) adj %d,"
@@ -1019,7 +1033,7 @@ static unsigned long oom_killer(unsigned long *freed)
 		task_lock(selected);
 		send_sig(SIGKILL, selected, 0);
 		if (selected->mm)
-			mark_oom_victim(selected);
+			lowmem_mark_oom_victim(selected);
 		task_unlock(selected);
 
 		lowmem_print(1, "oom: send sigkill to %d (%s),adj %d,size %d\n",

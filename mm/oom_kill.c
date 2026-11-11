@@ -439,7 +439,7 @@ static void dump_header(struct oom_control *oc, struct task_struct *p)
 static atomic_t oom_victims = ATOMIC_INIT(0);
 static DECLARE_WAIT_QUEUE_HEAD(oom_victims_wait);
 
-static bool oom_killer_disabled __read_mostly;
+bool oom_killer_disabled __read_mostly;
 
 #define K(x) ((x) << (PAGE_SHIFT-10))
 
