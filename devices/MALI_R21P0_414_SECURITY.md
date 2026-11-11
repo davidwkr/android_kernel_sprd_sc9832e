@@ -10,6 +10,17 @@ A read-only review of the SPRD Mali Midgard r28p0 fork listed four issues and as
 | 3 | `kbase_jit_free()` trims before taking `reg_lock` | not applicable: `kbase_jit_free()` does not trim |
 | 4 | CVE-2023-26083: `TLSTREAM_ACQUIRE` without a capability check | fixed in 1e84a2977793 |
 
+Follow-up review (same tree, byte-identical to the 4.4 r21p0 files):
+
+| # | Finding | Status |
+|---|---------|--------|
+| 5 | CVE-2023-4272: imported user buffers DMA-mapped partially (edge pages), GPU gets whole pages | fixed in 9fd0051a2cb9: every page mapped/unmapped whole (offset 0, `PAGE_SIZE`) in `kbase_jd_user_buf_map()` and `kbase_mem_from_user_buffer()`; partial-page imports still accepted |
+| 6 | Failed pooled JIT growth: added pages not rolled back, region not made reclaimable again (own finding, not an ARM backport; ARM r44p0 still has it) | fixed in b37bff05896c: added pages freed when the GPU mapping grow fails (also in `kbase_mem_evictable_unmake()`); failure path calls `kbase_mem_evictable_make_jit()` under `reg_lock` as `kbase_jit_free()` does |
+| 7 | JIT_ALLOC: `kbase_vmap()` of `gpu_alloc_addr` fails before `jit_alloc[id]` is set, region stuck active | fixed in 5e922f4d536e: region bound to its id on that path so the JIT_FREE userspace submits releases it |
+| 8 | `cleanup_empty_pte()` frees the page-table page before the GPU invalidate (Project Zero 2333, CVE-2022-36449) | dormant, `CONFIG_MALI_2MB_ALLOC` is off in our configs; code unchanged, `#error` guard + Kconfig warning in b7760a114a70, must be fixed before enabling |
+| - | CVE-2022-46395 | not affected: blocked by the existing `kbase_vmap_prot()` refusal of imported user buffers |
+| - | CVE-2022-46891, CVE-2023-6143 | not assessed, no conclusion |
+
 ## 1-3: why they do not apply
 
 This tree has the original r21p0 JIT, which predates JIT trimming, `kbase_jit_grow()` and the pool pre-allocation of
