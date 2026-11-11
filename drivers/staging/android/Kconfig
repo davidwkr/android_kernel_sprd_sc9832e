@@ -65,6 +65,13 @@ config LOWMEM_NOTIFY_KOBJ
 	---help---
 	  notify user-land app when the system is in low memory, currently only used by kaios
 
+config ANDROID_TIMED_OUTPUT
+	bool "Android timed output class"
+	help
+	  Android timed_output class: /sys/class/timed_output/<name>/enable
+	  takes a duration in milliseconds. Used by the Android vibrator HAL
+	  (see SPRD_VIBRATOR).
+
 config ANDROID_VSOC
 	tristate "Android Virtual SoC support"
 	default n

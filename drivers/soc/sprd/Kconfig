@@ -39,6 +39,16 @@ config SPRD_SYSTIMER
 	help
 	  Support sprd system timer driver.
 
+config SPRD_VIBRATOR
+	bool "Spreadtrum PMIC vibrator (timed_output)"
+	depends on ANDROID_TIMED_OUTPUT && MFD_SC27XX_PMIC
+	depends on !INPUT_SC27XX_VIBRA
+	help
+	  Vibrator on the SC27xx PMIC LDO, exposed through the Android
+	  timed_output class (/sys/class/timed_output/vibrator/enable) for the
+	  stock vibrator HAL. Binds the same "sprd,sc2721-vibrator" DT node as
+	  INPUT_SC27XX_VIBRA, so only one of the two can be enabled.
+
 source drivers/soc/sprd/iommu/Kconfig
 source "drivers/soc/sprd/modem/Kconfig"
 source "drivers/soc/sprd/domain/Kconfig"
