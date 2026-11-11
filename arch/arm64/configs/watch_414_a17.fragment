@@ -1,0 +1,7 @@
+# Android 17 userspace kernel features on the 4.14 watch kernel. Merge on top
+# of watch_414.fragment (see devices/A17_KERNEL.md).
+
+# userfaultfd(2): ART's userfaultfd-based concurrent-copying/compacting GC
+# (needs UFFD_USER_MODE_ONLY, UFFDIO_CONTINUE minor faults on shmem and
+# mremap(MREMAP_DONTUNMAP)); vm.unprivileged_userfaultfd defaults to 0.
+CONFIG_USERFAULTFD=y
