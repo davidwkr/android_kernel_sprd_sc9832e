@@ -14,3 +14,7 @@ CONFIG_SENSORS_SC7A22=y
 CONFIG_INPUT_QMA6981_I2C=y
 # "magnetic,och1970" (hall sensor, polled, power-down unless enabled)
 CONFIG_SENSORS_OCH1970=y
+# "pressure,msp891" (pressure and temperature, polled)
+CONFIG_SENSORS_MSP891=y
+# "compass,af6837" (compass, polled)
+CONFIG_SENSORS_COMPASS_AF6837=y
