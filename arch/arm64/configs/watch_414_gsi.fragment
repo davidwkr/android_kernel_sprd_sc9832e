@@ -32,7 +32,10 @@ CONFIG_PSI=y
 # CONFIG_PSI_DEFAULT_DISABLED is not set
 # memory cgroup (memcg v1 hierarchy of libprocessgroup, swap accounting); the
 # 4.14 kernel has no cgroup v2 freezer or uclamp (CONFIG_UCLAMP_TASK does not
-# exist in this tree); freezer v1 and pids are used by the task profiles
+# exist in this tree) and SCHED_TUNE is off. The v1 freezer (freezer.state)
+# and pids are only the controllers: the GSI's default profiles write
+# cgroup.freeze, so its task_profiles.json / cgroups.json need adapting or the
+# apps freezer disabled (see devices/GSI_414.md)
 CONFIG_MEMCG=y
 CONFIG_MEMCG_SWAP=y
 CONFIG_CGROUP_FREEZER=y
