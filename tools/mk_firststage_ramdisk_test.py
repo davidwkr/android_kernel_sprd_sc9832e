@@ -27,18 +27,22 @@ VND = SYS.replace(b'system', b'vendor')
 
 
 def elf(cls=1, mach=40, typ=2, ptypes=(1, 1), data=1, phentsize=None,
-        phoff=None, loads=None, entry=0x8000, version=1, ehsize=None):
+        phoff=None, loads=None, entry=None, version=1, ehsize=None):
     """Minimal ELF: header, program header table, 4 bytes of code.
 
     Each PT_LOAD in ptypes gets one segment from loads (a dict of
     p_offset, p_filesz, p_memsz, p_vaddr, p_align, p_flags); the default
-    maps the code word at 0x8000 as R+X.
+    maps the whole file from offset 0 at 0x8000 as R+X (page congruent),
+    and the default entry is the code word.
     """
     sz = 32 if cls == 1 else 56
     ps = sz if phentsize is None else phentsize
     hsz = 52 if cls == 1 else 64
     off = hsz if phoff is None else phoff
     code = off + len(ptypes) * sz
+    total = code + 4
+    if entry is None:
+        entry = 0x8000 + code
     ident = b'\x7fELF' + bytes([cls, data, 1]) + b'\0' * 9
     eh = hsz if ehsize is None else ehsize
     if cls == 1:
@@ -51,7 +55,7 @@ def elf(cls=1, mach=40, typ=2, ptypes=(1, 1), data=1, phentsize=None,
     ph = b''
     for t in ptypes:
         if t == 1:
-            L = dict(offset=code, filesz=4, memsz=4, vaddr=0x8000, align=4,
+            L = dict(offset=0, filesz=total, memsz=total, vaddr=0x8000, align=4,
                      flags=5)
             L.update(loads or {})
             if cls == 1:
@@ -201,39 +205,84 @@ class Case(unittest.TestCase):
 
     def test_init_load_checks(self):
         big = 0xffffff00
+        a64 = dict(cls=2, mach=183)
         for init, msg in (
                 (elf(version=0), 'e_version'),
                 (elf(ehsize=40), 'e_ehsize'),
-                (elf(loads=dict(filesz=0, memsz=0)), 'sizes'),
                 (elf(ptypes=(1,), loads=dict(offset=big, filesz=4096,
                                              memsz=1)), 'outside the file'),
                 (elf(loads=dict(offset=big, filesz=4096, memsz=1)),
                  'outside the file'),
                 (elf(loads=dict(filesz=4, memsz=2)), 'sizes'),
-                (elf(loads=dict(vaddr=0xfffffffe, memsz=4)), 'wraps'),
+                (elf(loads=dict(vaddr=0xfffffffe, filesz=4, memsz=4)),
+                 'user address space'),
                 (elf(loads=dict(align=3)), 'power of two'),
-                (elf(loads=dict(align=0x1000)), 'not congruent'),
+                (elf(loads=dict(align=0x1000, vaddr=0x8004)),
+                 'not congruent'),
+                (elf(loads=dict(vaddr=0x8004)), 'not congruent modulo 4096'),
+                (elf(loads=dict(offset=116, vaddr=0x8000, filesz=4,
+                                memsz=4), entry=0x8000),
+                 'not congruent modulo 4096'),
                 (elf(loads=dict(flags=4)), 'executable PT_LOAD'),
                 (elf(entry=0x9000), 'executable PT_LOAD'),
-                (elf(entry=0x8004), 'executable PT_LOAD')):
+                (elf(entry=0x8000 + 4096), 'executable PT_LOAD'),
+                # the only PT_LOAD is empty: nothing holds the entry
+                (elf(ptypes=(1,), loads=dict(filesz=0, memsz=0)),
+                 'executable PT_LOAD'),
+                (elf(loads=dict(filesz=0, memsz=0)), 'executable PT_LOAD'),
+                # ends above TASK_SIZE_32 (0xfffff000)
+                (elf(loads=dict(vaddr=0xfffff000, memsz=0x1000), entry=
+                     0xfffff000), 'user address space'),
+                (elf(typ=3, loads=dict(vaddr=0, memsz=0x60000000),
+                     entry=0x80), 'ET_DYN segments span')):
             self.refused(msg, init=init)
-        a64 = dict(cls=2, mach=183)
-        self.refused('e_ehsize', init=elf(ehsize=52, **a64),
-                     extra=('--arch', 'arm64'))
-        self.refused('wraps', init=elf(loads=dict(vaddr=(1 << 64) - 2,
-                                                  memsz=4), **a64),
-                     extra=('--arch', 'arm64'))
+        a64x = ('--arch', 'arm64')
+        self.refused('e_ehsize', init=elf(ehsize=52, **a64), extra=a64x)
+        self.refused('user address space', init=elf(
+            loads=dict(vaddr=(1 << 64) - 4096, memsz=4096, align=4096),
+            entry=0xffffffffffff0000, **a64), extra=a64x)
+        self.refused('user address space', init=elf(
+            loads=dict(vaddr=1 << 39, memsz=4096), entry=1 << 39, **a64),
+            extra=a64x)
+        self.refused('user address space', init=elf(
+            loads=dict(vaddr=(1 << 64) - 2, filesz=4, memsz=4), **a64), extra=a64x)
+        self.refused('ET_DYN segments span', init=elf(
+            typ=3, loads=dict(vaddr=0, memsz=1 << 38), entry=0x100, **a64),
+            extra=a64x)
         self.refused('outside the file', init=elf(
             loads=dict(offset=(1 << 64) - 8, filesz=16, memsz=16), **a64),
-            extra=('--arch', 'arm64'))
-        # the code word sits at file offset 116 (52 + 2 * 32)
-        for ld, ent in ((dict(align=0), 0x8000), (dict(align=1), 0x8000),
-                        (dict(align=0x1000, vaddr=0x8074), 0x8074)):
+            extra=a64x)
+        # page congruence rather than p_align: align 0/1/4096 all load
+        for ld, ent in ((dict(align=0), None), (dict(align=1), None),
+                        (dict(align=0x1000), None),
+                        (dict(offset=116, filesz=4, memsz=4, vaddr=0x8074,
+                              align=0x1000), 0x8074),
+                        (dict(vaddr=0xffffe000, memsz=0x1000, filesz=4),
+                         0xffffe000)):
             r = self.run_tool(init=elf(loads=ld, entry=ent), out='ok.gz')
             self.assertEqual(r.returncode, 0, (ld, r.stderr))
+        r = self.run_tool(init=elf(loads=dict(
+            vaddr=(1 << 39) - 4096, memsz=4096, filesz=4),
+            entry=(1 << 39) - 4096, **a64), out='ok.gz', extra=a64x)
+        self.assertEqual(r.returncode, 0, r.stderr)
         # entry in the second of two segments, the first not executable
         two = elf(ptypes=(1, 1))
         self.assertEqual(self.run_tool(init=two, out='two.gz').returncode, 0)
+
+    def test_empty_load(self):
+        # an empty extra PT_LOAD next to the executable one is legal
+        for a in ((), ('--arch', 'arm64')):
+            kw = dict(cls=2, mach=183) if a else {}
+            sz = 56 if a else 32
+            hsz = 64 if a else 52
+            good = elf(ptypes=(1, 1), **kw)
+            # turn the second PT_LOAD into an empty one at vaddr 0
+            o = hsz + sz
+            e = struct.pack('<IIQQQQQQ', 1, 4, 0, 0, 0, 0, 0, 0) if a else \
+                struct.pack('<IIIIIIII', 1, 0, 0, 0, 0, 0, 4, 0)
+            empty = good[:o] + e.ljust(sz, b'\0') + good[o + sz:]
+            r = self.run_tool(init=empty, out='e.gz', extra=a)
+            self.assertEqual(r.returncode, 0, r.stderr)
 
     def test_arch(self):
         a64 = elf(cls=2, mach=183)

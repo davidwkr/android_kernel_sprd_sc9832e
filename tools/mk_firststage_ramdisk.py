@@ -29,7 +29,17 @@
 # headers describe a static executable for --arch (class, byte order,
 # machine, type, header sizes, program headers, PT_LOAD bounds and
 # alignment, entry point in an executable segment; no PT_INTERP). The file
-# is only parsed, never executed. The fstab is refused unless every line has 5 fields,
+# is only parsed, never executed. Each non-empty PT_LOAD must have
+# p_offset == p_vaddr modulo 4096 (both target kernels use 4K pages and
+# map at page granularity) and end below the user address space of the
+# target: arm64 1 << CONFIG_ARM64_VA_BITS (39 in the 4.4 and 4.14 trees),
+# arm (32-bit init on an arm64 kernel) TASK_SIZE_32, 0xfffff000 in the
+# 4.14 tree (4.4: 0x100000000, the smaller is used). An ET_DYN init gets a
+# load bias of ELF_ET_DYN_BASE; its segment span (highest end minus lowest
+# start) must fit between that base and the bound. The base used is the
+# larger of the two trees: arm64 2 * TASK_SIZE_64 / 3, arm 2 * 2**32 / 3
+# (4.4 COMPAT_ELF_ET_DYN_BASE; 4.14 uses 0x400000). Empty PT_LOADs
+# (filesz == memsz == 0) are allowed. The fstab is refused unless every line has 5 fields,
 # mounts /system or /vendor (once each, /system required) and carries
 # first_stage_mount, and has no avb flag unless --allow-avb is given.
 #
@@ -49,6 +59,12 @@ MAX_INIT = 16 << 20
 MAX_FSTAB = 4096
 MAX_PHNUM = 64
 MTIME = 0
+PAGE = 4096
+# arch: (user address space bound, ELF_ET_DYN_BASE), see the header comment
+ELF_VA = {
+    'arm': (0xfffff000, 2 * (1 << 32) // 3),
+    'arm64': (1 << 39, 2 * (1 << 39) // 3),
+}
 ELF_ARCH = {      # name: (EI_CLASS, e_machine, e_phentsize)
     'arm': (1, 40, 32),
     'arm64': (2, 183, 56),
@@ -133,12 +149,12 @@ def check_init(d, arch):
         raise Error('init: program header table outside the file')
     ver = struct.unpack_from('<I', d, 20)[0]
     ehsz = struct.unpack_from('<H', d, 40 if cls == 1 else 52)[0]
-    width = 32 if cls == 1 else 64
     if ver != 1:
         raise Error('init: e_version %d' % ver)
     if ehsz != (52 if cls == 1 else 64):
         raise Error('init: e_ehsize %d is wrong for the class' % ehsz)
-    top = 1 << width
+    top, dyn_base = ELF_VA[arch]
+    lo, hi = top, 0
     loads = 0
     entry_ok = False
     for i in range(phnum):
@@ -158,23 +174,32 @@ def check_init(d, arch):
                 struct.unpack_from('<IIQQQQQQ', d, o)
         if off + filesz > len(d):
             raise Error('init: PT_LOAD %d data outside the file' % i)
-        if memsz == 0 or filesz > memsz:
+        if filesz > memsz:
             raise Error('init: PT_LOAD %d sizes: filesz %d, memsz %d'
                         % (i, filesz, memsz))
         if vaddr + memsz > top:
-            raise Error('init: PT_LOAD %d wraps the address space' % i)
+            raise Error('init: PT_LOAD %d beyond the user address space'
+                        % i)
         if align & (align - 1):
             raise Error('init: PT_LOAD %d p_align %d not a power of two'
                         % (i, align))
         if align > 1 and off % align != vaddr % align:
             raise Error('init: PT_LOAD %d p_offset and p_vaddr not '
                         'congruent modulo p_align' % i)
+        if memsz and off % PAGE != vaddr % PAGE:
+            raise Error('init: PT_LOAD %d p_offset and p_vaddr not '
+                        'congruent modulo %d' % (i, PAGE))
+        if memsz:
+            lo, hi = min(lo, vaddr), max(hi, vaddr + memsz)
         if flags & PF_X and vaddr <= entry < vaddr + memsz:
             entry_ok = True
     if not loads:
         raise Error('init: no PT_LOAD segment')
     if not entry_ok:
         raise Error('init: e_entry not inside an executable PT_LOAD')
+    if typ == ET_DYN and hi - lo > top - dyn_base:
+        raise Error('init: ET_DYN segments span %#x, over the %#x that '
+                    'fit above the load base' % (hi - lo, top - dyn_base))
 
 
 def check_fstab(d, allow_avb):
