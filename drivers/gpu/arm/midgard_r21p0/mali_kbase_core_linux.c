@@ -743,8 +743,10 @@ static int kbase_api_tlstream_acquire(struct kbase_context *kctx,
 	/* The summary stream carries raw kernel context and device pointers
 	 * (CVE-2023-26083); only privileged profilers may acquire it.
 	 */
-	if (!capable(CAP_SYS_ADMIN))
+	if (!capable(CAP_SYS_ADMIN)) {
+		KBASE_LOG_REFUSAL(kctx, "TLSTREAM_ACQUIRE without CAP_SYS_ADMIN");
 		return -EPERM;
+	}
 
 	return kbase_tlstream_acquire(kctx, acquire->flags);
 }
