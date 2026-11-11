@@ -233,8 +233,7 @@ class Case(unittest.TestCase):
                 # ends above TASK_SIZE_32 (0xfffff000)
                 (elf(loads=dict(vaddr=0xfffff000, memsz=0x1000), entry=
                      0xfffff000), 'user address space'),
-                (elf(typ=3, loads=dict(vaddr=0, memsz=0x60000000),
-                     entry=0x80), 'ET_DYN segments span')):
+                ):
             self.refused(msg, init=init)
         a64x = ('--arch', 'arm64')
         self.refused('e_ehsize', init=elf(ehsize=52, **a64), extra=a64x)
@@ -246,9 +245,6 @@ class Case(unittest.TestCase):
             extra=a64x)
         self.refused('user address space', init=elf(
             loads=dict(vaddr=(1 << 64) - 2, filesz=4, memsz=4), **a64), extra=a64x)
-        self.refused('ET_DYN segments span', init=elf(
-            typ=3, loads=dict(vaddr=0, memsz=1 << 38), entry=0x100, **a64),
-            extra=a64x)
         self.refused('outside the file', init=elf(
             loads=dict(offset=(1 << 64) - 8, filesz=16, memsz=16), **a64),
             extra=a64x)
@@ -257,17 +253,57 @@ class Case(unittest.TestCase):
                         (dict(align=0x1000), None),
                         (dict(offset=116, filesz=4, memsz=4, vaddr=0x8074,
                               align=0x1000), 0x8074),
-                        (dict(vaddr=0xffffe000, memsz=0x1000, filesz=4),
+                        (dict(vaddr=0xffffe000, memsz=4, filesz=4),
                          0xffffe000)):
             r = self.run_tool(init=elf(loads=ld, entry=ent), out='ok.gz')
             self.assertEqual(r.returncode, 0, (ld, r.stderr))
         r = self.run_tool(init=elf(loads=dict(
-            vaddr=(1 << 39) - 4096, memsz=4096, filesz=4),
+            vaddr=(1 << 39) - 4096, memsz=4, filesz=4),
             entry=(1 << 39) - 4096, **a64), out='ok.gz', extra=a64x)
         self.assertEqual(r.returncode, 0, r.stderr)
         # entry in the second of two segments, the first not executable
         two = elf(ptypes=(1, 1))
         self.assertEqual(self.run_tool(init=two, out='two.gz').returncode, 0)
+
+    def test_dyn_and_bss(self):
+        # an ET_DYN without PT_INTERP is not held to ELF_ET_DYN_BASE:
+        # a large static PIE loads
+        for kw, a in ((dict(), ()), (dict(cls=2, mach=183),
+                                     ('--arch', 'arm64'))):
+            r = self.run_tool(init=elf(typ=3, loads=dict(
+                vaddr=0, filesz=0x60, memsz=0x60000000, flags=7),
+                entry=0x80, **kw), out='pie.gz', extra=a)
+            self.assertEqual(r.returncode, 0, r.stderr)
+        # total_mapping_size(): last.vaddr + last.memsz - first.vaddr
+        # rounded down; the last PT_LOAD is empty and at 0, first at 0x8000
+        sz, hsz = 32, 52
+        good = elf(typ=3, ptypes=(1, 1))
+        o = hsz + sz
+        e = struct.pack('<IIIIIIII', 1, 0, 0, 0, 0, 0, 4, 0)
+        empty = good[:o] + e.ljust(sz, b'\0') + good[o + sz:]
+        self.refused('ET_DYN mapping size', init=empty)
+        # an ET_EXEC maps each segment on its own and skips empty ones
+        exe = empty[:16] + struct.pack('<H', 2) + empty[18:]
+        r = self.run_tool(init=exe, out='exe.gz')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # padzero(): a partial page of bss after RX data cannot be zeroed
+        self.refused('not writable', init=elf(
+            loads=dict(filesz=4, memsz=4096)))
+        self.refused('not writable', init=elf(
+            loads=dict(vaddr=0xffffe000, filesz=4, memsz=4096),
+            entry=0xffffe000))
+        # a writable segment may have a partial-page bss
+        r = self.run_tool(init=elf(loads=dict(flags=7, memsz=4096 * 3)),
+                          out='rw.gz')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # RX text, then a separate RW data+bss segment holding elf_bss
+        d = elf(ptypes=(1, 1))
+        o = 52 + 32
+        rw = struct.pack('<IIIIIIII', 1, 0, 0x20000, 0x20000, 4, 0x3000, 6,
+                         0x1000)
+        d = d[:o] + rw + d[o + 32:]
+        r = self.run_tool(init=d, out='rwbss.gz')
+        self.assertEqual(r.returncode, 0, r.stderr)
 
     def test_empty_load(self):
         # an empty extra PT_LOAD next to the executable one is legal

@@ -29,16 +29,21 @@
 # headers describe a static executable for --arch (class, byte order,
 # machine, type, header sizes, program headers, PT_LOAD bounds and
 # alignment, entry point in an executable segment; no PT_INTERP). The file
-# is only parsed, never executed. Each non-empty PT_LOAD must have
+# is only parsed, never executed. The authentication of --init is the
+# sha256 pin; the ELF checks are a sanity filter modelled on
+# load_elf_binary() of the 4.4 and 4.14 kernels (fs/binfmt_elf.c), not a
+# substitute for it. Each non-empty PT_LOAD must have
 # p_offset == p_vaddr modulo 4096 (both target kernels use 4K pages and
 # map at page granularity) and end below the user address space of the
 # target: arm64 1 << CONFIG_ARM64_VA_BITS (39 in the 4.4 and 4.14 trees),
 # arm (32-bit init on an arm64 kernel) TASK_SIZE_32, 0xfffff000 in the
-# 4.14 tree (4.4: 0x100000000, the smaller is used). An ET_DYN init gets a
-# load bias of ELF_ET_DYN_BASE; its segment span (highest end minus lowest
-# start) must fit between that base and the bound. The base used is the
-# larger of the two trees: arm64 2 * TASK_SIZE_64 / 3, arm 2 * 2**32 / 3
-# (4.4 COMPAT_ELF_ET_DYN_BASE; 4.14 uses 0x400000). Empty PT_LOADs
+# 4.14 tree (4.4: 0x100000000, the smaller is used). An ET_DYN init has
+# no PT_INTERP, so both kernels map it with a zero initial bias; the span
+# from the first PT_LOAD to the end of the last one in program header
+# order (empty ones included, total_mapping_size()) must be positive and
+# within that bound. The bss rule follows padzero(): when the highest
+# p_vaddr + p_filesz is below the highest p_vaddr + p_memsz and not page
+# aligned, the page it is in must be writable. Empty PT_LOADs
 # (filesz == memsz == 0) are allowed. The fstab is refused unless every line has 5 fields,
 # mounts /system or /vendor (once each, /system required) and carries
 # first_stage_mount, and has no avb flag unless --allow-avb is given.
@@ -60,10 +65,10 @@ MAX_FSTAB = 4096
 MAX_PHNUM = 64
 MTIME = 0
 PAGE = 4096
-# arch: (user address space bound, ELF_ET_DYN_BASE), see the header comment
-ELF_VA = {
-    'arm': (0xfffff000, 2 * (1 << 32) // 3),
-    'arm64': (1 << 39, 2 * (1 << 39) // 3),
+# arch: user address space bound, see the header comment
+ELF_TOP = {
+    'arm': 0xfffff000,
+    'arm64': 1 << 39,
 }
 ELF_ARCH = {      # name: (EI_CLASS, e_machine, e_phentsize)
     'arm': (1, 40, 32),
@@ -72,6 +77,7 @@ ELF_ARCH = {      # name: (EI_CLASS, e_machine, e_phentsize)
 PT_LOAD = 1
 PT_INTERP = 3
 PF_X = 1
+PF_W = 2
 ET_EXEC = 2
 ET_DYN = 3
 FSTAB_MOUNTS = ('/system', '/vendor')
@@ -153,9 +159,8 @@ def check_init(d, arch):
         raise Error('init: e_version %d' % ver)
     if ehsz != (52 if cls == 1 else 64):
         raise Error('init: e_ehsize %d is wrong for the class' % ehsz)
-    top, dyn_base = ELF_VA[arch]
-    lo, hi = top, 0
-    loads = 0
+    top = ELF_TOP[arch]
+    segs = []       # (vaddr, filesz, memsz, flags) of every PT_LOAD
     entry_ok = False
     for i in range(phnum):
         o = phoff + i * phsz
@@ -165,7 +170,6 @@ def check_init(d, arch):
                         'first-stage init must be static')
         if ptype != PT_LOAD:
             continue
-        loads += 1
         if cls == 1:
             _, off, vaddr, _, filesz, memsz, flags, align = \
                 struct.unpack_from('<IIIIIIII', d, o)
@@ -189,17 +193,35 @@ def check_init(d, arch):
         if memsz and off % PAGE != vaddr % PAGE:
             raise Error('init: PT_LOAD %d p_offset and p_vaddr not '
                         'congruent modulo %d' % (i, PAGE))
-        if memsz:
-            lo, hi = min(lo, vaddr), max(hi, vaddr + memsz)
+        segs.append((vaddr, filesz, memsz, flags))
         if flags & PF_X and vaddr <= entry < vaddr + memsz:
             entry_ok = True
-    if not loads:
+    if not segs:
         raise Error('init: no PT_LOAD segment')
     if not entry_ok:
         raise Error('init: e_entry not inside an executable PT_LOAD')
-    if typ == ET_DYN and hi - lo > top - dyn_base:
-        raise Error('init: ET_DYN segments span %#x, over the %#x that '
-                    'fit above the load base' % (hi - lo, top - dyn_base))
+    # load_elf_binary(), 4.4 and 4.14: an ET_DYN without PT_INTERP gets
+    # load_bias 0 and is mmap'ed as a whole, total_mapping_size() bytes
+    # from the first PT_LOAD, using the first and the last PT_LOAD in
+    # program header order, empty ones too; 0 or a wrapped value fails
+    if typ == ET_DYN:
+        first, last = segs[0], segs[-1]
+        total = (last[0] + last[2] - (first[0] & -PAGE)) % (1 << 64)
+        if not 0 < total <= top:
+            raise Error('init: ET_DYN mapping size %#x from the first to '
+                        'the last PT_LOAD is not usable' % total)
+    # load_elf_binary(): elf_bss is the highest p_vaddr + p_filesz, elf_brk
+    # the highest p_vaddr + p_memsz; if they differ padzero(elf_bss)
+    # clears the rest of the page, which fails (-EFAULT) unless that page
+    # is writable. Later MAP_FIXED segments replace earlier ones.
+    bss = max(v + f for v, f, _, _ in segs)
+    brk = max(v + m for v, _, m, _ in segs)
+    if brk > bss and bss % PAGE:
+        holder = [fl for v, _, m, fl in segs
+                  if m and v & -PAGE <= bss < -(-(v + m) & -PAGE)]
+        if not holder or not holder[-1] & PF_W:
+            raise Error('init: bss starts at %#x in a page that is not '
+                        'writable, the kernel cannot zero it' % bss)
 
 
 def check_fstab(d, allow_avb):
