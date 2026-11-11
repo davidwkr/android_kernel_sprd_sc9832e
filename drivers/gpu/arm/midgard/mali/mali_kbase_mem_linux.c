@@ -1650,6 +1650,11 @@ int kbase_mem_commit(struct kbase_context *kctx, u64 gpu_addr, u64 new_pages)
 	/* can't grow regions which are ephemeral */
 	if (reg->flags & KBASE_REG_DONT_NEED)
 		goto out_unlock;
+	/* JIT regions are owned by the kernel (kbase_jit_grow/free); resizing
+	 * one from user space would race with them (GHSL-2023-005).
+	 */
+	if (reg->flags & KBASE_REG_JIT)
+		goto out_unlock;
 
 	if (new_pages == reg->gpu_alloc->nents) {
 		/* no change */
