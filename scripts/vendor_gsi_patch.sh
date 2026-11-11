@@ -54,9 +54,12 @@ for f in etc/init/hw/init.sl8541e_1h10.rc etc/fstab.sl8541e_1h10 ueventd.rc; do
 done
 RW=0
 WORK=$(mktemp -d)
-# a failed run must not leave /vendor read-write
+# a failed run must not leave /vendor read-write: RW stays 1 until read-only is
+# verified in /proc/mounts, so any exit before that retries it once here
 cleanup() {
-  [ "$RW" -eq 0 ] || rsh_ok 'mount -o remount,ro /vendor' || true
+  if [ "$RW" -ne 0 ]; then
+    remount ro || echo "WARNING: /vendor is still read-write (remount ro failed): reboot the watch" >&2
+  fi
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -92,6 +95,24 @@ vendor_path() {
     *) die "refusing to write outside /vendor: $1" ;;
   esac
   [[ $1 =~ ^/vendor/[A-Za-z0-9_./-]+$ ]] && [[ $1 != *..* ]] || die "refusing odd path: $1"
+}
+
+# the device resolves PATH (or, if it does not exist yet, its nearest existing
+# ancestor) to a place under /vendor: no symlink in the way leads out of it
+resolves_under_vendor() {
+  local real
+  real=$(rsh "p=$1; while [ ! -e \"\$p\" ] && [ ! -L \"\$p\" ]; do p=\$(dirname \"\$p\"); done; readlink -f \"\$p\"" | tail -n 1)
+  case $real in
+    /vendor|/vendor/*) ;;
+    *) die "$1 resolves to '$real', outside /vendor: refusing" ;;
+  esac
+}
+# before writing DEST: parent stays under /vendor; DEST, DEST.new and
+# DEST.pregsi are not symlinks; DEST.new does not exist
+target_ok() {
+  resolves_under_vendor "$(dirname "$1")"
+  rsh_ok "[ ! -L $1 ] && [ ! -L $1.pregsi ] && [ ! -e $1.new ] && [ ! -L $1.new ]" \
+    || die "$1, $1.new or $1.pregsi is a symlink, or $1.new exists: refusing"
 }
 
 pick_serial() {
@@ -257,13 +278,14 @@ backup_vendor() {
   part=$IMG.part
   say "backup: $VENDOR_BLK ($SIZE bytes) -> $IMG"
   rexec_out "dd if=$VENDOR_BLK bs=1048576 2>/dev/null" >"$part" || { rm -f "$part"; return 1; }
-  n=$(stat -c %s "$part")
+  n=$(stat -c %s "$part") || { rm -f "$part"; return 1; }
   [ "$n" = "$SIZE" ] || { echo "backup size $n, partition $SIZE"; rm -f "$part"; return 1; }
-  h1=$(sha256sum "$part" | cut -d' ' -f1)
+  h1=$(sha256sum "$part" | cut -d' ' -f1) || { rm -f "$part"; return 1; }
   h2=$(rexec_out "dd if=$VENDOR_BLK bs=1048576 2>/dev/null" | sha256sum | cut -d' ' -f1) || { rm -f "$part"; return 1; }
-  [ "$h1" = "$h2" ] || { echo "backup sha256 $h1, re-read $h2"; rm -f "$part"; return 1; }
-  mv "$part" "$IMG"
-  printf '%s  %s\n' "$h1" "$(basename "$IMG")" >"$IMG.sha256"
+  [ -n "$h1" ] && [ "$h1" = "$h2" ] || { echo "backup sha256 $h1, re-read $h2"; rm -f "$part"; return 1; }
+  # no errexit inside a function called as 'f || die': every step is checked
+  mv -- "$part" "$IMG" || { echo "cannot move $part to $IMG"; rm -f "$part"; return 1; }
+  printf '%s  %s\n' "$h1" "$(basename "$IMG")" >"$IMG.sha256" || { echo "cannot write $IMG.sha256"; rm -f "$IMG.sha256" "$IMG"; return 1; }
   echo "backup ok: $n bytes, sha256 $h1 (re-read matches)"
 }
 
@@ -286,6 +308,7 @@ dev_stat() { rsh "stat -c '%a %u %g' $1 2>/dev/null"; }
 install_file() { # kind host dest mode
   local kind=$1 host=$2 dest=$3 mode=$4 lbl h
   vendor_path "$dest"
+  target_ok "$dest"
   case $kind in
     etc) lbl=$(label_etc "$dest") ;;
     ueventd) lbl=$(label_ueventd "$dest") ;;
@@ -293,9 +316,12 @@ install_file() { # kind host dest mode
   esac
   h=$(sha256sum "$host" | cut -d' ' -f1)
   rsh_ok "if [ -e $dest ] && [ ! -e $dest.pregsi ]; then cp -p $dest $dest.pregsi; fi" || die "cannot keep the old $dest: $RSH_OUT"
-  rexec_in "cat > $dest.new" <"$host" || die "streaming $dest failed"
+  # staging file: absent (checked in target_ok), created exclusively (noclobber
+  # opens with O_EXCL), so whatever is there afterwards is ours to remove
+  rexec_in "set -C; cat > $dest.new" <"$host" \
+    || { rsh "[ -L $dest.new ] || rm -f $dest.new" >/dev/null || true; die "streaming $dest failed"; }
   rsh_ok "chown 0:0 $dest.new && chmod $mode $dest.new && chcon $lbl $dest.new && mv $dest.new $dest" \
-    || { rsh "rm -f $dest.new" >/dev/null || true; die "chown/chmod/chcon/mv of $dest failed: $RSH_OUT"; }
+    || { rsh "[ -L $dest.new ] || rm -f $dest.new" >/dev/null || true; die "chown/chmod/chcon/mv of $dest failed: $RSH_OUT"; }
   [ "$(rsh "sha256sum $dest" | awk '{print $1}')" = "$h" ] || die "sha256 mismatch after writing $dest"
   [ "$(dev_stat "$dest")" = "${mode#0} 0 0" ] || die "owner/mode of $dest wrong: $(dev_stat "$dest")"
   [ "$(dev_label "$dest")" = "$lbl" ] || die "label of $dest is $(dev_label "$dest"), expected $lbl"
@@ -305,6 +331,7 @@ install_file() { # kind host dest mode
 make_dir() { # dir: created root:root 0755 with its rule label, else the parent's
   local d=$1 pl lbl
   vendor_path "$d/x"
+  resolves_under_vendor "$d"
   rsh_ok "[ -d $d ]" && return 0
   pl=$(dev_label "$(dirname "$d")")
   lbl=$(fc_label "$d" "${pl:-u:object_r:vendor_file:s0}")
@@ -330,7 +357,10 @@ apply() {
   done
   rsh sync >/dev/null
   say "remount /vendor read-only"
-  remount ro || echo "WARNING: /vendor is still rw: reboot the watch"
+  # RW stays armed until /proc/mounts shows /vendor ro; one retry here, one more
+  # in the exit trap
+  remount ro || { echo "remount ro failed, retrying"; rsh sync >/dev/null; remount ro; } \
+    || die "/vendor is still read-write after the install (files written, backup kept: $IMG): reboot the watch"
   RW=0
   say "done. Reboot the watch to use the files."
   echo "rollback (whole partition; /vendor is read-only now, run it before anything remounts it rw, reboot at once, verify the image with $IMG.sha256 first):"

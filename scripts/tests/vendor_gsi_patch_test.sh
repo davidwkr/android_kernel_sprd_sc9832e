@@ -6,7 +6,9 @@
 # The stub maps the device paths /vendor, /dev/block and /proc/mounts into the
 # fake tree and shims su, id, getprop, mount, chcon, chown, stat, ls -Zd, df,
 # blockdev and dd. Knobs: FAKE_SU=adbd|magisk|aosp, FAKE_VERITY=1,
-# FAKE_SHORT_READ=1 (truncated dump), FAKE_FLAKY=1 (second read differs).
+# FAKE_SHORT_READ=1 (truncated dump), FAKE_FLAKY=1 (second read differs),
+# FAKE_RO_FAILS=1 (remount ro fails). HOSTBIN: dir of host-side stubs put first
+# in PATH for the script (mv, date).
 set -uo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -100,6 +102,7 @@ EOF
 # mount -o remount,rw|ro /vendor
 mode=${2#remount,}
 echo "mount $*" >>"$FAKE/ops.log"
+if [ "$mode" = ro ] && [ "${FAKE_RO_FAILS:-0}" = 1 ]; then echo "mount: '/vendor' busy" >&2; exit 1; fi
 if [ "$mode" = rw ] && [ "$FAKE_VERITY" = 1 ]; then echo "mount: '/vendor' not user mountable / read-only device" >&2; exit 1; fi
 sed -i -E "s#(/vendor ext4 )(ro|rw),#\1$mode,#" "$FAKE/proc/mounts"
 EOF
@@ -161,10 +164,11 @@ check() { # description, condition command...
 tree_hash() { (cd "$FAKE" && find system data dev -type f | sort | xargs sha256sum | sha256sum); }
 vendor_hash() { (cd "$FAKE/vendor" && find . -type f | sort | xargs sha256sum | sha256sum); }
 run() {
-  OUT=$(ADB=adb_mock TMPDIR=$T bash ${VGP_TRACE:+-x} "$SCRIPT" "$@" 2>&1); RC=$?
+  OUT=$(PATH=${HOSTBIN:+$HOSTBIN:}$PATH ADB=adb_mock TMPDIR=$T bash ${VGP_TRACE:+-x} "$SCRIPT" "$@" 2>&1); RC=$?
   [ -z "${VGP_DEBUG:-}" ] || { echo "--- run $*: rc $RC"; echo "$OUT" | tail -n 30; }
 }
 has() { grep -q -- "$1" <<<"$OUT"; }
+lacks() { ! has "$1"; }
 label_of() { grep "^$1 " "$FAKE/labels" | cut -d' ' -f2; }
 backups() { find "$BK" -name '*.img' 2>/dev/null | wc -l; }
 
@@ -259,6 +263,69 @@ check "re-read mismatch: exit non-zero" test "$RC" != 0
 check "re-read mismatch: vendor unchanged" test "$(vendor_hash)" = "$vb"
 check "re-read mismatch: never remounted" bash -c "! grep -q 'remount' '$FAKE/ops.log' 2>/dev/null"
 FAKE_FLAKY=0; export FAKE_FLAKY
+
+echo "-- backup: the last steps are checked too"
+HOSTBIN=$T/hostbin; export HOSTBIN
+mkdir -p "$HOSTBIN"
+printf '#!/bin/bash\n[ "$1" = -- ] && shift\ncase $1 in *.part) exit 1 ;; esac\nexec /bin/mv "$@"\n' >"$HOSTBIN/mv"
+printf '#!/bin/bash\ncase $1 in +%%Y*) echo 20000101-000000 ;; *) exec /bin/date "$@" ;; esac\n' >"$HOSTBIN/date"
+chmod +x "$HOSTBIN/mv" "$HOSTBIN/date"
+new_fake; vb=$(vendor_hash)
+run --device dw100u-silver --apply --backup-dir "$T/b11"
+check "mv of the backup fails: exit non-zero" test "$RC" != 0
+check "...no 'backup ok'" lacks 'backup ok'
+check "...says nothing was written" has 'nothing was written'
+check "...vendor unchanged, never remounted" bash -c "test '$(vendor_hash)' = '$vb' && ! grep -q remount '$FAKE/ops.log' 2>/dev/null"
+rm "$HOSTBIN/mv"
+new_fake; vb=$(vendor_hash)
+mkdir -p "$T/b12/vendor-FAKE0001-20000101-000000.img.sha256"
+run --device dw100u-silver --apply --backup-dir "$T/b12"
+check "sidecar write fails: exit non-zero" test "$RC" != 0
+check "...no 'backup ok'" lacks 'backup ok'
+check "...vendor unchanged, never remounted" bash -c "test '$(vendor_hash)' = '$vb' && ! grep -q remount '$FAKE/ops.log' 2>/dev/null"
+rm "$HOSTBIN/date"; unset HOSTBIN
+
+echo "-- symlinks under /vendor"
+new_fake; before=$(tree_hash)
+mkdir -p "$FAKE/vendor/etc/init" && rm -rf "$FAKE/vendor/etc/init" && ln -s "$FAKE/data" "$FAKE/vendor/etc/init"
+run --device dw100u-silver --apply --backup-dir "$T/b13"
+check "symlinked parent: refused" test "$RC" != 0
+check "...says outside /vendor" has 'outside /vendor'
+check "...nothing written through the link" test "$(tree_hash)" = "$before"
+check "...nothing created in /data" test "$(ls "$FAKE/data")" = sentinel
+check "...vendor back to ro" grep -q ' ro,' "$FAKE/proc/mounts"
+new_fake; before=$(tree_hash)
+mkdir -p "$FAKE/vendor/lib"; ln -s "$FAKE/data" "$FAKE/vendor/lib/modules"
+mkdir -p "$T/mods2"; printf '\177ELF' >"$T/mods2/sprdwl_ng.ko"
+run --device dw100u-silver --apply --backup-dir "$T/b14" --modules-dir "$T/mods2"
+check "symlinked modules dir: refused" test "$RC" != 0
+check "...nothing created in /data" test "$(ls "$FAKE/data")" = sentinel
+new_fake; before=$(tree_hash)
+mkdir -p "$FAKE/vendor/etc/init/hw"
+echo precious >"$FAKE/data/target"; ln -s "$FAKE/data/target" "$FAKE/vendor/ueventd.rc.new"
+run --device dw100u-silver --apply --backup-dir "$T/b15"
+check "pre-existing .new symlink: refused" test "$RC" != 0
+check "...says symlink" has 'symlink'
+check "...the link target is untouched" test "$(cat "$FAKE/data/target")" = precious
+check "...the link is still there" test -L "$FAKE/vendor/ueventd.rc.new"
+new_fake; before=$(tree_hash)
+echo precious >"$FAKE/data/target"; ln -s "$FAKE/data/target" "$FAKE/vendor/ueventd.rc"
+run --device dw100u-silver --apply --backup-dir "$T/b16"
+check "target that is a symlink: refused" test "$RC" != 0
+check "...the link target is untouched" test "$(cat "$FAKE/data/target")" = precious
+
+echo "-- remount ro must be verified"
+new_fake
+FAKE_RO_FAILS=1; export FAKE_RO_FAILS
+run --device dw100u-silver --apply --backup-dir "$T/b17"
+check "ro stays rw: exit non-zero" test "$RC" != 0
+check "...says still read-write" has 'still read-write'
+check "...does not claim done" lacks '^== done'
+check "...remount ro tried at least 3 times (call, retry, trap)" test "$(grep -c 'remount,ro' "$FAKE/ops.log")" -ge 3
+unset FAKE_RO_FAILS
+new_fake
+run --device dw100u-silver --apply --backup-dir "$T/b18"
+check "ro ok: exit 0 and ro in /proc/mounts" bash -c "test '$RC' = 0 && grep -q ' ro,' '$FAKE/proc/mounts'"
 
 echo "-- verity"
 FAKE_VERITY=1; export FAKE_VERITY
