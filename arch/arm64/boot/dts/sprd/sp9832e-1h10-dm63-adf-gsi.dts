@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * DM63 ADF board (sp9832e-1h10-dm63-adf.dts) for an Android 14 GSI, see
+ * devices/GSI_414.md.
+ *
+ * Android 10+ first-stage init reads the DT fstab before the ramdisk one. The
+ * stock fstab (sp9832e-watch-firmware.dtsi, needed by the stock 8.1 init) has
+ * "wait,avb" on /system and /vendor, which would make it AVB-verify the GSI
+ * system, so the GSI variants drop it and the ramdisk fstab mounts them. The
+ * vbmeta node stays.
+ */
+
+#include "sp9832e-1h10-dm63-adf.dts"
+
+/delete-node/ &{/firmware/android/fstab};

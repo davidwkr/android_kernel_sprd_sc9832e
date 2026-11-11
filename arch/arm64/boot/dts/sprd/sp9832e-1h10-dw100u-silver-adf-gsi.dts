@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * DW100U silver ADF board (sp9832e-1h10-dw100u-silver-adf.dts) for an
+ * Android 14 GSI. Without the DT fstab, as sp9832e-1h10-dm63-adf-gsi.dts
+ * explains: the ramdisk fstab mounts /system and /vendor, without AVB.
+ */
+
+#include "sp9832e-1h10-dw100u-silver-adf.dts"
+
+/delete-node/ &{/firmware/android/fstab};
