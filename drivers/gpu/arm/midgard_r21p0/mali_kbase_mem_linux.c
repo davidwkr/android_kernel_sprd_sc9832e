@@ -733,10 +733,23 @@ bool kbase_mem_evictable_unmake(struct kbase_mem_phy_alloc *gpu_alloc)
 			 * ... and grow the mapping back to its
 			 * pre-eviction size.
 			 */
-			if (!err)
+			if (!err) {
 				err = kbase_mem_grow_gpu_mapping(kctx,
 						gpu_alloc->reg,
 						gpu_alloc->evicted, 0);
+				/*
+				 * Don't keep unmapped backing. evicted is
+				 * cleared first so the free is accounted
+				 * like the allocation above.
+				 */
+				if (err) {
+					size_t n = gpu_alloc->evicted;
+
+					gpu_alloc->evicted = 0;
+					kbase_free_phy_pages_helper(gpu_alloc,
+							n);
+				}
+			}
 
 			gpu_alloc->evicted = 0;
 		}

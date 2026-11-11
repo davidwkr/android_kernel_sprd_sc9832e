@@ -2274,11 +2274,20 @@ struct kbase_va_region *kbase_jit_allocate(struct kbase_context *kctx,
 			ret = kbase_mem_grow_gpu_mapping(kctx, reg,
 					info->commit_pages, old_size);
 			/*
-			 * The grow failed so put the allocation back in the
+			 * The grow failed so drop the backing just added,
+			 * which has no GPU mapping: otherwise a later reuse
+			 * with a smaller request would skip the grow and
+			 * leave holes. Then put the allocation back in the
 			 * pool and return failure.
 			 */
-			if (ret)
+			if (ret) {
+				kbase_free_phy_pages_helper(reg->gpu_alloc,
+						delta);
+				if (reg->cpu_alloc != reg->gpu_alloc)
+					kbase_free_phy_pages_helper(
+							reg->cpu_alloc, delta);
 				goto update_failed;
+			}
 		}
 
 		/*
@@ -2323,11 +2332,13 @@ update_failed:
 	 * An update to an allocation from the pool failed, chances
 	 * are slim a new allocation would fair any better so return
 	 * the allocation to the pool and return the function with failure.
+	 *
+	 * Do what kbase_jit_free() does: the region goes back into the pool
+	 * together with becoming evictable again (the backing was made
+	 * non-reclaimable by kbase_mem_evictable_unmake()), under reg_lock.
 	 */
+	kbase_mem_evictable_make_jit(reg->gpu_alloc, reg);
 	kbase_gpu_vm_unlock(kctx);
-	mutex_lock(&kctx->jit_evict_lock);
-	list_move(&reg->jit_node, &kctx->jit_pool_head);
-	mutex_unlock(&kctx->jit_evict_lock);
 out_unlocked:
 	return NULL;
 }
