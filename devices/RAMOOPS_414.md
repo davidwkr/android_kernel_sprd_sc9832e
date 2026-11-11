@@ -52,8 +52,10 @@ bootargs:
 - the zone sizes stay stock (record, console, pmsg 32 KiB each; the rest of the 256 KiB is oops records),
   so the stock 4.4 kernel reads what 4.14 wrote: ramoops finds the zones by offset, and a different
   console size would move them. The console zone is a ring: what is kept is the tail of the boot.
-- `unbuffered`: an uncached mapping, so nothing waits in a write buffer if the SoC is reset (the default is
-  write-combining).
+- No `unbuffered`: the default write-combining mapping is kept, as on stock. On arm64 `unbuffered` maps the
+  region as Device-nGnRnE, and the pmsg path copies from userspace with wide, possibly unaligned stores
+  (`__copy_from_user` in `fs/pstore/ram_core.c`), which fault on Device memory. A write-combined store may
+  still sit in a write buffer at an abrupt SoC reset; panics and oopses flush through the normal path.
 - `loglevel=1` of the stock bootargs becomes `loglevel=7`. At 1 almost nothing reaches any console, the
   pstore console included, so the log would be empty. The bootloader may still override `bootargs`; check
   `/proc/cmdline` of a booting kernel if the log looks empty.
@@ -86,7 +88,7 @@ way that script does).
        mount -t pstore pstore /sys/fs/pstore 2>/dev/null   # Android mounts it by itself
        ls /sys/fs/pstore
        cat /sys/fs/pstore/console-ramoops*   # console of the previous boot (the failed boot's tail)
-       cat /sys/fs/pstore/dmesg-ramoops-*    # oops/panic records, newest has the highest number
+       cat /sys/fs/pstore/dmesg-ramoops-*    # oops/panic records; slots are circular, use the timestamps inside, not the number
        cat /sys/fs/pstore/pmsg-ramoops-*     # userspace pmsg (Android logcat), if any
 
    Files are removed from pstore (and the buffer freed) by `rm`; copy them off first.
@@ -104,7 +106,7 @@ way that script does).
 - **Early boot.** Nothing is logged before `ramoops` probes (`arch_initcall_sync`); a hang before that
   (earlycon-only stage) needs the UART. A hang later is captured.
 - **Mapping alias.** Like the stock kernel, the region stays in the kernel linear map (cached) and is also
-  mapped uncached by ramoops. Nothing else touches it, so this has no effect in practice; marking the
+  mapped write-combining by ramoops. Nothing else touches it, so this has no effect in practice; marking the
   node `no-map` would remove the alias but moves ramoops to the `ioremap` path, which was not tried.
 - **Size.** The region is 256 KiB: fine for a boot tail, small for a full log. Do not enlarge it without
   checking the modem region that starts at 0x89600000.
