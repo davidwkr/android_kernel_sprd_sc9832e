@@ -81,6 +81,10 @@ The ioctl is reachable from the HAL domain. The 4.4 driver had no bounds on the 
   clocks are leaked on purpose (the block may still do DMA into them), the error is logged once, and new jobs are
   refused with `-EIO` until reboot. The release fence of that job is signaled with `-EIO` too, and the queued
   jobs are failed with `-EIO` and released normally (the block never touched them).
+  System suspend is then refused with `-EIO` (the leaked buffers may still be written), so a broken core keeps the
+  watch awake until reboot.
+- Teardown disables the shared GSP interrupt line only while it quiesces the core and re-enables it after
+  `free_irq()`, so other users of the line keep their interrupts.
 - Only the kthread worker ends a job. Admission is closed on the queue itself (broken or removal), so an ioctl
   past the early check cannot enqueue; removal quiesces the irq line and the timer, then a shutdown work on the
   worker resets the block, cancels the job in flight and fails the queued ones, and only then is anything freed.

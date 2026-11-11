@@ -628,6 +628,8 @@ void gsp_core_deinit(struct gsp_core *core)
 		free_irq(core->irq, core);
 		core->irq_requested = false;
 	}
+	/* the line is shared: balance disable_irq() for the other users */
+	enable_irq(core->irq);
 	kthread_destroy_worker(core->kworker);
 	core->kworker = NULL;
 
@@ -677,6 +679,16 @@ int gsp_core_suspend(struct gsp_core *core)
 		GSP_ERR("core[%d] suspend wait timeout\n", core->id);
 		gsp_core_resume(core);
 		return -EBUSY;
+	}
+
+	/*
+	 * A broken core is idle but its last job may still be doing DMA into
+	 * the buffers it kept: the system must not sleep under it.
+	 */
+	if (core->broken) {
+		GSP_ERR("core[%d] is broken, refusing to suspend\n", core->id);
+		gsp_core_resume(core);
+		return -EIO;
 	}
 
 	return 0;
