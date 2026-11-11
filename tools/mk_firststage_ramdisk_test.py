@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0
+#
+# Tests for mk_firststage_ramdisk.py on synthetic ELF stubs (no vendor
+# binaries). Run: python3 -I tools/mk_firststage_ramdisk_test.py
+
+import gzip
+import hashlib
+import importlib.util
+import os
+import struct
+import subprocess
+import sys
+import tempfile
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+TOOL = os.path.join(HERE, 'mk_firststage_ramdisk.py')
+_spec = importlib.util.spec_from_file_location('mk_firststage_ramdisk', TOOL)
+mk = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(mk)
+FSTAB = os.path.join(HERE, '..', 'devices', 'common', 'gsi',
+                     'fstab.sl8541e_1h10')
+SYS = (b'/dev/block/by-name/system /system ext4 ro,barrier=1 '
+       b'wait,first_stage_mount\n')
+VND = SYS.replace(b'system', b'vendor')
+
+
+def elf(cls=1, mach=40, typ=2, ptypes=(1, 1), data=1, phentsize=None,
+        phoff=None):
+    """Minimal ELF: header plus the program header table."""
+    sz = 32 if cls == 1 else 56
+    ps = sz if phentsize is None else phentsize
+    hsz = 52 if cls == 1 else 64
+    off = hsz if phoff is None else phoff
+    ident = b'\x7fELF' + bytes([cls, data, 1]) + b'\0' * 9
+    if cls == 1:
+        h = ident + struct.pack('<HHIIIIIHHHHHH', typ, mach, 1, 0x8000, off,
+                                0, 0, hsz, ps, len(ptypes), 0, 0, 0)
+    else:
+        h = ident + struct.pack('<HHIQQQIHHHHHH', typ, mach, 1, 0x8000, off,
+                                0, 0, hsz, ps, len(ptypes), 0, 0, 0)
+    h = h.ljust(hsz, b'\0')
+    return h.ljust(off, b'\0') + b''.join(
+        struct.pack('<I', t).ljust(sz, b'\0') for t in ptypes) + b'code'
+
+
+STATIC = elf()
+DYNAMIC = elf(ptypes=(6, 3, 1, 1, 2))
+FAR_PHOFF = STATIC[:28] + struct.pack('<I', 1 << 20) + STATIC[32:]
+
+
+class Case(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.TemporaryDirectory()
+        self.addCleanup(self.d.cleanup)
+
+    def path(self, n):
+        return os.path.join(self.d.name, n)
+
+    def put(self, n, data):
+        with open(self.path(n), 'wb') as f:
+            f.write(data)
+        return self.path(n)
+
+    def run_tool(self, init=STATIC, fstab=SYS + VND, out='rd.gz', sha=None,
+                 extra=()):
+        i = self.put('init', init)
+        f = self.put('fstab', fstab)
+        sha = sha or hashlib.sha256(init).hexdigest()
+        return subprocess.run([sys.executable, '-I', TOOL, '--init', i,
+                               '--init-sha256', sha, '--fstab', f,
+                               '-o', self.path(out)] + list(extra),
+                              capture_output=True, text=True)
+
+    def unpack(self, p):
+        with open(p, 'rb') as f:
+            c = gzip.decompress(f.read())
+        out, order, pos = {}, [], 0
+        while True:
+            fl = [int(c[pos + 6 + 8 * i:pos + 14 + 8 * i], 16)
+                  for i in range(13)]
+            ns, sz = fl[11], fl[6]
+            nm = c[pos + 110:pos + 110 + ns - 1].decode()
+            do = (pos + 110 + ns + 3) & ~3
+            out[nm] = (fl, c[do:do + sz])
+            order.append(nm)
+            pos = (do + sz + 3) & ~3
+            if nm == 'TRAILER!!!':
+                self.assertEqual(pos, len(c))
+                return out, order
+
+    def refused(self, msg, **kw):
+        r = self.run_tool(**kw)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn(msg, r.stderr)
+        self.assertFalse(os.path.exists(self.path(kw.get('out', 'rd.gz'))))
+
+    def test_layout(self):
+        r = self.run_tool()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        ents, order = self.unpack(self.path('rd.gz'))
+        self.assertEqual(order[:-1], sorted(order[:-1]))
+        self.assertEqual(order[-1], 'TRAILER!!!')
+        self.assertEqual(set(order[:-1]), set(mk.DIRS) | {
+            'init', 'fstab.sl8541e_1h10',
+            'first_stage_ramdisk/fstab.sl8541e_1h10'})
+        for n in mk.DIRS:
+            self.assertEqual(ents[n][0][1], 0o040755, n)
+            self.assertEqual(ents[n][1], b'')
+        for n in order[:-1]:
+            fl = ents[n][0]
+            self.assertEqual((fl[2], fl[3], fl[5]), (0, 0, 0), n)
+        self.assertEqual(ents['init'][0][1], 0o100750)
+        self.assertEqual(ents['init'][1], STATIC)
+        for n in ('fstab.sl8541e_1h10',
+                  'first_stage_ramdisk/fstab.sl8541e_1h10'):
+            self.assertEqual(ents[n][0][1], 0o100644)
+            self.assertEqual(ents[n][1], SYS + VND)
+        inos = [ents[n][0][0] for n in order[:-1]]
+        self.assertEqual(inos, list(range(1, len(inos) + 1)))
+        # parents come before children
+        self.assertLess(order.index('first_stage_ramdisk'),
+                        order.index('first_stage_ramdisk/fstab.sl8541e_1h10'))
+
+    def test_deterministic_and_manifest(self):
+        m1, m2 = self.path('m1'), self.path('m2')
+        self.assertEqual(self.run_tool(out='a.gz', extra=('--manifest', m1,)
+                                       ).returncode, 0)
+        self.assertEqual(self.run_tool(out='b.gz', extra=('--manifest', m2,)
+                                       ).returncode, 0)
+        with open(self.path('a.gz'), 'rb') as a, open(self.path('b.gz'),
+                                                      'rb') as b:
+            self.assertEqual(a.read(), b.read())
+        with open(m1) as a, open(m2) as b:
+            man = a.read()
+            self.assertEqual(man, b.read())
+        lines = [x.split() for x in man.splitlines()]
+        self.assertEqual([x[2] for x in lines],
+                         sorted(x[2] for x in lines))
+        d = {x[2]: x for x in lines}
+        self.assertEqual(d['init'][0], hashlib.sha256(STATIC).hexdigest())
+        self.assertEqual(d['init'][1], '0750')
+        self.assertEqual(d['dev'][0], '-' * 64)
+        self.assertEqual(d['fstab.sl8541e_1h10'][0],
+                         hashlib.sha256(SYS + VND).hexdigest())
+
+    def test_hardware(self):
+        r = self.run_tool(out='h.gz', extra=('--hardware', 'x_1'))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        _, order = self.unpack(self.path('h.gz'))
+        self.assertIn('first_stage_ramdisk/fstab.x_1', order)
+        self.refused('bad --hardware', out='h2.gz', 
+                     extra=('--hardware', '../x'))
+
+    def test_init_sha_mismatch(self):
+        self.refused('does not match --init-sha256', sha='0' * 64)
+        self.refused('64 hex digits', sha='abc')
+
+    def test_init_dynamic_and_not_elf(self):
+        self.refused('PT_INTERP', init=DYNAMIC)
+        self.refused('not an ELF', init=b'#!/bin/sh\n' + b'x' * 100)
+
+    def test_init_header_checks(self):
+        for init, msg in ((elf(cls=2, mach=183), 'ELF class 2'),
+                          (elf(mach=183), 'e_machine 183'),
+                          (elf(typ=1), 'not an executable'),
+                          (elf(typ=4), 'not an executable'),
+                          (elf(data=2), 'little-endian'),
+                          (elf(ptypes=(4, 4)), 'no PT_LOAD'),
+                          (elf(ptypes=()), 'program headers'),
+                          (elf(phentsize=20), 'e_phentsize'),
+                          (FAR_PHOFF, 'outside the file'),
+                          (STATIC[:40], 'not an ELF')):
+            self.refused(msg, init=init)
+        self.assertEqual(self.run_tool(init=elf(typ=3), out='pie.gz'
+                                       ).returncode, 0)
+
+    def test_arch(self):
+        a64 = elf(cls=2, mach=183)
+        self.refused('ELF class 2', init=a64)
+        r = self.run_tool(init=a64, out='a64.gz', extra=('--arch', 'arm64'))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.refused('ELF class 1', out='x.gz', extra=('--arch', 'arm64'))
+        r = self.run_tool(init=elf(cls=2, mach=183, ptypes=(3, 1)),
+                          out='x.gz', extra=('--arch', 'arm64'))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('PT_INTERP', r.stderr)
+
+    def test_fstab_validation(self):
+        for fs, msg in ((b'', 'fstab is empty'),
+                        (SYS.rstrip(b'\n'), 'end with a newline'),
+                        (SYS.replace(b'ro,barrier=1 ', b''), '4 fields'),
+                        (SYS + b'x y\n', '2 fields'),
+                        (SYS + VND.replace(b'/vendor', b'/data'),
+                         'mount point /data'),
+                        (SYS.replace(b'/system ', b'/product '),
+                         'mount point /product'),
+                        (SYS + SYS, 'listed twice'),
+                        (VND, 'no /system line'),
+                        (b'# c\n\n', 'no /system line'),
+                        (SYS.replace(b',first_stage_mount', b''),
+                         'first_stage_mount missing'),
+                        (SYS.replace(b'wait,', b'wait,avb,'), 'avb flag'),
+                        (SYS.replace(b'wait,', b'avb=vbmeta,'), 'avb flag'),
+                        (SYS.replace(b'/dev/block', b'/tmp'),
+                         '/dev/block path'),
+                        (SYS.replace(b'ext4', b'ext\xc3\xa94'),
+                         'printable ASCII'),
+                        (SYS + b'x' * 5000 + b'\n', 'over 4096 bytes')):
+            self.refused(msg, fstab=fs)
+
+    def test_allow_avb_and_comments(self):
+        fs = b'# first stage\n\n' + SYS.replace(b'wait,', b'wait,avb,')
+        r = self.run_tool(fstab=fs, out='avb.gz', extra=('--allow-avb',))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        ents, _ = self.unpack(self.path('avb.gz'))
+        self.assertEqual(ents['fstab.sl8541e_1h10'][1], fs)   # verbatim
+
+    def test_shipped_fstab(self):
+        with open(FSTAB, 'rb') as f:
+            fs = f.read()
+        self.assertEqual(mk.check_fstab(fs, False), fs)
+
+
+if __name__ == '__main__':
+    unittest.main()
