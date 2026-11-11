@@ -654,7 +654,8 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 
 			if (vma_adjust(vma, vma->vm_start, addr + new_len,
 				       vma->vm_pgoff, NULL)) {
-				vm_unacct_memory(pages);
+				if (vma->vm_flags & VM_ACCOUNT)
+					vm_unacct_memory(pages);
 				ret = -ENOMEM;
 				goto out;
 			}

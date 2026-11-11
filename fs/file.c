@@ -637,7 +637,12 @@ static struct file *pick_file(struct files_struct *files, unsigned fd)
 	struct fdtable *fdt;
 
 #ifdef CONFIG_ION_SPRD
-	get_ion_user_info(fd, false);
+	/*
+	 * The hook looks fd up in current->files; close_range(UNSHARE)
+	 * closes in a private copy, so only call it for the caller's table.
+	 */
+	if (files == current->files)
+		get_ion_user_info(fd, false);
 #endif
 	spin_lock(&files->file_lock);
 	fdt = files_fdtable(files);
@@ -700,14 +705,20 @@ static inline void __range_cloexec(struct files_struct *cur_fds,
 static inline void __range_close(struct files_struct *cur_fds, unsigned int fd,
 				 unsigned int max_fd)
 {
+	unsigned int n;
+
+	/* cap to the last valid index, so ~0U cannot wrap the loop */
+	rcu_read_lock();
+	n = last_fd(files_fdtable(cur_fds));
+	rcu_read_unlock();
+	max_fd = min(max_fd, n);
+
 	while (fd <= max_fd) {
 		struct file *file;
 
 		file = pick_file(cur_fds, fd++);
-		if (!file)
-			continue;
-
-		filp_close(file, cur_fds);
+		if (file)
+			filp_close(file, cur_fds);
 		cond_resched();
 	}
 }

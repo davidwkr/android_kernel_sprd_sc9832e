@@ -6160,8 +6160,11 @@ static int __init binder_init(void)
 				    &binder_transaction_log_fops);
 	}
 
-	if (!IS_ENABLED(CONFIG_ANDROID_BINDERFS) &&
-	    strcmp(binder_devices_param, "") != 0) {
+	/*
+	 * Unlike upstream, keep the misc devices when binderfs is built in:
+	 * the stock 8.1 userspace never mounts binderfs and opens /dev/binder.
+	 */
+	if (strcmp(binder_devices_param, "") != 0) {
 		/*
 		 * Copy the module_parameter string, because we don't want to
 		 * tokenize it in-place.
