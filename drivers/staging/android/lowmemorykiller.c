@@ -877,7 +877,8 @@ static unsigned long multiple_oom_killer(unsigned long *freed)
 		struct task_struct *p;
 		int adj;
 
-		if (tsk->flags & PF_KTHREAD)
+		/* SIGKILL is ignored by global init: never count it as freed */
+		if (tsk->flags & PF_KTHREAD || is_global_init(tsk))
 			continue;
 
 		if (time_before_eq(jiffies, oom_deathpending_timeout)) {
@@ -990,7 +991,8 @@ static unsigned long oom_killer(unsigned long *freed)
 		struct task_struct *p;
 		int oom_score_adj;
 
-		if (tsk->flags & PF_KTHREAD)
+		/* SIGKILL is ignored by global init: never count it as freed */
+		if (tsk->flags & PF_KTHREAD || is_global_init(tsk))
 			continue;
 
 		if (time_before_eq(jiffies, oom_deathpending_timeout)) {
