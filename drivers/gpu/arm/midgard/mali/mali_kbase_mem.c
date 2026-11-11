@@ -1537,6 +1537,15 @@ int kbase_mem_free_region(struct kbase_context *kctx, struct kbase_va_region *re
 	}
 
 	/*
+	 * Take the allocation off the eviction list under jit_evict_lock
+	 * before clearing alloc->reg below: the shrinker dereferences
+	 * alloc->reg for every allocation on that list.
+	 */
+	mutex_lock(&kctx->jit_evict_lock);
+	list_del_init(&reg->gpu_alloc->evict_node);
+	mutex_unlock(&kctx->jit_evict_lock);
+
+	/*
 	 * Unlink the physical allocation before unmaking it evictable so
 	 * that the allocation isn't grown back to its last backed size
 	 * as we're going to unmap it anyway.
