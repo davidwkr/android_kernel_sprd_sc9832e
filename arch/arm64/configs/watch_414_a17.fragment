@@ -1,0 +1,6 @@
+# Kernel features needed by Android 17 userspace. Merge on top of
+# sprd_sharkle_defconfig after watch_414.fragment, see devices/A17_KERNEL.md
+
+# netbpfload writes /proc/sys/net/core/bpf_jit_enable and bpf_jit_kallsyms and
+# aborts boot if either node is missing; arm64 has HAVE_EBPF_JIT.
+CONFIG_BPF_JIT=y
