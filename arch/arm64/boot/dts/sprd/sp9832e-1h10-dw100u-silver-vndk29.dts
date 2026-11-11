@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * DW100U silver board (sp9832e-1h10-dw100u-silver.dts) for the third-party
+ * Android 10 VNDK 29 vendor. Without the DT fstab, as
+ * sp9832e-1h10-dm63-vndk29.dts explains; the DW100U keeps its hrs3xxx heart
+ * rate and goodix fingerprint nodes and its own panel list.
+ */
+
+#include "sp9832e-1h10-dw100u-silver.dts"
+
+/delete-node/ &{/firmware/android/fstab};

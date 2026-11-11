@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * DM63 board (sp9832e-1h10-dm63.dts) for the third-party Android 10 VNDK 29
+ * vendor, see devices/VNDK29_44.md.
+ *
+ * Android 10 first-stage init reads the DT fstab before the ramdisk one. The
+ * stock fstab (needed by the stock 8.1 init) has "wait,avb" on /system and
+ * /vendor, which would make it AVB-verify them, so this variant drops it and
+ * the ramdisk fstab (fstab.sl8541e_1h10 of that vendor) mounts them, as the
+ * package's own DTB does (vbmeta only, no fstab). Nothing else changes: the
+ * package DTB's SIPC, GNSS and audio nodes are the same as the stock ones, and
+ * the DM63 keeps its hrs3xxx heart rate and af6837 compass nodes.
+ */
+
+#include "sp9832e-1h10-dm63.dts"
+
+/delete-node/ &{/firmware/android/fstab};
