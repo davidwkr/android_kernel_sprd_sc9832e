@@ -29,3 +29,10 @@ CONFIG_PID_NS=y
 # CONFIG_IPC_NS is not set
 # CONFIG_USER_NS is not set
 # CONFIG_NET_NS is not set
+
+# The stock vibrator HAL writes /sys/class/timed_output/vibrator/enable: the
+# timed_output class plus the SPRD PMIC driver replace the input FF one on the
+# same DT node
+CONFIG_ANDROID_TIMED_OUTPUT=y
+CONFIG_SPRD_VIBRATOR=y
+# CONFIG_INPUT_SC27XX_VIBRA is not set
