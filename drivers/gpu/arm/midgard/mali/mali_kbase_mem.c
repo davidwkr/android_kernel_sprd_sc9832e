@@ -3235,6 +3235,12 @@ void kbase_jit_free(struct kbase_context *kctx, struct kbase_va_region *reg)
 {
 	u64 old_pages;
 
+	/* Hold reg_lock from the size snapshot until the backing is released
+	 * so that a CPU fault or MEM_COMMIT can't see the region between the
+	 * mapping invalidation and the page free.
+	 */
+	kbase_gpu_vm_lock(kctx);
+
 	/* Get current size of JIT region */
 	old_pages = kbase_reg_current_backed_size(reg);
 	if (reg->initial_commit < old_pages) {
@@ -3265,7 +3271,6 @@ void kbase_jit_free(struct kbase_context *kctx, struct kbase_va_region *reg)
 
 	kbase_mem_evictable_mark_reclaim(reg->gpu_alloc);
 
-	kbase_gpu_vm_lock(kctx);
 	reg->flags |= KBASE_REG_DONT_NEED;
 	kbase_mem_shrink_cpu_mapping(kctx, reg, 0, reg->gpu_alloc->nents);
 	kbase_gpu_vm_unlock(kctx);
