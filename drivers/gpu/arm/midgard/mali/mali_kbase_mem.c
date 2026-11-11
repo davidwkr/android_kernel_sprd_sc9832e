@@ -3173,11 +3173,9 @@ struct kbase_va_region *kbase_jit_allocate(struct kbase_context *kctx,
 			flags |= BASE_MEM_TILER_ALIGN_TOP;
 
 		reg = kbase_mem_alloc(kctx, info->va_pages, info->commit_pages,
-				info->extent, &flags, &gpu_addr);
+				info->extent, &flags, &gpu_addr, true);
 		if (!reg)
 			goto out_unlocked;
-
-		reg->flags |= KBASE_REG_JIT;
 
 		mutex_lock(&kctx->jit_evict_lock);
 		list_add(&reg->jit_node, &kctx->jit_active_head);

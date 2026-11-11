@@ -229,7 +229,7 @@ void kbase_phy_alloc_mapping_put(struct kbase_context *kctx,
 
 struct kbase_va_region *kbase_mem_alloc(struct kbase_context *kctx,
 		u64 va_pages, u64 commit_pages, u64 extent, u64 *flags,
-		u64 *gpu_va)
+		u64 *gpu_va, bool jit_alloc)
 {
 	int zone;
 	struct kbase_va_region *reg;
@@ -299,6 +299,14 @@ struct kbase_va_region *kbase_mem_alloc(struct kbase_context *kctx,
 
 	if (kbase_update_region_flags(kctx, reg, *flags) != 0)
 		goto invalid_flags;
+
+	/* A JIT region must carry KBASE_REG_JIT before it is published to the
+	 * address space below: MEM_FREE, MEM_FLAGS_CHANGE and MEM_ALIAS refuse
+	 * JIT regions, so setting the flag after kbase_mem_alloc() returned
+	 * left a window in which they could still act on it (CVE-2022-38181).
+	 */
+	if (jit_alloc)
+		reg->flags |= KBASE_REG_JIT;
 
 	if (kbase_reg_prepare_native(reg, kctx) != 0) {
 		dev_err(dev, "Failed to prepare region");
