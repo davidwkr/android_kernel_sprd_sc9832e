@@ -148,7 +148,8 @@ s/(Account ?\{name=)[^,}]*/\1<EMAIL>/gI
 s/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/<EMAIL>/g
 s/([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}/<MAC>/g
 s/((imei|meid|esn|imsi|iccid|msisdn|phone ?number|subscriber ?id|device ?id)[A-Za-z0-9_.-]*[=: ]+"?)[0-9A-Za-z]{6,}([ ,;\/]+[A-Za-z]*[0-9][0-9A-Za-z]{5,})*/\1<ID>/gI
-s/\b(0x)?[0-9A-Fa-f]{16}\b/<KADDR>/g
+s/\[<(0x)?ffff[0-9A-Fa-f]{12}>\]/[<KADDR>]/gI
+s/\b(0x)?ffff[0-9A-Fa-f]{12}\b/<KADDR>/gI
 :iccid
 s/(^|[^0-9])89[0-9]{17,18}([^0-9]|$)/\1<ICCID>\2/g
 t iccid
@@ -306,8 +307,8 @@ grep_sec() { # title, file, ERE
   echo "  (the raw dumps are not stored). Not collected: accounts, packages, settings, contacts."
   echo "  Redacted: adb serial, serial/IMEI/MEID/IMSI/ICCID values, MAC, e-mail/account names,"
   echo "  phone numbers, coordinates, Wi-Fi network names, kernel addresses (<SERIAL> <REDACTED> <ID> <ICCID>"
-  echo "  <MAC> <EMAIL> <PHONE> <LATLON> <SSID> <KADDR>). <KADDR> is every 16-hex-digit value, 0x or not: raw"
-  echo "  64-bit kernel addresses and %p-hashed pointers print alike, so both go; symbols, +offset/size,"
+  echo "  <MAC> <EMAIL> <PHONE> <LATLON> <SSID> <KADDR>). <KADDR> is a raw arm64 kernel address (16 hex digits"
+  echo "  starting ffff, 0x or not); %p-hashed pointers and register values are kept; symbols, +offset/size,"
   echo "  timestamps and register names stay. Package and process names, and anything the patterns do not"
   echo "  recognise, are as the device printed them: read every file before sharing."
   echo
@@ -341,7 +342,7 @@ leak 'e-mail' '[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z]{2,}'
 leak 'MAC-like value' '([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}'
 leak 'IMEI/IMSI-like digits' '(^|[^0-9])[0-9]{14,15}([^0-9]|$)'
 leak 'ICCID-like digits' '(^|[^0-9])89[0-9]{17,18}([^0-9]|$)'
-leak 'kernel address' '(0x)?ffff[0-9a-f]{12}([^0-9a-f]|$)|(^|[^0-9A-Za-z])(0x)?[0-9a-f]{16}([^0-9A-Za-z]|$)'
+leak 'kernel address' '(^|[^0-9A-Za-z])(0x)?ffff[0-9a-f]{12}([^0-9A-Za-z]|$)'
 leak 'MEID-like hex' '(^|[^0-9A-Za-z])[0-9A-F]{14}([^0-9A-Za-z]|$)'
 leak 'coordinates' '-?[0-9]{1,3}\.[0-9]{4,}[ ,;/]+-?[0-9]{1,3}\.[0-9]{4,}|Location\[[a-z]+ [-0-9]'
 leak 'latitude/longitude value' '(latitude|longitude|lat|lng)[ =:]+-?[0-9]'
