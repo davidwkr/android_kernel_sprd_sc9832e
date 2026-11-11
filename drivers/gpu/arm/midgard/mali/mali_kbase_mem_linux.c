@@ -1115,14 +1115,17 @@ static struct kbase_va_region *kbase_mem_from_user_buffer(
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 6, 0)
 	/* 4.4 stable (4.4.168+) has the gup_flags form of get_user_pages() */
 	faulted_pages = get_user_pages(current, current->mm, address, *va_pages,
-			reg->flags & KBASE_REG_GPU_WR ? FOLL_WRITE : 0,
+			reg->flags & (KBASE_REG_CPU_WR | KBASE_REG_GPU_WR) ?
+					FOLL_WRITE : 0,
 			pages, NULL);
 #elif LINUX_VERSION_CODE < KERNEL_VERSION(4, 9, 0)
 	faulted_pages = get_user_pages(address, *va_pages,
-			reg->flags & KBASE_REG_GPU_WR, 0, pages, NULL);
+			reg->flags & (KBASE_REG_CPU_WR | KBASE_REG_GPU_WR),
+			0, pages, NULL);
 #else
 	faulted_pages = get_user_pages(address, *va_pages,
-			reg->flags & KBASE_REG_GPU_WR ? FOLL_WRITE : 0,
+			reg->flags & (KBASE_REG_CPU_WR | KBASE_REG_GPU_WR) ?
+					FOLL_WRITE : 0,
 			pages, NULL);
 #endif
 
