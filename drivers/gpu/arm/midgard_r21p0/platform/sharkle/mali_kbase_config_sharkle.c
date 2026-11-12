@@ -1103,6 +1103,18 @@ int kbase_platform_get_init_freq(void)
 	return (gpu_dfs_ctx.freq_default->freq * FREQ_KHZ);
 }
 
+/*
+ * Highest frequency the board allows, from the DT "sprd,dfs-range-max" index
+ * (Hz). The stock driver only ever asked for frequencies inside that range;
+ * the devfreq governor clamps its requests to it (kbase_devfreq_target()).
+ */
+unsigned long kbase_platform_max_freq(void)
+{
+	if (!gpu_dfs_ctx.freq_range_max)
+		return 0;
+	return (unsigned long)gpu_dfs_ctx.freq_range_max->freq * FREQ_KHZ;
+}
+
 int kbase_platform_set_freq(int freq)
 {
 	int result = -1, index = -1;

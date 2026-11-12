@@ -86,6 +86,18 @@ kbase_devfreq_target(struct device *dev, unsigned long *target_freq, u32 flags)
 	u64 core_mask;
 
 	freq = *target_freq;
+#ifdef MALI_PLATFORM_SHARKLE
+	/*
+	 * The OPP table goes up to 680 MHz, but the board limit is
+	 * "sprd,dfs-range-max" (600 MHz on the watches), which the stock
+	 * driver honoured: never ask for more. Round down to an OPP at or
+	 * below the cap.
+	 */
+	if (kbase_platform_max_freq() && freq > kbase_platform_max_freq()) {
+		freq = kbase_platform_max_freq();
+		flags |= DEVFREQ_FLAG_LEAST_UPPER_BOUND;
+	}
+#endif
 
 	rcu_read_lock();
 	opp = devfreq_recommended_opp(dev, &freq, flags);

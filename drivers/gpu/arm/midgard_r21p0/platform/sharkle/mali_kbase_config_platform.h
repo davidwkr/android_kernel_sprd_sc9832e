@@ -75,6 +75,7 @@ extern struct kbase_platform_funcs_conf platform_sharkle_funcs;
 #ifdef CONFIG_MALI_DEVFREQ
 int kbase_platform_get_init_freq(void);
 int kbase_platform_set_freq(int freq);
+unsigned long kbase_platform_max_freq(void);
 
 #ifdef CONFIG_MALI_BOOST
 void kbase_platform_modify_target_freq(struct device *dev, unsigned long *target_freq);
