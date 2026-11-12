@@ -753,7 +753,16 @@ static int snd_pcm_hw_params(struct snd_pcm_substream *substream,
 
 		if (runtime->info & SNDRV_PCM_INFO_MMAP)
 			size = PAGE_ALIGN(size);
-		memset(runtime->dma_area, 0, size);
+		/*
+		 * Device buffers are ioremapped or mapped non-cacheable by the
+		 * platform driver; arm64 memset() zeroes with DC ZVA, which
+		 * takes an alignment fault on such memory.
+		 */
+		if (substream->dma_buffer.dev.type == SNDRV_DMA_TYPE_DEV ||
+		    substream->dma_buffer.dev.type == SNDRV_DMA_TYPE_DEV_IRAM)
+			memset_io((void __iomem *)runtime->dma_area, 0, size);
+		else
+			memset(runtime->dma_area, 0, size);
 	}
 
 	snd_pcm_timer_resolution_change(substream);
