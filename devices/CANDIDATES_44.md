@@ -12,10 +12,10 @@ only, reflash the normal image before a watch leaves the bench**).
 
 | Watch | Image | sha256 |
 |---|---|---|
-| DM63 | `dm63_mali_candidate.img` | `cf86bfe6fd26ddd269294d92caef26d8aa46969ec6375f9960dcdd105198f755` |
-| DM63 | `dm63_mali_candidate_BENCHDEBUG.img` | `ef3447a1bdb64398aef3a8ef57fa95ac0639fb6cde42a4f388e223fe11c0615f` |
-| DW100U silver | `dw100u-silver_mali_candidate.img` | `24974227ff9605ca472364a8b886b0b43cb29c6aed2d3b738320608f6602ee1f` |
-| DW100U silver | `dw100u-silver_mali_candidate_BENCHDEBUG.img` | `14670fd3c930cd519c0df0eb157921a557a1e11e4e55a1ce00750803877a9675` |
+| DM63 | `dm63_mali_candidate.img` | `3860de8d82b0fd97c874857a42113acaebe4b45e52362f6748c209d4fb0517e7` |
+| DM63 | `dm63_mali_candidate_BENCHDEBUG.img` | `ce41bfb5b37a910eb5b365e9e757979713eac32cd79ef82772053c6aac996b2e` |
+| DW100U silver | `dw100u-silver_mali_candidate.img` | `166466dcf14ffac8ed7ef1534857be0563057d3fa030809850f6adf0ac429212` |
+| DW100U silver | `dw100u-silver_mali_candidate_BENCHDEBUG.img` | `e3706b6e129c2823b8eed176c6df24419a2af419d60195b28968ca136eee08ba` |
 
 Build: `SFD=<stock images dir> devices/build_candidates_44.sh`; the BENCHDEBUG images need `BENCH_DEBUG=1` and
 `ADB_PUBKEY=<path>/adbkey.pub` too.
