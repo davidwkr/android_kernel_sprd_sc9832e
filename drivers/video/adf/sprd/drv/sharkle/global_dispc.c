@@ -21,17 +21,72 @@
 #include "sprd_dispc.h"
 
 static struct dispc_clk_context {
+	struct device_node *np;
 	uint32_t clk_src[DISPC_CLK_ID_MAX];
 	struct clk *clk_dispc_core_parent;
 	struct clk *clk_dispc_dpi_parent;
 	struct clk *clk_dispc_core;
 	struct clk *clk_dispc_dpi;
+	bool clk_enabled;
+	bool clk_warned;
 } dispc_clk_ctx;
 
 static struct dispc_glb_context {
+	struct device_node *np;
 	struct regmap *ap_ahb;
 	struct clk *clk_dispc_ahb_eb;
+	bool clk_enabled;
+	bool ap_ahb_warned;
+	bool clk_warned;
 } dispc_glb_ctx;
+
+/*
+ * The syscon and the clock provider may not be registered when parse_dt runs
+ * (the 4.14 clock driver is a platform driver), so look them up again on use,
+ * and log a missing one once instead of handing an error pointer on.
+ */
+static bool dispc_clk_get_one(struct device_node *np, const char *name,
+			      struct clk **clk, bool *warned)
+{
+	struct clk *tmp;
+
+	if (*clk)
+		return true;
+	if (!np)
+		return false;
+
+	tmp = of_clk_get_by_name(np, name);
+	if (IS_ERR(tmp)) {
+		if (!*warned) {
+			pr_err("read %s failed (%ld)\n", name, PTR_ERR(tmp));
+			*warned = true;
+		}
+		return false;
+	}
+
+	*clk = tmp;
+	return true;
+}
+
+static bool dispc_clk_get_all(struct dispc_clk_context *clk_ctx)
+{
+	bool ok = true;
+
+	ok &= dispc_clk_get_one(clk_ctx->np, "clk_dispc_core_parent",
+				&clk_ctx->clk_dispc_core_parent,
+				&clk_ctx->clk_warned);
+	ok &= dispc_clk_get_one(clk_ctx->np, "clk_dispc_dpi_parent",
+				&clk_ctx->clk_dispc_dpi_parent,
+				&clk_ctx->clk_warned);
+	ok &= dispc_clk_get_one(clk_ctx->np, "clk_dispc_core",
+				&clk_ctx->clk_dispc_core,
+				&clk_ctx->clk_warned);
+	ok &= dispc_clk_get_one(clk_ctx->np, "clk_dispc_dpi",
+				&clk_ctx->clk_dispc_dpi,
+				&clk_ctx->clk_warned);
+
+	return ok;
+}
 
 static int dispc_clk_parse_dt(struct dispc_context *ctx,
 				struct device_node *np)
@@ -40,14 +95,7 @@ static int dispc_clk_parse_dt(struct dispc_context *ctx,
 	int status = 0;
 	struct dispc_clk_context *clk_ctx = &dispc_clk_ctx;
 
-	clk_ctx->clk_dispc_core_parent =
-		of_clk_get_by_name(np, "clk_dispc_core_parent");
-	clk_ctx->clk_dispc_dpi_parent =
-		of_clk_get_by_name(np, "clk_dispc_dpi_parent");
-	clk_ctx->clk_dispc_core =
-		of_clk_get_by_name(np, "clk_dispc_core");
-	clk_ctx->clk_dispc_dpi =
-		of_clk_get_by_name(np, "clk_dispc_dpi");
+	clk_ctx->np = np;
 
 	ret = of_property_read_u32_array(np,
 			 "clock-src", clk_ctx->clk_src, 2);
@@ -59,30 +107,6 @@ static int dispc_clk_parse_dt(struct dispc_context *ctx,
 	ctx->dpi_clk_src = clk_ctx->clk_src[1];
 	pr_info("the dpi clock source from dts is %d\n", ctx->dpi_clk_src);
 
-	if (IS_ERR_OR_NULL(clk_ctx->clk_dispc_core_parent)) {
-		pr_err("read clk_dispc_core_parent failed\n");
-		clk_ctx->clk_dispc_core_parent = NULL;
-		status |= -1;
-	}
-
-	if (IS_ERR_OR_NULL(clk_ctx->clk_dispc_dpi_parent)) {
-		pr_err("read clk_dispc_dpi_parent failed\n");
-		clk_ctx->clk_dispc_dpi_parent = NULL;
-		status |= -1;
-	}
-
-	if (IS_ERR_OR_NULL(clk_ctx->clk_dispc_core)) {
-		pr_err("read clk_dispc_core failed\n");
-		clk_ctx->clk_dispc_core = NULL;
-		status |= -1;
-	}
-
-	if (IS_ERR_OR_NULL(clk_ctx->clk_dispc_dpi)) {
-		pr_err("read clk_dispc_dpi failed\n");
-		clk_ctx->clk_dispc_dpi = NULL;
-		status |= -1;
-	}
-
 	return status;
 }
 
@@ -91,6 +115,9 @@ static int dispc_clk_init(struct dispc_context *ctx)
 {
 	int ret = 0;
 	struct dispc_clk_context *clk_ctx = &dispc_clk_ctx;
+
+	if (!dispc_clk_get_all(clk_ctx))
+		return -ENODEV;
 
 	ret = clk_set_parent(clk_ctx->clk_dispc_core,
 			clk_ctx->clk_dispc_core_parent);
@@ -111,33 +138,37 @@ static int dispc_clk_enable(struct dispc_context *ctx)
 	int ret = -1;
 	struct dispc_clk_context *clk_ctx = &dispc_clk_ctx;
 
+	if (clk_ctx->clk_enabled)
+		return 0;
+	if (!dispc_clk_get_all(clk_ctx))
+		return -ENODEV;
+
 	ret = clk_prepare_enable(clk_ctx->clk_dispc_core);
 	if (ret) {
 		pr_err("enable clk_dispc_core error\n");
-		goto ERR_CLK_DISPC_CORE;
+		return ret;
 	}
 	ret = clk_prepare_enable(clk_ctx->clk_dispc_dpi);
 	if (ret) {
 		pr_err("enable clk_dispc_dpi error\n");
-		goto ERR_CLK_DISPC_DPI;
+		clk_disable_unprepare(clk_ctx->clk_dispc_core);
+		return ret;
 	}
 
+	clk_ctx->clk_enabled = true;
 	return 0;
-
-ERR_CLK_DISPC_DPI:
-	clk_disable_unprepare(clk_ctx->clk_dispc_dpi);
-ERR_CLK_DISPC_CORE:
-	clk_disable_unprepare(clk_ctx->clk_dispc_core);
-
-	return ret;
 }
 
 static int dispc_clk_disable(struct dispc_context *ctx)
 {
 	struct dispc_clk_context *clk_ctx = &dispc_clk_ctx;
 
+	if (!clk_ctx->clk_enabled)
+		return 0;
+
 	clk_disable_unprepare(clk_ctx->clk_dispc_dpi);
 	clk_disable_unprepare(clk_ctx->clk_dispc_core);
+	clk_ctx->clk_enabled = false;
 
 	clk_set_parent(clk_ctx->clk_dispc_dpi, NULL);
 	clk_set_parent(clk_ctx->clk_dispc_core, NULL);
@@ -158,6 +189,8 @@ static int dispc_clk_update(struct dispc_context *ctx, int clk_id, int val)
 
 	case DISPC_CLK_ID_DPI:
 		pr_info("dpi_clk = %d\n", val);
+		if (!dispc_clk_get_all(clk_ctx))
+			return -ENODEV;
 		ret = clk_set_rate(clk_ctx->clk_dispc_dpi, val);
 		if (ret)
 			pr_err("dispc update dbi clk rate fail\n");
@@ -171,23 +204,36 @@ static int dispc_clk_update(struct dispc_context *ctx, int clk_id, int val)
 	return ret;
 }
 
+static struct regmap *dispc_glb_regmap_get(struct dispc_glb_context *glb_ctx)
+{
+	struct regmap *map;
+
+	if (glb_ctx->ap_ahb)
+		return glb_ctx->ap_ahb;
+
+	map = syscon_regmap_lookup_by_compatible("sprd,sys-ap-ahb");
+	if (IS_ERR(map)) {
+		if (!glb_ctx->ap_ahb_warned) {
+			pr_err("no sprd,sys-ap-ahb regmap (%ld)\n",
+			       PTR_ERR(map));
+			glb_ctx->ap_ahb_warned = true;
+		}
+		return NULL;
+	}
+
+	glb_ctx->ap_ahb = map;
+	return map;
+}
+
 static int dispc_glb_parse_dt(struct dispc_context *ctx,
 				struct device_node *np)
 {
-	int status = 0;
 	struct dispc_glb_context *glb_ctx = &dispc_glb_ctx;
 
-	glb_ctx->ap_ahb = syscon_regmap_lookup_by_compatible(
-					    "sprd,sys-ap-ahb");
-	glb_ctx->clk_dispc_ahb_eb =
-		of_clk_get_by_name(np, "clk_dispc_ahb_eb");
+	glb_ctx->np = np;
+	dispc_glb_regmap_get(glb_ctx);
 
-	if (IS_ERR_OR_NULL(glb_ctx->clk_dispc_ahb_eb)) {
-		pr_err("read clk_dispc_ahb_eb failed\n");
-		glb_ctx->clk_dispc_ahb_eb = NULL;
-		status |= -1;
-	}
-	return status;
+	return 0;
 }
 
 static void dispc_glb_enable(struct dispc_context *ctx)
@@ -195,32 +241,45 @@ static void dispc_glb_enable(struct dispc_context *ctx)
 	int ret = 0;
 	struct dispc_glb_context *glb_ctx = &dispc_glb_ctx;
 
+	if (glb_ctx->clk_enabled)
+		return;
+	if (!dispc_clk_get_one(glb_ctx->np, "clk_dispc_ahb_eb",
+			       &glb_ctx->clk_dispc_ahb_eb,
+			       &glb_ctx->clk_warned))
+		return;
+
 	ret = clk_prepare_enable(glb_ctx->clk_dispc_ahb_eb);
 	if (ret) {
 		pr_err("enable clk_dispc_ahb_eb failed!\n");
-		goto ERR_CLK_DISPC_AHB_EB;
+		return;
 	}
-	return;
-ERR_CLK_DISPC_AHB_EB:
-	clk_disable_unprepare(glb_ctx->clk_dispc_ahb_eb);
+
+	glb_ctx->clk_enabled = true;
 }
 
 static void dispc_glb_disable(struct dispc_context *ctx)
 {
 	struct dispc_glb_context *glb_ctx = &dispc_glb_ctx;
 
+	if (!glb_ctx->clk_enabled)
+		return;
+
 	clk_disable_unprepare(glb_ctx->clk_dispc_ahb_eb);
+	glb_ctx->clk_enabled = false;
 }
 
 static void dispc_reset(struct dispc_context *ctx)
 {
-	struct dispc_glb_context *glb_ctx = &dispc_glb_ctx;
+	struct regmap *ap_ahb = dispc_glb_regmap_get(&dispc_glb_ctx);
 
-	regmap_update_bits(glb_ctx->ap_ahb,
+	if (!ap_ahb)
+		return;
+
+	regmap_update_bits(ap_ahb,
 		    REG_AP_AHB_AHB_RST, BIT_AP_AHB_DISPC_SOFT_RST,
 		    BIT_AP_AHB_DISPC_SOFT_RST);
 	udelay(10);
-	regmap_update_bits(glb_ctx->ap_ahb,
+	regmap_update_bits(ap_ahb,
 		    REG_AP_AHB_AHB_RST, BIT_AP_AHB_DISPC_SOFT_RST,
 		    (unsigned int)(~BIT_AP_AHB_DISPC_SOFT_RST));
 }

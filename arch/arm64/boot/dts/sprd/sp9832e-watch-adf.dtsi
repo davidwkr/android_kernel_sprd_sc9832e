@@ -53,6 +53,20 @@
 	};
 };
 
+/*
+ * The ADF glue (drivers/video/adf/sprd/drv/sharkle/global_*.c) finds the AP AHB
+ * and AON APB registers by compatible, like the 4.4 dts does; the 4.14 dtsi
+ * names them plain "syscon" (its DRM driver uses phandles). Without these the
+ * glue has no regmap and the D-PHY runtime suspend dereferences it.
+ */
+&ap_ahb_regs {
+	compatible = "sprd,sys-ap-ahb", "syscon";
+};
+
+&aon_apb_regs {
+	compatible = "sprd,sys-aon-apb", "syscon";
+};
+
 &dpu {
 	status = "disabled";
 };

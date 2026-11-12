@@ -380,12 +380,45 @@ Review findings in `drivers/trusty/trusty-ipc.c`, present in 4.4 and 4.14, fixed
 Build-tested only. Watch for `invalid msg_buf_max_size` in the probe (it would mean the TEE announces something
 unexpected).
 
+### Screen-off Oops in the ADF D-PHY glue (branch fixes/414-adf-dphy)
+
+The ADF boot (`dm63-414b6`) died at the first screen off: `Internal error: Oops: 96000005` in composer@2.1-se,
+`pc regmap_update_bits_base+0x34`, `lr dphy_glb_disable+0x38`, via `dphy_runtime_suspend`, `dsi_runtime_suspend`,
+`sprd_adf_interface_dpms_off`. The early boot log had the same cause behind all of these lines: `dsi_glb_parse_dt read
+clk_dsi0_ahb_eb failed`, `dispc_clk_parse_dt read clk_dispc_core_parent / dpi_parent / core / dpi failed`,
+`dispc_glb_parse_dt read clk_dispc_ahb_eb failed`, `dispc_clk_update calc dpi clk failed!`.
+
+Two differences from 4.4 (the glue source, `drv/sharkle/global_*.c`, is the same apart from the register header):
+
+- **Syscon compatibles.** The glue finds the AP AHB and AON APB regmaps with
+  `syscon_regmap_lookup_by_compatible("sprd,sys-ap-ahb" / "sprd,sys-aon-apb")`. The 4.4 dts and the stock DT (checked
+  in the DM63 stock DT) give those nodes `compatible = "sprd,sys-ap-ahb", "syscon"` and `"sprd,sys-aon-apb",
+  "syscon"`; the 4.14 `sharkle.dtsi` names them plain `"syscon"` (its DRM driver uses phandles). The lookup returned
+  an error pointer, which `dphy_glb_disable()` passed to regmap. `sp9832e-watch-adf.dtsi` now adds the two
+  compatibles (the dm63-adf dtb shows them).
+- **Clock provider order.** The clock names and phandles of the dispc/dsi nodes are the stock ones. On 4.4 the clock
+  providers register early; the 4.14 clock driver is a platform driver and registers after the ADF probes (the
+  `sprd_hwspinlock ... get hwspinlock clock failed!` line at 0.38 s is the same wait, that driver defers and is
+  retried). `of_clk_get_by_name()` therefore failed at ADF probe and the glue kept NULL clocks for good. The glue now
+  remembers the device node and looks the clocks (and regmaps) up again when they are used; a missing one is logged
+  once and the operation returns, so a missing regmap or clock cannot oops. Enable/disable are tracked by a flag, so a
+  clock that was not enabled is not disabled.
+
+Not a difference: `of_parse_oled oled reg-lock error` / `reg-unlock error` are printed on 4.4 too, the stock panel
+nodes have no such commands.
+
+Build-tested only (Image, modules, dm63-adf dtb); not run on the device. The next boot must show no `read clk_.. failed` line
+after the clock driver is up (at most the single deferred-lookup line at probe time), a successful
+`dispc_clk_update`, and a screen off/on cycle without the Oops. If `no sprd,sys-ap-ahb regmap` or `read clk_.. failed
+(-517)` is printed at screen on, the dts change did not take effect.
+
 ### Open blockers for a clean boot
 
 1. eMMC Auto-CMD/command timeouts in HS400ES: not seen in the fourth boot (0 errors).
 2. SIGHUP of the Trusty client daemons: sender unknown, userspace (see the section above for what to collect).
 3. Modem side not up (`sblock/spipe/saudio not ready`, `dfs_msg` failures, `WCN module have not open`): CP start
    never reached or SIPC not opened; the cproc start path now logs.
-4. Display with the three fixes above is untested; `sprd_dispc_wb_buf_alloc()` still returns -ENOTSUPP.
+4. Display with the three fixes above and the D-PHY glue fix is untested; `sprd_dispc_wb_buf_alloc()` still returns
+   -ENOTSUPP.
 5. Reboot: the normal path is untested; the `Hardware spinlock [0] lock failed!` from the battery work can also make
    the restart handler's ADI writes fail silently.

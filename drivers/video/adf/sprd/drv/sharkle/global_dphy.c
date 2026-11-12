@@ -18,40 +18,72 @@
 
 #include "sprd_dphy.h"
 
-static struct dphy_glb_context {
-	struct regmap *ap_ahb;
-	struct regmap *aon_apb;
-} dphy_glb_ctx;
+static struct dphy_glb_regmap {
+	struct regmap *map;
+	const char *compat;
+	bool warned;
+} dphy_glb_ctx[] = {
+	{ .compat = "sprd,sys-ap-ahb" },
+	{ .compat = "sprd,sys-aon-apb" },
+};
 
+#define DPHY_AP_AHB	(&dphy_glb_ctx[0])
+#define DPHY_AON_APB	(&dphy_glb_ctx[1])
+
+/*
+ * The syscon may not be registered when parse_dt runs, and a board dts may
+ * lack the node altogether: look it up again on use, and log a missing one
+ * once instead of handing an error pointer to regmap.
+ */
+static struct regmap *dphy_glb_regmap_get(struct dphy_glb_regmap *r)
+{
+	struct regmap *map;
+
+	if (r->map)
+		return r->map;
+
+	map = syscon_regmap_lookup_by_compatible(r->compat);
+	if (IS_ERR(map)) {
+		if (!r->warned) {
+			pr_err("no %s regmap (%ld)\n", r->compat, PTR_ERR(map));
+			r->warned = true;
+		}
+		return NULL;
+	}
+
+	r->map = map;
+	return map;
+}
 
 static int dphy_glb_parse_dt(struct dphy_context *ctx,
 				struct device_node *np)
 {
-	struct dphy_glb_context *glb_ctx = &dphy_glb_ctx;
-
-	glb_ctx->ap_ahb = syscon_regmap_lookup_by_compatible(
-					    "sprd,sys-ap-ahb");
-
-	glb_ctx->aon_apb = syscon_regmap_lookup_by_compatible(
-					    "sprd,sys-aon-apb");
+	dphy_glb_regmap_get(DPHY_AP_AHB);
+	dphy_glb_regmap_get(DPHY_AON_APB);
 
 	return 0;
 }
 
 static void dphy_glb_enable(struct dphy_context *ctx)
 {
-	struct dphy_glb_context *glb_ctx = &dphy_glb_ctx;
+	struct regmap *ap_ahb = dphy_glb_regmap_get(DPHY_AP_AHB);
 
-	regmap_update_bits(glb_ctx->ap_ahb, REG_AP_AHB_MISC_CKG_EN,
+	if (!ap_ahb)
+		return;
+
+	regmap_update_bits(ap_ahb, REG_AP_AHB_MISC_CKG_EN,
 		BIT_AP_AHB_DPHY_REF_CKG_EN | BIT_AP_AHB_DPHY_CFG_CKG_EN,
 		BIT_AP_AHB_DPHY_REF_CKG_EN | BIT_AP_AHB_DPHY_CFG_CKG_EN);
 }
 
 static void dphy_glb_disable(struct dphy_context *ctx)
 {
-	struct dphy_glb_context *glb_ctx = &dphy_glb_ctx;
+	struct regmap *ap_ahb = dphy_glb_regmap_get(DPHY_AP_AHB);
 
-	regmap_update_bits(glb_ctx->ap_ahb,
+	if (!ap_ahb)
+		return;
+
+	regmap_update_bits(ap_ahb,
 		REG_AP_AHB_MISC_CKG_EN,
 		BIT_AP_AHB_DPHY_REF_CKG_EN |
 		BIT_AP_AHB_DPHY_CFG_CKG_EN,
@@ -62,22 +94,25 @@ static void dphy_glb_disable(struct dphy_context *ctx)
 
 static void dphy_power_domain(struct dphy_context *ctx, int enable)
 {
-	struct dphy_glb_context *glb_ctx = &dphy_glb_ctx;
+	struct regmap *aon_apb = dphy_glb_regmap_get(DPHY_AON_APB);
+
+	if (!aon_apb)
+		return;
 
 	if (enable) {
-		regmap_update_bits(glb_ctx->aon_apb,
+		regmap_update_bits(aon_apb,
 			REG_AON_APB_PWR_CTRL, BIT_AON_APB_MIPI_DSI_PS_PD_S,
 			(unsigned int)(~BIT_AON_APB_MIPI_DSI_PS_PD_S));
 		udelay(10);
-		regmap_update_bits(glb_ctx->aon_apb,
+		regmap_update_bits(aon_apb,
 			REG_AON_APB_PWR_CTRL, BIT_AON_APB_MIPI_DSI_PS_PD_L,
 			(unsigned int)(~BIT_AON_APB_MIPI_DSI_PS_PD_L));
 	} else {
-		regmap_update_bits(glb_ctx->aon_apb,
+		regmap_update_bits(aon_apb,
 			REG_AON_APB_PWR_CTRL, BIT_AON_APB_MIPI_DSI_PS_PD_L,
 			BIT_AON_APB_MIPI_DSI_PS_PD_L);
 		udelay(10);
-		regmap_update_bits(glb_ctx->aon_apb,
+		regmap_update_bits(aon_apb,
 			REG_AON_APB_PWR_CTRL, BIT_AON_APB_MIPI_DSI_PS_PD_S,
 			BIT_AON_APB_MIPI_DSI_PS_PD_S);
 	}
