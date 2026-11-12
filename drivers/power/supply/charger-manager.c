@@ -3036,7 +3036,13 @@ static void cm_batt_works(struct work_struct *work)
 		break;
 	}
 
-	if (batt_uV <= cm->desc->shutdown_voltage - CM_UVLO_OFFSET) {
+	/*
+	 * Power off on a measured voltage only: never on the capacity (0
+	 * before the gauge is ready) and not on an empty reading (0 uV is the
+	 * register value before the first conversion, not a measurement).
+	 */
+	if (batt_uV > 0 &&
+	    batt_uV <= cm->desc->shutdown_voltage - CM_UVLO_OFFSET) {
 		dev_err(cm->dev, "WARN: batt_uV less than uvlo, will shutdown\n");
 		orderly_poweroff(true);
 	}
