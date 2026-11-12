@@ -167,7 +167,7 @@ differ:
 | 0x18 step parameters | 0x47 = 0x23, 0x48 = 0xcf, 0x49 = 0x1c; 0x3a = 5 written in bank 0 after the bank 0x90 block | 0x33, 0x9d, 0x24; 0x3a = 5 inside bank 0x90 | revision B |
 | 0x18 step read / clear | bank 0 | bank 0x90 | revision B |
 | Step total | the irq work adds the chip count to a software total and clears the chip; show = total + chip | no accumulation; offset kept only across a chip reset | revision B |
-| IRQ trigger | chosen from the pin level, flipped between level high and low after each event | fixed level high | level high |
+| IRQ trigger | chosen from the pin level, flipped between level high and low after each event | fixed level high | revision A (see `SC7A22_IRQ.md`) |
 | KEY_F6 | sent | log only | log only |
 | `step_clean` | clears total and chip | also clears the offset | revision B |
 
@@ -199,6 +199,6 @@ The stock misc device is named `sc7a22` with an ioctl that returns 0 (`sc7a22_un
 5. Wake is armed at probe as in stock; if the battery cost is unwanted, drop the
    `device_init_wakeup(dev, true)` call in probe and rely on `hand_start`.
 6. Boards without a stock image (MT108, DM82, DW99) keep `hand-up-ctrl` 0x11.
-7. IRQ level high with no rearm logic: if the chip keeps INT high after the flag read, the work
-   re-runs continuously (same as stock revision B). Not testable offline.
+7. The trigger follows the pin level as in revision A (a fixed level high stormed on the DM63
+   bench); see `SC7A22_IRQ.md`. Not tested on hardware.
 8. Nothing here was run on a device; the build check compiles `sc7a22.o` only.
