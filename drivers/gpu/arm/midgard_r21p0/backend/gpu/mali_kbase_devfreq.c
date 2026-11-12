@@ -87,9 +87,23 @@ kbase_devfreq_target(struct device *dev, unsigned long *target_freq, u32 flags)
 	unsigned long voltage;
 	int err;
 	u64 core_mask;
+#if defined(MALI_PLATFORM_SHARKLE) && defined(CONFIG_MALI_BOOST)
+	unsigned long boost_freq;
+#endif
 
 	freq = *target_freq;
 #ifdef MALI_PLATFORM_SHARKLE
+#ifdef CONFIG_MALI_BOOST
+	/*
+	 * A boost hint from the GPU library is a floor for this request: pick
+	 * the OPP at or above it. The cap below still wins.
+	 */
+	boost_freq = kbase_platform_take_boost_freq();
+	if (freq < boost_freq) {
+		freq = boost_freq;
+		flags &= ~DEVFREQ_FLAG_LEAST_UPPER_BOUND;
+	}
+#endif
 	/*
 	 * The OPP table goes up to 680 MHz, but the board limit is
 	 * "sprd,dfs-range-max" (600 MHz on the watches), which the stock

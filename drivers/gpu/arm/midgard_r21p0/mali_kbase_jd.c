@@ -31,6 +31,9 @@
 #include <mali_kbase_jm.h>
 #include <mali_kbase_hwaccess_jm.h>
 #include <mali_kbase_tlstream.h>
+#ifdef CONFIG_MALI_BOOST
+#include <mali_kbase_config_platform.h>
+#endif
 
 #include "mali_kbase_dma_fence.h"
 
@@ -1106,6 +1109,12 @@ int kbase_jd_submit(struct kbase_context *kctx,
 		dev_err(kbdev->dev, "Stride passed to job_submit doesn't match kernel");
 		return -EINVAL;
 	}
+
+#ifdef CONFIG_MALI_BOOST
+	/* Like stock, hand the context's boost hint to the platform on every submit */
+	if (kctx->sprd_boost)
+		kbase_platform_set_boost(kbdev, kctx->sprd_boost);
+#endif
 
 	KBASE_TIMELINE_ATOMS_IN_FLIGHT(kctx, atomic_add_return(nr_atoms,
 				&kctx->timeline.jd_atoms_in_flight));

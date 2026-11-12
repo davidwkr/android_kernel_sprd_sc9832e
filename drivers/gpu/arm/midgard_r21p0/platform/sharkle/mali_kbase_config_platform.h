@@ -79,9 +79,11 @@ unsigned long kbase_platform_max_freq(void);
 
 #ifdef CONFIG_MALI_BOOST
 void kbase_platform_modify_target_freq(struct device *dev, unsigned long *target_freq);
+unsigned long kbase_platform_take_boost_freq(void);
 #endif
 #endif
 bool kbase_mali_is_powered(void);
 #ifdef CONFIG_MALI_BOOST
 void kbase_platform_set_boost(struct kbase_device *kbdev, int boost_level);
+bool kbase_platform_boost_level_valid(u32 boost_level);
 #endif

@@ -12,3 +12,6 @@ CONFIG_MALI_PLATFORM_NAME="sharkle"
 # "operating-points" table; CONFIG_PM_DEVFREQ and a governor are already on
 # for every watch board.
 CONFIG_MALI_DEVFREQ=y
+# SPRD GPU boost hint: the stock libGLES_mali.so issues ioctl 0x4004801d, which the
+# sharkle platform code turns into a devfreq floor (see devices/MALI_R21P0.md).
+CONFIG_MALI_BOOST=y
