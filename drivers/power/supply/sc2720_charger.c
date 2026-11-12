@@ -922,7 +922,13 @@ static int sc2720_charger_set_status(struct sc2720_charger_info *info,
 {
 	int ret = 0;
 
-	if (!val && info->charging) {
+	if (!val && (info->charging || info->start_by_cm)) {
+		/*
+		 * charger-manager owned: always write the stop, whatever the
+		 * cached state says (the hardware may have been left on, or
+		 * the flag may be stale after a fault). Writing PD is
+		 * harmless when already off.
+		 */
 		ret = sc2720_charger_stop_charge(info);
 		if (!ret)
 			info->charging = false;
@@ -939,7 +945,7 @@ static int sc2720_charger_set_status(struct sc2720_charger_info *info,
 		 * settings that could not be applied. Without a request the
 		 * adapter current is used.
 		 */
-		if (info->data->is_sc2721) {
+		if (info->data->is_sc2721 && info->start_by_cm) {
 			ret = sc2720_charger_set_current(info,
 				info->cur_req_ua ? info->cur_req_ua :
 				sc2720_charger_adapter_cur(info));
@@ -1186,13 +1192,20 @@ sc2720_charger_usb_set_property(struct power_supply *psy,
 	mutex_lock(&info->lock);
 
 	/*
-	 * Current and CV are programmed whether or not a charge is running.
-	 * charger-manager writes the zone values (jeita) before it enables
+	 * With sprd,charge-start-by-cm current and CV are programmed whether
+	 * or not a charge is running. charger-manager writes the zone values (jeita) before it enables
 	 * the charger, so reporting success without writing them let a
 	 * recovery from a cold or hot stop start at the previous settings.
 	 * The registers hold their value while the charger is powered down,
 	 * the hardware init and the adapter work already rely on it.
 	 */
+	if (!info->start_by_cm && !info->charging &&
+	    psp != POWER_SUPPLY_PROP_STATUS) {
+		/* other boards: unchanged, the adapter work programs them */
+		mutex_unlock(&info->lock);
+		return 0;
+	}
+
 	switch (psp) {
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT:
 		ret = sc2720_charger_set_current(info, val->intval);
@@ -1354,7 +1367,7 @@ static irqreturn_t sc2721_ovp_irq_handler(int irq, void *data)
 		return IRQ_HANDLED;
 	}
 	info->ovp_fault = !!fault;
-	if (info->ovp_fault && info->charging) {
+	if (info->ovp_fault && (info->charging || info->start_by_cm)) {
 		dev_crit(info->dev, "input over-voltage, stopping charge\n");
 		if (!sc2720_charger_stop_charge(info))
 			info->charging = false;
@@ -1537,6 +1550,23 @@ static int sc2720_charger_probe(struct platform_device *pdev)
 
 	info->start_by_cm = of_property_read_bool(np,
 						  "sprd,charge-start-by-cm");
+
+	/*
+	 * Hand-over: firmware or a previous kernel may have left the charge
+	 * enabled. When charger-manager owns the starts, put the hardware in
+	 * the state the software flag says (off) before the supply exists, so
+	 * nothing charges until charger-manager has checked the temperature.
+	 * Failing here fails the probe: no charger is safer than an unknown
+	 * one.
+	 */
+	if (info->start_by_cm) {
+		ret = sc2720_charger_stop_charge(info);
+		if (ret) {
+			dev_err(&pdev->dev, "cannot force the charge off\n");
+			return ret;
+		}
+		info->charging = false;
+	}
 
 	charger_cfg.drv_data = info;
 	charger_cfg.of_node = np;
