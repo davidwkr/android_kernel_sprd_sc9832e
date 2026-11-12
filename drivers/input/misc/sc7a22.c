@@ -53,6 +53,10 @@
 #define SC7A22_DEFAULT_ANGLE             10
 #define SC7A22_DEFAULT_HANDUP_CTRL       0x11
 #define SC7A22_FLAG_HAND_UP              0x02
+#define SC7A22_FLAG_HAND_DOWN            0x04
+#define SC7A22_IRQ_RECONCILE             2
+#define SC7A22_FLAG_RETRIES              3
+#define SC7A22_FLAG_RETRY_MS             50
 #define SC7A22_STEP_MAX                  0xffff
 
 #define SC7A22_DEFAULT_DELAY_MS          50
@@ -88,6 +92,10 @@ struct sc7a22_data {
 	struct input_dev *input;
 	struct miscdevice miscdev;
 	struct delayed_work work;
+	struct delayed_work flag_work; /* retries a failed flag read */
+	struct mutex irq_lock; /* Serializes flag servicing and re-arming. */
+	unsigned int flag_retries; /* under irq_lock */
+	bool suspended; /* under irq_lock: no retry is queued */
 	struct mutex lock; /* Serializes enable, delay, and work transitions. */
 	struct kref ref; /* probe + one per open misc descriptor */
 	bool removed; /* under lock: no enabling after teardown started */
@@ -102,8 +110,6 @@ struct sc7a22_data {
 	struct input_dev *key_input;
 	struct input_dev *step_input;
 	struct mutex op_lock; /* Bank switching and step counter accesses. */
-	struct mutex irq_lock; /* Serializes irq_work. */
-	struct work_struct irq_work;
 	struct notifier_block adf_nb;
 	int irq_gpio;
 	int irq;
@@ -505,45 +511,38 @@ static void sc7a22_step_clear(struct sc7a22_data *data)
 static int sc7a22_read_flags(struct sc7a22_data *data)
 {
 	int flags;
+	int ret;
 
 	mutex_lock(&data->op_lock);
 	if (data->chip_id == SC7A22_ID) {
 		flags = sc7a22_read_reg(data, SC7A22_REG_FLAGS_13);
 	} else {
-		sc7a22_set_bank(data, SC7A22_BANK_90);
-		flags = sc7a22_read_reg(data, SC7A22_REG_FLAGS_18);
-		sc7a22_set_bank(data, SC7A22_BANK_0);
+		flags = sc7a22_set_bank(data, SC7A22_BANK_90);
+		if (flags >= 0)
+			flags = sc7a22_read_reg(data, SC7A22_REG_FLAGS_18);
+		/* Always try to leave bank 0, whatever the read did. */
+		ret = sc7a22_set_bank(data, SC7A22_BANK_0);
+		if (flags >= 0 && ret < 0)
+			flags = ret;
 	}
 	mutex_unlock(&data->op_lock);
 
-	return flags < 0 ? 0 : flags;
+	return flags;
 }
 
-static irqreturn_t sc7a22_irq_handler(int irq, void *dev_id)
+/*
+ * The chip keeps INT asserted for as long as its condition holds, so a fixed
+ * level trigger re-enters the handler forever. The stock driver waits for the
+ * opposite level instead (DM63 stock work function, request in probe):
+ * pin high -> trigger low, pin low -> trigger high.
+ */
+static unsigned long sc7a22_irq_type(int level)
 {
-	struct sc7a22_data *data = dev_id;
-
-	disable_irq_nosync(irq);
-	if (device_may_wakeup(&data->client->dev))
-		pm_stay_awake(&data->client->dev);
-	schedule_work(&data->irq_work);
-
-	return IRQ_HANDLED;
+	return level ? IRQF_TRIGGER_LOW : IRQF_TRIGGER_HIGH;
 }
 
-static void sc7a22_irq_work(struct work_struct *work)
+static void sc7a22_report_flags(struct sc7a22_data *data, int flags)
 {
-	struct sc7a22_data *data = container_of(work, struct sc7a22_data,
-						 irq_work);
-	int flags;
-
-	mutex_lock(&data->irq_lock);
-	if (device_may_wakeup(&data->client->dev))
-		pm_relax(&data->client->dev);
-
-	flags = sc7a22_read_flags(data);
-	dev_dbg(&data->client->dev, "wrist flags 0x%x\n", flags);
-
 	if ((flags & SC7A22_FLAG_HAND_UP) && data->hand_start &&
 	    !data->screen_on) {
 		input_event(data->key_input, EV_KEY, KEY_F10, 1);
@@ -551,8 +550,118 @@ static void sc7a22_irq_work(struct work_struct *work)
 		input_event(data->key_input, EV_SYN, SYN_REPORT, 0);
 	}
 	/* Flag bit 2 (hand down) is only logged by the stock driver. */
+}
 
-	enable_irq(data->irq);
+/*
+ * Sample the pin before the flags, and again after servicing: a pin that moved
+ * meanwhile may be a new assertion whose flags were not yet latched when read,
+ * so run up to SC7A22_IRQ_RECONCILE extra passes before arming for release.
+ * The trigger is always the opposite of the last sampled level, never fixed.
+ * Returns the source flags seen, or a negative errno (trigger still armed).
+ * Called with irq_lock held.
+ */
+static int sc7a22_irq_service(struct sc7a22_data *data)
+{
+	int seen = 0;
+	int level;
+	int after;
+	int flags;
+	int pass;
+
+	for (pass = 0;; pass++) {
+		level = gpio_get_value_cansleep(data->irq_gpio);
+		flags = sc7a22_read_flags(data);
+		if (flags < 0) {
+			level = gpio_get_value_cansleep(data->irq_gpio);
+			seen = flags;
+			break;
+		}
+		dev_dbg(&data->client->dev, "wrist flags 0x%x\n", flags);
+		if (flags & (SC7A22_FLAG_HAND_UP | SC7A22_FLAG_HAND_DOWN)) {
+			seen |= flags;
+			sc7a22_report_flags(data, flags);
+		}
+
+		after = gpio_get_value_cansleep(data->irq_gpio);
+		if (after == level || pass >= SC7A22_IRQ_RECONCILE) {
+			level = after;
+			break;
+		}
+	}
+	irq_set_irq_type(data->irq, sc7a22_irq_type(level));
+
+	/* A low pin is the release we waited for, not a fault. */
+	if (seen == 0 && level)
+		dev_warn_ratelimited(&data->client->dev,
+				     "interrupt without a source\n");
+	return seen;
+}
+
+static irqreturn_t sc7a22_irq_handler(int irq, void *dev_id)
+{
+	struct sc7a22_data *data = dev_id;
+
+	if (device_may_wakeup(&data->client->dev))
+		pm_stay_awake(&data->client->dev);
+
+	return IRQ_WAKE_THREAD;
+}
+
+/*
+ * The line stays masked (IRQF_ONESHOT) until this returns. With no source
+ * bit set the interrupt is not ours: IRQ_NONE lets the spurious interrupt
+ * detector disable a line that is stuck. A failed flag read is not spurious:
+ * the opposite level is armed (no storm) and the read is retried from
+ * flag_work, independent of further pin transitions.
+ */
+static irqreturn_t sc7a22_irq_thread(int irq, void *dev_id)
+{
+	struct sc7a22_data *data = dev_id;
+	int seen;
+
+	if (device_may_wakeup(&data->client->dev))
+		pm_relax(&data->client->dev);
+
+	mutex_lock(&data->irq_lock);
+	seen = sc7a22_irq_service(data);
+	if (seen < 0) {
+		dev_warn_ratelimited(&data->client->dev,
+				     "flag read failed: %d\n", seen);
+		data->flag_retries = SC7A22_FLAG_RETRIES;
+		if (!data->suspended)
+			schedule_delayed_work(&data->flag_work,
+					      msecs_to_jiffies(SC7A22_FLAG_RETRY_MS));
+	} else {
+		data->flag_retries = 0;
+		cancel_delayed_work(&data->flag_work);
+	}
+	mutex_unlock(&data->irq_lock);
+
+	return seen == 0 ? IRQ_NONE : IRQ_HANDLED;
+}
+
+static void sc7a22_flag_work(struct work_struct *work)
+{
+	struct sc7a22_data *data = container_of(work, struct sc7a22_data,
+						 flag_work.work);
+	int seen;
+
+	mutex_lock(&data->irq_lock);
+	if (!data->flag_retries)
+		goto out;
+
+	seen = sc7a22_irq_service(data);
+	if (seen >= 0) {
+		data->flag_retries = 0;
+	} else if (--data->flag_retries) {
+		if (!data->suspended)
+			schedule_delayed_work(&data->flag_work,
+					      msecs_to_jiffies(SC7A22_FLAG_RETRY_MS));
+	} else {
+		dev_err(&data->client->dev,
+			"flag read still failing: %d\n", seen);
+	}
+out:
 	mutex_unlock(&data->irq_lock);
 }
 
@@ -1048,15 +1157,11 @@ static void sc7a22_cleanup(struct sc7a22_data *data)
 	if (data->adf_registered)
 		adf_unregister_client(&data->adf_nb);
 
-	/*
-	 * Mask the line and wait for the handler, drain the work (its
-	 * enable_irq() only undoes the handler's disable), then free.
-	 */
-	if (data->irq_requested)
-		disable_irq(data->irq);
-	cancel_work_sync(&data->irq_work);
+	/* free_irq() waits for the handler and its thread. */
 	if (data->irq_requested)
 		free_irq(data->irq, data);
+	/* Nothing queues flag_work once the thread is gone. */
+	cancel_delayed_work_sync(&data->flag_work);
 	if (data->gpio_owned)
 		gpio_free(data->irq_gpio);
 
@@ -1098,6 +1203,7 @@ static int sc7a22_parse_dt(struct sc7a22_data *data)
 
 static int sc7a22_setup_irq(struct sc7a22_data *data)
 {
+	unsigned long flags;
 	int ret;
 
 	if (!gpio_is_valid(data->irq_gpio))
@@ -1114,9 +1220,11 @@ static int sc7a22_setup_irq(struct sc7a22_data *data)
 		goto err_gpio;
 	}
 
-	/* Level high, like the stock driver; the work re-enables the line. */
-	ret = request_irq(data->irq, sc7a22_irq_handler, IRQF_TRIGGER_HIGH,
-			  "sc7a22-hand-up-irq", data);
+	/* Opposite of the pin level, like the stock driver; the thread re-arms. */
+	flags = sc7a22_irq_type(gpio_get_value_cansleep(data->irq_gpio));
+	ret = request_threaded_irq(data->irq, sc7a22_irq_handler,
+				   sc7a22_irq_thread, flags | IRQF_ONESHOT,
+				   "sc7a22-hand-up-irq", data);
 	if (ret < 0)
 		goto err_gpio;
 	data->irq_requested = true;
@@ -1150,7 +1258,7 @@ static int sc7a22_probe(struct i2c_client *client,
 	mutex_init(&data->irq_lock);
 	atomic_set(&data->enabled, 0);
 	INIT_DELAYED_WORK(&data->work, sc7a22_work);
-	INIT_WORK(&data->irq_work, sc7a22_irq_work);
+	INIT_DELAYED_WORK(&data->flag_work, sc7a22_flag_work);
 	data->adf_nb.notifier_call = sc7a22_adf_notify;
 	data->adf_nb.priority = 1000;
 	/* Same initial state as the stock driver: "screen on", no hand_start. */
@@ -1249,6 +1357,11 @@ static int sc7a22_suspend(struct device *dev)
 {
 	struct sc7a22_data *data = dev_get_drvdata(dev);
 
+	/* The IRQ thread stays live: keep it from queuing a retry. */
+	mutex_lock(&data->irq_lock);
+	data->suspended = true;
+	mutex_unlock(&data->irq_lock);
+	cancel_delayed_work_sync(&data->flag_work);
 	if (data->irq_requested && device_may_wakeup(dev))
 		irq_set_irq_wake(data->irq, 1);
 	data->resume_enabled = !!atomic_read(&data->enabled);
@@ -1263,6 +1376,13 @@ static int sc7a22_resume(struct device *dev)
 
 	if (data->irq_requested && device_may_wakeup(dev))
 		irq_set_irq_wake(data->irq, 0);
+	/* Resume a retry that suspend cancelled. */
+	mutex_lock(&data->irq_lock);
+	data->suspended = false;
+	if (data->flag_retries)
+		schedule_delayed_work(&data->flag_work,
+				      msecs_to_jiffies(SC7A22_FLAG_RETRY_MS));
+	mutex_unlock(&data->irq_lock);
 	if (data->resume_enabled)
 		return sc7a22_set_enabled(data, true);
 	return 0;
