@@ -268,9 +268,12 @@ static int sprd_reboot_probe(struct platform_device *pdev)
 
 #if defined(CONFIG_SPRD_DEBUG) && defined(CONFIG_SPRD_SYSDUMP)
 	pr_emerg("userdebug enable sysdump in default !!!\n");
-	sprd_set_reboot_mode("dumpenable");
-	set_sysdump_enable(1);
-	sysdump_status = 1;
+	if (set_sysdump_enable(1)) {
+		pr_err("sysdump: PMIC dump bit not set at probe, dump stays off\n");
+	} else {
+		sprd_set_reboot_mode("dumpenable");
+		sysdump_status = 1;
+	}
 #endif
 	return ret;
 }
