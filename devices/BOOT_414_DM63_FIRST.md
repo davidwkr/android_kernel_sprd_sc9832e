@@ -2,8 +2,8 @@
 
 Inputs: the dmesg and logcat captures of the first 4.14 boots (redacted), the stock DM63 boot image (4.4.83 kernel,
 DTB and ramdisk, unpacked read-only) and the 4.4 working tree. Source-level comparison only: nothing here was
-reproduced on the device and no kernel change came out of it. Tags: [D] seen in a capture, [S] seen in source or
-stock image, [H] hypothesis.
+reproduced on the device. Sections 1-4 are the first analysis (no kernel change); section 5 records the fixes made
+afterwards and what is still open. Tags: [D] seen in a capture, [S] seen in source or stock image, [H] hypothesis.
 
 Caveat on the captures: `dmesg-latest.txt` and `logcat-latest.txt` are rolling tails that kept growing while this was
 written, and the early boot (first ~30 s, where probe messages live) is not in them. `pstore-prev.txt` is the
@@ -107,3 +107,78 @@ the bootloader mishandles, or whether the reset never reached the PMIC. Nothing 
 - `binder_alloc: ... no vma` / `no address space` (userspace dying/restarting).
 - `Hardware spinlock [0] lock failed!` once (see 3).
 - SELinux runs permissive in the captures (adbd in `su`); avc denials are not kernel failures.
+
+## 5. Fixes after the analysis, and what is still open
+
+Build-tested only (Image, modules, `sp9832e-1h10-dm63-adf.dtb`); none of it has run on the device.
+
+### Fixed
+
+- ADF flips of system-heap buffers (`adf0: flip failed: -22`). `sprd_dispc_iommu_map()` never set `iommu_data.buf`
+  and `sprd_iommu_map()` rejects NULL [S]. The 4.4 ADF code has the same gap [S], so 4.4 only works because its
+  gralloc buffers sit in the reserved fb carveout and take the `fb_reserved` branch; 4.14 gralloc lands on the system
+  heap (see the ion item). The DRM dpu of this tree passes `dma_buf->priv` (the `ion_buffer`), which is what
+  `sprd_ion_get_sg()` casts, so ADF now does the same and refuses non-ion dma-bufs. Unmap needs no change: it finds
+  the buffer from the iova.
+- ion carveout with id 0. `sprd_ion_probe()` made a carveout for every DT child, including heap@0 "system" (type 0,
+  no region). 4.4 created heaps through `ion_heap_create()`, which maps type 0 to the system heap; 4.14 builds the
+  system heap in `ion_system_heap.c` (heaps[0], id 0) and the probe only knows carveouts [S]. The probe now skips
+  the system types and keeps heaps[1..n] without holes (the show-mem notifier walks 0..num_heaps).
+- Restart. A non-panic restart now writes exactly the mode to the PMIC status register, as 4.4 `arch_reset()` does
+  (clears 0x200 and any other bit). The panic mode keeps the read-modify-write. Independent of
+  `fixes/sysdump-default-off-414`, which clears 0x200 at boot.
+
+### eMMC errors: root cause not established, nothing changed
+
+What was compared and found equal to 4.4 and stock [S]: the `sdio@20600000` node of the built DTB (clock tree
+entries, `sprd,hs400es/hs400/hs200/ddr52-dly`, `bus-width 8`, `mmc-hs400-enhanced-strobe`, 1.8 V HS400/HS200/DDR,
+`cap-mmc-hw-reset`, `sprd,sdio-adma`, `no-sd/no-sdio`, `vmmc` = always-on vddemmccore); `sprd-sdhcr10.c` (diff to
+4.4: only dev_* logging, the DLL lock loop no longer tests DLL_ERROR, `mmc_regulator_get_supply()` result checked,
+`MMC_CAP2_HC_ERASE_SZ` removed because 4.14 has no such flag and always uses the HC erase size); the SDCLK source
+(`emmc-2x` mux reg 0x90 with the same parent order, rpll-390m, divider math unchanged); the HS400ES switch sequence
+of the core (4.14 only adds `mmc_select_driver_type()`, a no-op without host drive-type caps). The driver already
+runs HS400ES at 200 MHz as 4.4 does, so there is no "safer 4.4 mode" to fall back to.
+
+What the capture shows [D]:
+
+- The first failure (64.46 s) has `INT 0x1008001` = command complete + error + Auto-CMD error, Auto-CMD error status
+  0x0002 (Auto-CMD timeout), ADMA error 0, ADMA pointer still at the 2nd descriptor, trans-mode 0x2b (auto CMD23,
+  multi-block write). So the auto CMD23 got no response and the data phase never started; it is not an ADMA fault
+  and not a data CRC in the strict sense (`-84` is the driver's mapping of any Auto-CMD error).
+- The same happens on reads (CMD18 at 91.3 s) and the re-init after each failure sees CMD6 timeouts (`0x18001`):
+  the card stops answering commands in HS400ES, which points at the command/strobe path or the card state, not at
+  one bad write.
+- 0.86 s pass between the ADMA dump and the `-84` message. `irq_error_handle()` busy-waits for up to 10 M reads of
+  INT_STATE in hard-IRQ context on CPU 0 (the driver pins the eMMC IRQ there). The GPU
+  `Reset interrupt didn't reach CPU` at 65.01 s falls inside that window, so the Mali errors are probably a
+  consequence of the eMMC fault, not an independent one [H].
+- No eMMC error in the 28 s before 64 s, although userspace was already writing. The `dfs_msg_send` failures start at
+  91.9 s, after the first eMMC errors, so they are not the trigger.
+
+Differences left that could matter but are not proven [H]: (a) vddemmccore: the 4.4 regulator driver sets the
+midpoint of the requested window (2.95 V for 2.9-3.0 V), the mainline-style 4.14 driver picks the lowest step (2.9 V);
+(b) 4.14 builds `DEVFREQ_SPRD_AUTO_DFS` (SIPC requests to the DFS core, failing here), 4.4 has `DEVFREQ_SPRD_DFS`;
+(c) the early boot (probe line with the real base clock, regulator and pinctrl messages) is missing from the
+captures, so the actual SDCLK and voltage are unknown. A capture of the first 30 s with `mmc0`/`sprd-sdhcr10`
+lines, or `/sys/kernel/debug/clk/clk_summary` and the `vddemmccore` voltage from `/sys/class/regulator`, would settle (c).
+
+### Keymaster / rpmbproxyd / storagensproxyd
+
+Not explained by the eMMC errors. `rpmbproxyd` dies with signal 1 at 38.2 s, `keymaster-3-0` at 49, 54, 59, 64 s and
+every ~5 s after (init's restart delay), all before or independent of the first eMMC error at 64.5 s; only the
+`storagensproxyd` death (65.326 s) lines up with an eMMC reset (65.325 s). A second `keymaster-3-0` instance is
+started next to `tsupplicant` while pid 296 keeps working in logcat. No 4.14 kernel code sends SIGHUP to these
+processes (no `send_sig`/`kill_pid` in drivers/trusty, drivers/soc/sprd), so the sender is userspace (vendor rc/HAL)
+or the tty layer. Trusty error -13 is `ERR_TIMED_OUT` (lk error table): the TA's storage session could not reach the
+storage proxy in time, which fits proxies that are down or restarting, and the RPMB partition is on the same eMMC, so
+the eMMC faults will make it worse once they start. The vendor/system rc files are not in the boot image, so the
+SIGHUP source needs the `/vendor/etc/init` files of the stock system image or an `strace -f`/`logcat -b all` from init.
+
+### Open blockers for a clean boot
+
+1. eMMC Auto-CMD/command timeouts in HS400ES (cause unknown, above).
+2. SIGHUP loop of the Trusty client daemons (userspace sender unknown) and the resulting missing keystore/RPMB.
+3. Modem side not up (`sblock/spipe/saudio not ready`, `dfs_msg` failures, `WCN module have not open`).
+4. Display with the three fixes above is untested; `sprd_dispc_wb_buf_alloc()` still returns -ENOTSUPP.
+5. Reboot: the normal path is untested; the `Hardware spinlock [0] lock failed!` from the battery work can also make
+   the restart handler's ADI writes fail silently.
