@@ -792,6 +792,11 @@ static int sc2720_charger_set_current(struct sc2720_charger_info *info, u32 cur)
 		cur = min(cur, sc2720_charger_adapter_cur(info));
 	}
 
+	/*
+	 * 300 mA is the hardware minimum (code 0), the stock driver raises
+	 * a lower request to it too (the 100 mA cold zone charges at 300 mA).
+	 * Nothing above the request and the adapter cap is ever programmed.
+	 */
 	cur = cur / 1000;
 	if (cur < SC2720_CHG_CURRENT_MIN)
 		cur = SC2720_CHG_CURRENT_MIN;
@@ -919,6 +924,28 @@ static int sc2720_charger_set_status(struct sc2720_charger_info *info,
 			dev_warn(info->dev,
 				 "refusing to start charge, input OVP fault latched\n");
 			return -EBUSY;
+		}
+		/*
+		 * SC2721: make sure the last requested current and CV are in
+		 * the registers when the charge starts, and that the current
+		 * follows the adapter type now attached. Never start with
+		 * settings that could not be applied. A request of 0 means
+		 * nobody asked yet, the adapter work then sets the current.
+		 */
+		if (info->data->is_sc2721) {
+			if (info->cur_req_ua) {
+				ret = sc2720_charger_set_current(info,
+							info->cur_req_ua);
+				if (ret)
+					return ret;
+			}
+			mutex_lock(&sc2721_cv_lock);
+			ret = info->cv_last_req_mv ?
+				sc2721_program_cccv(info,
+						    info->cv_last_req_mv) : 0;
+			mutex_unlock(&sc2721_cv_lock);
+			if (ret)
+				return ret;
 		}
 		ret = sc2720_charger_start_charge(info);
 		if (ret)
@@ -1144,11 +1171,14 @@ sc2720_charger_usb_set_property(struct power_supply *psy,
 
 	mutex_lock(&info->lock);
 
-	if (!info->charging && psp != POWER_SUPPLY_PROP_STATUS) {
-		mutex_unlock(&info->lock);
-		return 0;
-	}
-
+	/*
+	 * Current and CV are programmed whether or not a charge is running.
+	 * charger-manager writes the zone values (jeita) before it enables
+	 * the charger, so reporting success without writing them let a
+	 * recovery from a cold or hot stop start at the previous settings.
+	 * The registers hold their value while the charger is powered down,
+	 * the hardware init and the adapter work already rely on it.
+	 */
 	switch (psp) {
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT:
 		ret = sc2720_charger_set_current(info, val->intval);
