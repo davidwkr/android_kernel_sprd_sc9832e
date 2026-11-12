@@ -519,6 +519,20 @@ static int sc7a22_read_flags(struct sc7a22_data *data)
 	return flags < 0 ? 0 : flags;
 }
 
+/*
+ * The chip keeps INT asserted for as long as its condition holds, so a fixed
+ * level trigger re-enters the handler forever. The stock driver waits for the
+ * opposite level instead (DM63 stock work function, request in probe):
+ * pin high -> trigger low, pin low -> trigger high.
+ */
+static unsigned long sc7a22_irq_type(struct sc7a22_data *data)
+{
+	if (gpio_get_value_cansleep(data->irq_gpio))
+		return IRQF_TRIGGER_LOW;
+
+	return IRQF_TRIGGER_HIGH;
+}
+
 static irqreturn_t sc7a22_irq_handler(int irq, void *dev_id)
 {
 	struct sc7a22_data *data = dev_id;
@@ -552,6 +566,7 @@ static void sc7a22_irq_work(struct work_struct *work)
 	}
 	/* Flag bit 2 (hand down) is only logged by the stock driver. */
 
+	irq_set_irq_type(data->irq, sc7a22_irq_type(data));
 	enable_irq(data->irq);
 	mutex_unlock(&data->irq_lock);
 }
@@ -1114,9 +1129,9 @@ static int sc7a22_setup_irq(struct sc7a22_data *data)
 		goto err_gpio;
 	}
 
-	/* Level high, like the stock driver; the work re-enables the line. */
-	ret = request_irq(data->irq, sc7a22_irq_handler, IRQF_TRIGGER_HIGH,
-			  "sc7a22-hand-up-irq", data);
+	/* Opposite of the pin level, like the stock driver; the work re-arms. */
+	ret = request_irq(data->irq, sc7a22_irq_handler,
+			  sc7a22_irq_type(data), "sc7a22-hand-up-irq", data);
 	if (ret < 0)
 		goto err_gpio;
 	data->irq_requested = true;
