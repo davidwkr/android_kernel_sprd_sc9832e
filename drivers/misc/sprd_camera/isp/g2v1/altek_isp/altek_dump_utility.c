@@ -394,7 +394,7 @@ return err;
 int dump_memory(char *filepath, u64 addr, u64 size)
 {
 
-	mm_segment_t oldfs = {0};
+	mm_segment_t oldfs = get_fs();
 	loff_t offset = 0;
 	struct file *filp = NULL;
 	int err = 0;
@@ -510,6 +510,7 @@ int dump_isp_ahb(char *filepath, u32 size)
 		err = PTR_ERR(filp);
 		isp_err_lo_combo_desc_tag("open file failed. It: err: %x",
 			err);
+		set_fs(oldfs);
 		goto dump_isp_ahb_end;
 	} else
 		isp_debug_desc_tag("open file success!");
@@ -532,6 +533,7 @@ int dump_isp_ahb(char *filepath, u32 size)
 	err = vfs_write(filp, ahb_buffer, size, &offset);
 	if (err == -1) {
 		isp_err_lo_combo_desc_tag("Write file failed.");
+		set_fs(oldfs);
 		goto dump_isp_ahb_end;
 	}
 	filp->f_pos = offset;
@@ -558,7 +560,7 @@ int dump_isp_internal_reg(char *filepath, u32 start, u32 size, u8 hwid)
 {
 
 #if 1
-	mm_segment_t oldfs = {0};
+	mm_segment_t oldfs = get_fs();
 	loff_t offset;
 	struct file *filp = NULL;
 #endif
@@ -601,6 +603,7 @@ int dump_isp_internal_reg(char *filepath, u32 start, u32 size, u8 hwid)
 			isp_err_lo_combo_desc_tag(
 				"open file failed. It: err: %x",
 				err);
+			set_fs(oldfs);
 			goto dump_isp_internal_reg_end;
 		} else
 			isp_debug_desc_tag("open file success!");
@@ -613,6 +616,7 @@ int dump_isp_internal_reg(char *filepath, u32 start, u32 size, u8 hwid)
 		err = vfs_write(filp, (u8 *)(&start), 4, &offset);
 		if (err == -1) {
 			isp_err_lo_combo_desc_tag("Write file failed.");
+			set_fs(oldfs);
 			goto dump_isp_internal_reg_end;
 		}
 		filp->f_pos = offset;
@@ -624,6 +628,7 @@ int dump_isp_internal_reg(char *filepath, u32 start, u32 size, u8 hwid)
 		err = vfs_write(filp, (u8 *)(&reg_cnt), 4, &offset);
 		if (err == -1) {
 			isp_err_lo_combo_desc_tag("Write file failed.");
+			set_fs(oldfs);
 			goto dump_isp_internal_reg_end;
 			return err;
 		}
@@ -664,6 +669,7 @@ int dump_isp_internal_reg(char *filepath, u32 start, u32 size, u8 hwid)
 			if (err == -1) {
 				isp_err_lo_combo_desc_tag(
 					"Write file failed.");
+				set_fs(oldfs);
 				goto dump_isp_internal_reg_end;
 			}
 			filp->f_pos = offset;
