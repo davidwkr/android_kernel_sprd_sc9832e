@@ -78,6 +78,7 @@ static unsigned long sprd_wdt_base;
 unsigned int reboot_mode_flag;
 spinlock_t reboot_flag_lock;
 int sysdump_status; /* used by sysdump.c */
+static bool sprd_pmic_wdt_probed;
 
 #define WDG_LOAD_LOW		(sprd_wdt_base + 0x00)
 #define WDG_LOAD_HIGH		(sprd_wdt_base + 0x04)
@@ -89,7 +90,7 @@ int sysdump_status; /* used by sysdump.c */
 #define WDG_CNT_HIGH		(sprd_wdt_base + 0x1c)
 #define WDG_LOCK			(sprd_wdt_base + 0x20)
 
-void set_sysdump_enable(int on);
+int set_sysdump_enable(int on);
 #ifdef CONFIG_SPRD_DMC_DRV
 extern void sprd_ddr_force_light_sleep(void);
 #endif
@@ -132,22 +133,35 @@ void sprd_set_reboot_mode(const char *cmd)
 	spin_unlock(&reboot_flag_lock);
 }
 
-void set_sysdump_enable(int on)
+int set_sysdump_enable(int on)
 {
-	unsigned int val = 0;
+	int val, ret;
 
 	val = sprd_adi_read(reboot_device, ANA_RST_STATUS);
+	if (val < 0) {
+		pr_err("set_sysdump_enable: read rst mode failed (%d)\n", val);
+		return val;
+	}
 	pr_emerg("set_sysdump_enable: get rst mode  value is = %x\n", val);
 
 	if (on) {
 		pr_emerg("sprd_set_reboot_mode: enable sysdump!\n");
 		val |= HWRST_STATUS_SYSDUMP;
-		sprd_adi_raw_write(reboot_device, ANA_RST_STATUS, val);
 	} else {
 		pr_emerg("sprd_set_reboot_mode: disable sysdump!\n");
 		val &= ~(HWRST_STATUS_SYSDUMP);
-		sprd_adi_raw_write(reboot_device, ANA_RST_STATUS, val);
 	}
+
+	ret = sprd_adi_raw_write(reboot_device, ANA_RST_STATUS, val);
+	if (ret < 0)
+		pr_err("set_sysdump_enable: write rst mode %x failed (%d)\n",
+			val, ret);
+	return ret < 0 ? ret : 0;
+}
+
+bool sprd_pmic_wdt_ready(void)
+{
+	return sprd_pmic_wdt_probed;
 }
 
 static inline void sprd_load_time_vale(unsigned int value)
@@ -250,12 +264,16 @@ static int sprd_reboot_probe(struct platform_device *pdev)
 	dev_info(&pdev->dev, "PMIC Watchdog probe OK!\n");
 	spin_lock_init(&reboot_flag_lock);
 	reboot_mode_flag = 0;
+	sprd_pmic_wdt_probed = true;
 
 #if defined(CONFIG_SPRD_DEBUG) && defined(CONFIG_SPRD_SYSDUMP)
 	pr_emerg("userdebug enable sysdump in default !!!\n");
-	sprd_set_reboot_mode("dumpenable");
-	set_sysdump_enable(1);
-	sysdump_status = 1;
+	if (set_sysdump_enable(1)) {
+		pr_err("sysdump: PMIC dump bit not set at probe, dump stays off\n");
+	} else {
+		sprd_set_reboot_mode("dumpenable");
+		sysdump_status = 1;
+	}
 #endif
 	return ret;
 }

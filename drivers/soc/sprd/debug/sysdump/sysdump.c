@@ -24,6 +24,7 @@
 #include <linux/miscdevice.h>
 #include <linux/mm.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/proc_fs.h>
 #include <linux/reboot.h>
@@ -129,12 +130,13 @@ static int sprd_sysdump_init;
 
 extern int sysdump_status;
 extern void sprd_set_reboot_mode(const char *cmd);
-extern void set_sysdump_enable(int on);
+extern int set_sysdump_enable(int on);
+extern bool sprd_pmic_wdt_ready(void);
 
 #ifdef CONFIG_SPRD_WATCHDOG_SYS
-extern void sysdump_enable_watchdog(int on);
+extern int sysdump_enable_watchdog(int on);
 #else
-#define sysdump_enable_watchdog(on) do { } while (0)
+#define sysdump_enable_watchdog(on) (0)
 #endif
 
 void sprd_debug_check_crash_key(unsigned int code, int value)
@@ -584,6 +586,41 @@ static int sprd_sysdump_open(struct inode *inode, struct file *file)
 }
 
 
+/*
+ * Serializes the whole on/off transition (PMIC bit, reboot flag, status,
+ * SoC watchdog) between the boot hook and the /proc write.  Sleeping context
+ * only: the panic path must not take it.
+ */
+static DEFINE_MUTEX(sysdump_state_lock);
+
+/*
+ * Returns 0 when everything was applied; the PMIC bit failing leaves the
+ * state untouched, the SoC watchdog missing (-ENODEV) leaves only the
+ * watchdog part unapplied.
+ */
+static int sysdump_set_state(int on)
+{
+	int ret, wdt_ret;
+
+	mutex_lock(&sysdump_state_lock);
+	ret = set_sysdump_enable(on);
+	if (ret) {
+		pr_err("sysdump: PMIC dump bit not %s (%d), state left as is\n",
+			on ? "set" : "cleared", ret);
+		goto out;
+	}
+	sprd_set_reboot_mode(on ? "dumpenable" : "dumpdisable");
+	sysdump_status = on ? 1 : 0;
+	wdt_ret = sysdump_enable_watchdog(on ? 0 : 1);
+	if (wdt_ret)
+		pr_warn("sysdump: SoC watchdog not %s (%d), rest of the state applied\n",
+			on ? "stopped" : "started", wdt_ret);
+	ret = wdt_ret;
+out:
+	mutex_unlock(&sysdump_state_lock);
+	return ret;
+}
+
 static ssize_t sprd_sysdump_write(struct file *file, const char __user *buf,
 				size_t count, loff_t *data)
 {
@@ -602,22 +639,58 @@ static ssize_t sprd_sysdump_write(struct file *file, const char __user *buf,
 
 		if (!strncmp(sysdump_buf, "on", 2)) {
 			pr_emerg("sprd_sysdump_write: enable user version sysdump!!!\n");
-			sysdump_status = 1;
-			sprd_set_reboot_mode("dumpenable");
-			set_sysdump_enable(1);
-			sysdump_enable_watchdog(0);
+			sysdump_set_state(1);
 		} else if (!strncmp(sysdump_buf, "off", 3)) {
 			pr_emerg("sprd_sysdump_write: disable user version sysdump!!!\n");
-			sysdump_status = 0;
-			sprd_set_reboot_mode("dumpdisable");
-			set_sysdump_enable(0);
-			sysdump_enable_watchdog(1);
+			sysdump_set_state(0);
 		}
 	}
 
 	pr_emerg("sprd_sysdump_write: end!!!\n");
 	return count;
 }
+
+/*
+ * A dump-enabled panic leaves the bootloader in dump mode (no USB, stuck at
+ * the logo) on a watch that has no host attached, so boot with the dump off
+ * unless the command line says sysdump=on.  /proc/sprd_sysdump still
+ * switches it at runtime.
+ */
+static int sysdump_boot_on;
+
+static int __init sysdump_boot_setup(char *str)
+{
+	if (str && !strcmp(str, "on"))
+		sysdump_boot_on = 1;
+	else if (str && !strcmp(str, "off"))
+		sysdump_boot_on = 0;
+	return 0;
+}
+early_param("sysdump", sysdump_boot_setup);
+
+/*
+ * The PMIC and SoC watchdog drivers are expected to have probed by now
+ * (device_initcall); report which part of the state was not applied if not.
+ */
+static int __init sysdump_apply_boot_state(void)
+{
+	const char *state = sysdump_boot_on ? "on" : "off";
+	int ret;
+
+	if (!sprd_pmic_wdt_ready()) {
+		pr_err("sysdump: PMIC watchdog not probed, boot state %s not applied (sysdump_status %d, reboot flag, PMIC dump bit and SoC watchdog left as is)\n",
+			state, sysdump_status);
+		return 0;
+	}
+
+	pr_info("sysdump: boot state %s\n", state);
+	ret = sysdump_set_state(sysdump_boot_on);
+	if (ret)
+		pr_err("sysdump: boot state %s only partly applied (%d), see above; sysdump_status %d\n",
+			state, ret, sysdump_status);
+	return 0;
+}
+late_initcall_sync(sysdump_apply_boot_state);
 
 
 static struct ctl_table sysdump_sysctl_table[] = {
