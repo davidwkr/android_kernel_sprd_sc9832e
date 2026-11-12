@@ -484,6 +484,10 @@
  *
  * The sl8541e reference board disables vddrf18 and vddldomem; stock DM63
  * keeps both on.
+ *
+ * vddrf125 is not default-on in stock either, but 4.4 never switches unused
+ * regulators off, so it stays on from the bootloader. The modem's LTE RF
+ * needs it: with it switched off the SIM reads but no cell is ever found.
  */
 &vddemmccore {
 	/*
@@ -503,6 +507,10 @@
 };
 
 &vddrf18 {
+	regulator-always-on;
+};
+
+&vddrf125 {
 	regulator-always-on;
 };
 
