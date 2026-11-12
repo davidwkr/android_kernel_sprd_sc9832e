@@ -61,3 +61,7 @@ vendor framework acts on it (`palm.press.screen`) was not examined.
 - As in stock, an `0xaa` frame that does not meet the flag condition is parsed as a normal report; the
   previous driver dropped it.
 - Not reported while the controller is asleep (blanked screen), as in stock.
+
+## Notes
+
+A palm report read on resume (noted while the system was suspended) is sent without the 100 ms pause.
