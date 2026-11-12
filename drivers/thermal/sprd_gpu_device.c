@@ -168,7 +168,7 @@ static unsigned long get_static_power(unsigned long m_volt)
 
 	thmzone = thermal_zone_get_zone_by_name("gpu-thmzone");
 
-	if (thmzone) {
+	if (!IS_ERR_OR_NULL(thmzone)) {
 		err = thmzone->ops->get_temp(thmzone, &temperature);
 		if (err) {
 			pr_warn("Error reading temperature:%d\n", err);
@@ -421,6 +421,7 @@ int create_gpu_cooling_device(struct devfreq *gpudev, u64 *mask)
 		cluster_id = of_alias_get_id(child, "gpu-cooling");
 		if (cluster_id < 0 || cluster_id >= cluster_count) {
 			pr_err("fail to get cooling devices id\n");
+			ret = -EINVAL;
 			of_node_put(child);
 			goto free_cluster;
 		}
