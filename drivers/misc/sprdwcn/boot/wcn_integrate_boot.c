@@ -411,13 +411,18 @@ static int wcn_wait_marlin_boot(struct wcn_device *wcn_dev)
 			break;
 
 		msleep(MARLIN_WAIT_CP_INIT_POLL_TIME_MS);
-		WCN_INFO("BTWF: magic_value=0x%x, wait_count=%d\n",
-			 magic_value, wait_count);
+		if (wait_count % WCN_POLL_LOG_INTERVAL == 0)
+			WCN_INFO("BTWF: magic_value=0x%x, wait_count=%d\n",
+				 magic_value, wait_count);
+		else
+			WCN_DBG("BTWF: magic_value=0x%x, wait_count=%d\n",
+				magic_value, wait_count);
 	}
 
 	/* get CP ready flag failed */
 	if (wait_count >= MARLIN_WAIT_CP_INIT_COUNT) {
-		WCN_ERR("MARLIN boot cp timeout!\n");
+		WCN_ERR("MARLIN boot cp timeout! magic_value=0x%x\n",
+			 magic_value);
 		magic_value = MARLIN_CP_INIT_FAILED_MAGIC;
 		wcn_write_data_to_phy_addr(phy_addr, &magic_value, sizeof(u32));
 		return -1;
@@ -486,8 +491,12 @@ static void gnss_read_boot_flag(void)
 			break;
 
 		msleep(MARLIN_WAIT_CP_INIT_POLL_TIME_MS);
-		WCN_INFO("gnss boot: magic_value=%d, wait_count=%d\n",
-			 magic_value, wait_count);
+		if (wait_count % WCN_POLL_LOG_INTERVAL == 0)
+			WCN_INFO("gnss boot: magic_value=%d, wait_count=%d\n",
+				 magic_value, wait_count);
+		else
+			WCN_DBG("gnss boot: magic_value=%d, wait_count=%d\n",
+				magic_value, wait_count);
 	}
 
 	WCN_INFO("finish!\n");
@@ -511,14 +520,20 @@ static int wcn_wait_gnss_boot(struct wcn_device *wcn_dev)
 		 wait_count++) {
 		wcn_read_data_from_phy_addr(phy_addr,
 					    &magic_value, sizeof(u32));
-		WCN_INFO("gnss cali: magic_value=0x%x, wait_count=%d\n",
-			 magic_value, wait_count);
+		if (wait_count % WCN_POLL_LOG_INTERVAL == 0)
+			WCN_INFO("gnss cali: magic_value=0x%x, wait_count=%d\n",
+				 magic_value, wait_count);
+		else
+			WCN_DBG("gnss cali: magic_value=0x%x, wait_count=%d\n",
+				magic_value, wait_count);
 		if (magic_value == GNSS_CALI_DONE_FLAG)
 			break;
 		msleep(GNSS_WAIT_CP_INIT_POLL_TIME_MS);
 	}
 
 	if (wait_count >= GNSS_WAIT_CP_INIT_COUNT) {
+		WCN_ERR("GNSS boot cp timeout! magic_value=0x%x\n",
+			 magic_value);
 		gnss_set_boot_status(WCN_BOOT_CP2_ERR_BOOT);
 		return -1;
 	}
@@ -976,8 +991,12 @@ static int wcn_wait_wcn_deep_sleep(struct wcn_device *wcn_dev, int force_sleep)
 		if (wcn_get_sleep_status(wcn_dev, force_sleep) == 0)
 			break;
 		msleep(20);
-		WCN_INFO("wait_sleep_count=%d!\n",
-			 wait_sleep_count);
+		if (wait_sleep_count % WCN_POLL_LOG_INTERVAL == 0)
+			WCN_INFO("wait_sleep_count=%d!\n",
+				 wait_sleep_count);
+		else
+			WCN_DBG("wait_sleep_count=%d!\n",
+				wait_sleep_count);
 	}
 
 	return 0;

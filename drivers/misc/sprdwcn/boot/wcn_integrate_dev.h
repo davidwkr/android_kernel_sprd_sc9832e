@@ -176,6 +176,8 @@ struct wifi_calibration {
 #define MARLIN_WAIT_CP_INIT_COUNT	(256)
 #define MARLIN_WAIT_CP_INIT_MAX_TIME (20000)
 #define WCN_WAIT_SLEEP_MAX_COUNT (32)
+/* poll loops reach the serial console, log every Nth poll only */
+#define WCN_POLL_LOG_INTERVAL (32)
 
 /* begin : for gnss module */
 /* record efuse, GNSS_EFUSE_DATA_OFFSET is defined in gnss.h */

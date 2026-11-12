@@ -433,9 +433,9 @@ static int wifi_nvm_set_cmd(struct nvm_name_table *pTable,
 
 	p = (unsigned char *)(p_data) + pTable->mem_offset;
 
-	pr_info("[g_table]%s, offset:%u, num:%u, value: %x %x %x",
-		pTable->itm, pTable->mem_offset, cmd->num,
-		cmd->par[0], cmd->par[1], cmd->par[2]);
+	pr_debug("[g_table]%s, offset:%u, num:%u, value: %x %x %x",
+		 pTable->itm, pTable->mem_offset, cmd->num,
+		 cmd->par[0], cmd->par[1], cmd->par[2]);
 	pr_debug(", %x %x %x %x %x %x\n",
 		cmd->par[6], cmd->par[7], cmd->par[8],
 		cmd->par[9], cmd->par[10], cmd->par[11]);
