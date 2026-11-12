@@ -778,6 +778,15 @@
 	status = "okay";
 };
 
+/* JPEG codec, enabled in stock as well (jpeg-codec@60b00000, iommu@60b00000). */
+&iommu_jpg {
+	status = "okay";
+};
+
+&jpg {
+	status = "okay";
+};
+
 &dsi {
 	status = "okay";
 	#address-cells = <1>;
