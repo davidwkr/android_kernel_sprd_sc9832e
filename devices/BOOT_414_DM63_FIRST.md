@@ -368,15 +368,17 @@ Review findings in `drivers/trusty/trusty-ipc.c`, present in 4.4 and 4.14, fixed
 3. (4.14 only) The connect failure and refusal logs are rate-limited and the service name an application passes is
    printed as a copy cut to 48 characters with non-printable bytes replaced by `?`. The connect log no longer uses
    `vds->vdev`.
-4. The per-channel rx queue is capped at 128 messages (`MAX_RX_BACKLOG`), further messages are discarded like an
-   allocation failure.
+4. A per-channel rx cap of 128 messages was tried and reverted after review: it dropped valid messages silently
+   while the channel stayed connected. The transport (`trusty-virtio.c`) now skips deleted queues in
+   `check_all_vqs()` and flushes that work before `del_vqs` frees them; before, a failed probe or a remove left
+   freed or NULL queues that the next Trusty call return passed to `vring_interrupt()`.
 5. `msg_buf_max_size` from the device config must be at least one connect request (header + control message +
    request body, 280 bytes) and at most the 16 bit header length plus the header; probe fails with -EINVAL
    otherwise. The stock values (page size) are inside.
 6. `tipc_read_iter()` advances the read cursor only after `copy_to_iter()` succeeded.
 
 Build-tested only. Watch for `invalid msg_buf_max_size` in the probe (it would mean the TEE announces something
-unexpected) and for `discard incoming message` bursts (a reader slower than the cap).
+unexpected).
 
 ### Open blockers for a clean boot
 
