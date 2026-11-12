@@ -875,18 +875,24 @@ static void fullbatt_vchk(struct work_struct *work)
  * check_charging_duration - Monitor charging/discharging duration
  * @cm: the Charger Manager representing the battery.
  *
- * If whole charging duration exceed 'charging_max_duration_ms',
- * cm stop charging to prevent overcharge/overheat. If discharging
- * duration exceed 'discharging _max_duration_ms', charger cable is
- * attached, after full-batt, cm start charging to maintain fully
- * charged state for battery.
+ * If a charge lasts longer than the limit ('charging_max_duration_ms' for the
+ * first one after the adapter was attached, 'recharging_max_duration_ms' for
+ * the following ones, as the stock chg-timeout / chg-rechg-timeout), cm stops
+ * charging to prevent overcharge/overheat, whatever the battery voltage.
+ *
+ * The charge is then restarted by the stock recharge rule of the 4.4
+ * sprd_battery.c: as soon as the OCV is at or below the recharge level
+ * (fullbatt_uV - fullbatt_vchkdrop_uV, stock rechg-vol 4415 mV), and not
+ * before. If a battery is still above that level it stays stopped, as the
+ * stock FULL state. Without 'fullbatt_vchkdrop_uV' the charge restarts after
+ * 'discharging_max_duration_ms'.
  */
 static int check_charging_duration(struct charger_manager *cm)
 {
 	struct charger_desc *desc = cm->desc;
 	u64 curr = ktime_to_ms(ktime_get());
-	u64 duration;
-	int batt_ocv, diff, ret = false;
+	u64 duration, limit;
+	int batt_ocv, ret = false;
 
 	if (!desc->charging_max_duration_ms &&
 			!desc->discharging_max_duration_ms)
@@ -896,33 +902,41 @@ static int check_charging_duration(struct charger_manager *cm)
 	    !(cm->charging_status & CM_CHARGE_DURATION_ABNORMAL))
 		return ret;
 
-	ret = get_batt_ocv(cm, &batt_ocv);
-	if (ret) {
-		dev_err(cm->dev, "failed to get battery OCV\n");
-		return ret;
-	}
-	diff = desc->fullbatt_uV - batt_ocv;
-
 	if (cm->charger_enabled) {
+		limit = desc->charging_max_duration_ms;
+		if (cm->recharge_period && desc->recharging_max_duration_ms)
+			limit = desc->recharging_max_duration_ms;
+
 		duration = curr - cm->charging_start_time;
 
-		if (duration > desc->charging_max_duration_ms &&
-		    diff < desc->fullbatt_vchkdrop_uV) {
-			dev_info(cm->dev, "Charging duration exceed %ums\n",
-				 desc->charging_max_duration_ms);
+		/* no battery voltage condition: the limit always applies */
+		if (duration > limit) {
+			dev_info(cm->dev, "Charging duration exceed %llums\n",
+				 limit);
 			uevent_notify(cm, "Discharging");
 			try_charger_enable(cm, false);
 			cm->charging_status |= CM_CHARGE_DURATION_ABNORMAL;
+			cm->recharge_period = true;
 			ret = true;
 		}
 	} else if (is_ext_pwr_online(cm) && !cm->charger_enabled &&
 		(cm->charging_status & CM_CHARGE_DURATION_ABNORMAL)) {
+		bool recharge;
+
 		duration = curr - cm->charging_end_time;
 
-		if (duration > desc->discharging_max_duration_ms &&
-				is_ext_pwr_online(cm)) {
-			dev_info(cm->dev, "Discharging duration exceed %ums\n",
-				 desc->discharging_max_duration_ms);
+		if (desc->fullbatt_vchkdrop_uV) {
+			int err = get_batt_ocv(cm, &batt_ocv);
+
+			/* no OCV, no restart; signed, the OCV can be above */
+			recharge = !err && (int)desc->fullbatt_uV - batt_ocv >=
+					   (int)desc->fullbatt_vchkdrop_uV;
+		} else {
+			recharge = duration > desc->discharging_max_duration_ms;
+		}
+
+		if (recharge) {
+			dev_info(cm->dev, "Recharging after the duration limit\n");
 			uevent_notify(cm, "Recharging");
 			try_charger_enable(cm, true);
 			cm->charging_status &= ~CM_CHARGE_DURATION_ABNORMAL;
@@ -1578,6 +1592,8 @@ static bool _cm_monitor(struct charger_manager *cm)
 		uevent_notify(cm, default_event_names[CM_EVENT_BATT_FULL]);
 
 		try_charger_enable(cm, false);
+		/* stock: the time limit after a full is the recharge one */
+		cm->recharge_period = true;
 
 		fullbatt_vchk(&cm->fullbatt_vchk_work.work);
 	} else {
@@ -2753,6 +2769,8 @@ static struct charger_desc *of_cm_parse_desc(struct device *dev)
 
 	of_property_read_u32(np, "cm-charging-max",
 				&desc->charging_max_duration_ms);
+	of_property_read_u32(np, "cm-recharging-max",
+				&desc->recharging_max_duration_ms);
 	of_property_read_u32(np, "cm-discharging-max",
 				&desc->discharging_max_duration_ms);
 	of_property_read_u32(np, "cm-charge-voltage-max",

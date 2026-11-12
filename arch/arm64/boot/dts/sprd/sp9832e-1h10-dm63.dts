@@ -262,6 +262,14 @@
 		cm-battery-temp-diff = <30>;
 
 		cm-charging-max = <21600000>;		/* [stock] chg-timeout 21600 s */
+		/*
+		 * [stock] chg-rechg-timeout 5400 s: limit of every charge after
+		 * the first (restart after the timeout, recharge after full).
+		 * At the limit charging always stops and restarts once the OCV
+		 * is at or below 4415 mV (cm-fullbatt-voltage - vchkdrop), the
+		 * stock rechg-vol rule; cm-discharging-max is then not used.
+		 */
+		cm-recharging-max = <5400000>;
 		cm-discharging-max = <2700000>;		/* [base] */
 
 		cm-shutdown-voltage = <3050000>;	/* [stock] soft-vbat-uvlo */
