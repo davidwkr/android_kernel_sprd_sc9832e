@@ -229,6 +229,9 @@ static int trusty_virtio_finalize_features(struct virtio_device *vdev)
 	/* Make sure we don't have any features > 32 bits! */
 	BUG_ON((u32)vdev->features != vdev->features);
 
+	dev_info(&vdev->dev, "features: device 0x%x guest 0x%llx\n",
+		 tvdev->vdev_descr->dfeatures, (u64)vdev->features);
+
 	tvdev->vdev_descr->gfeatures = vdev->features;
 	return 0;
 }
@@ -459,6 +462,8 @@ static int trusty_virtio_add_device(struct trusty_ctx *tctx,
 	}
 
 	/* register device */
+	dev_info(tctx->dev, "registering virtio device id %u notifyid %u\n",
+		 vdev_descr->id, tvdev->notifyid);
 	ret = register_virtio_device(&tvdev->vdev);
 	if (ret) {
 		dev_err(tctx->dev,
@@ -600,6 +605,7 @@ static int trusty_virtio_add_devices(struct trusty_ctx *tctx)
 	}
 
 	descr_sz = (size_t)ret;
+	dev_info(tctx->dev, "device descr: %zu bytes\n", descr_sz);
 
 	mutex_lock(&tctx->mlock);
 
@@ -625,6 +631,7 @@ static int trusty_virtio_add_devices(struct trusty_ctx *tctx)
 		dev_err(tctx->dev, "failed (%d) to start virtio\n", ret);
 		goto err_start_virtio;
 	}
+	dev_info(tctx->dev, "virtio started\n");
 
 	/* attach shared area */
 	tctx->shared_va = descr_va;
