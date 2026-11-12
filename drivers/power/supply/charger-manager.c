@@ -1225,10 +1225,9 @@ static bool cm_manager_adjust_current(struct charger_manager *cm,
 
 /* Zone selection for the four entry table, unchanged from the original code. */
 static int cm_manager_get_jeita_status_4(struct charger_manager *cm,
-					 int cur_temp)
+					 int cur_temp, int jeita_status)
 {
 	struct charger_desc *desc = cm->desc;
-	static int jeita_status;
 	int i;
 
 	for (i = desc->jeita_tab_size - 1; i >= 0; i--) {
@@ -1282,18 +1281,26 @@ static int cm_manager_get_jeita_status_4(struct charger_manager *cm,
  * An entry with recovery_temp below its temp is an upper boundary: a falling
  * temperature only returns to the zone below it once recovery_temp is
  * reached. The four entry table keeps its original selection code.
+ *
+ * The hysteresis is taken against the zone in force (cm->jeita_zone), not
+ * against the result of the previous sample: the zone only changes after
+ * three samples, so a single low reading while the battery is still stopped
+ * hot (or high while stopped cold) must not release the recovery band. The
+ * zone in force is kept across a plug cycle; before the first evaluation it
+ * is the lowest zone, as the static variable of the stock 4.4 code
+ * sprdbat_get_status_from_tab().
  */
 static int cm_manager_get_jeita_status(struct charger_manager *cm, int cur_temp)
 {
 	struct charger_desc *desc = cm->desc;
-	static int jeita_status;
+	int jeita_status = cm->jeita_zone < 0 ? 0 : cm->jeita_zone;
 	int n = desc->jeita_tab_size;
 	struct charger_jeita_table *tab = desc->jeita_tab;
 	int i, z;
 	bool keep;
 
 	if (n == 4)
-		return cm_manager_get_jeita_status_4(cm, cur_temp);
+		return cm_manager_get_jeita_status_4(cm, cur_temp, jeita_status);
 
 	for (i = n - 1; i >= 0; i--) {
 		if ((cur_temp >= tab[i].temp && i > 0) ||
@@ -1378,6 +1385,7 @@ static int cm_manager_jeita_current_monitor(struct charger_manager *cm)
 	if (last_jeita_status == -1) {
 		is_normal = cm_manager_adjust_current(cm, cur_jeita_status);
 		last_jeita_status = cur_jeita_status;
+		cm->jeita_zone = cur_jeita_status;
 		goto out;
 	}
 
@@ -1388,6 +1396,7 @@ static int cm_manager_jeita_current_monitor(struct charger_manager *cm)
 			is_normal = cm_manager_adjust_current(cm,
 							      cur_jeita_status);
 			last_jeita_status = cur_jeita_status;
+			cm->jeita_zone = cur_jeita_status;
 		}
 	} else if (cur_jeita_status < last_jeita_status) {
 		temp_up_trigger = 0;
@@ -1396,6 +1405,7 @@ static int cm_manager_jeita_current_monitor(struct charger_manager *cm)
 			is_normal = cm_manager_adjust_current(cm,
 							      cur_jeita_status);
 			last_jeita_status = cur_jeita_status;
+			cm->jeita_zone = cur_jeita_status;
 		}
 	} else {
 		temp_up_trigger = 0;
@@ -3082,6 +3092,7 @@ static int charger_manager_probe(struct platform_device *pdev)
 	}
 
 	cm->desc->thm_adjust_cur = -EINVAL;
+	cm->jeita_zone = -1;
 
 	cur_time = ktime_to_timespec64(ktime_get_boottime());
 	cm->desc->update_capacity_time = cur_time.tv_sec;

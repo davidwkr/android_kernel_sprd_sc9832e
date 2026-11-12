@@ -314,6 +314,9 @@ struct charger_manager {
 	u64 charging_start_time;
 	u64 charging_end_time;
 	u32 charging_status;
+
+	/* jeita zone in force (committed), -1 before the first evaluation */
+	int jeita_zone;
 };
 
 #ifdef CONFIG_CHARGER_MANAGER
