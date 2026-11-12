@@ -210,6 +210,8 @@ static bool cst0xx_process_report(struct cst0xx_ts *ts)
 	if (cst0xx_is_palm(report)) {
 		input_report_key(input, KEY_F4, 1);
 		input_report_key(input, KEY_F4, 0);
+		/* release every contact, as stock's empty type A frame does */
+		input_mt_sync_frame(input);
 		input_sync(input);
 		return true;
 	}
