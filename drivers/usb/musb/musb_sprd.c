@@ -699,7 +699,10 @@ static void sprd_musb_work(struct work_struct *work)
 		spin_lock_irqsave(&glue->lock, flags);
 		charging_only = glue->charging_mode;
 		spin_unlock_irqrestore(&glue->lock, flags);
+		/* under musb->lock: musb_g_disconnect() keeps REMOVED */
+		spin_lock_irqsave(&musb->lock, flags);
 		usb_gadget_set_state(&musb->g, USB_STATE_REMOVED);
+		spin_unlock_irqrestore(&musb->lock, flags);
 		if (charging_only || pm_runtime_suspended(glue->dev)) {
 			dev_info(glue->dev,
 					"musb device had been in suspend status!\n");
