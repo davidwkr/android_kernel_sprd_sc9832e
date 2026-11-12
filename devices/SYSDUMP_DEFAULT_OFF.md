@@ -25,6 +25,13 @@ panic path is untouched. The init already runs after the PMIC regmap is
 looked up (`sprd_sysdump_enable_prepare()`); with no regmap the call logs and
 does nothing.
 
+`set_sysdump_enable()` returns the regmap read/write error and updates
+`sysdump_status` only after the register write succeeded (a failure is logged
+and the status keeps its old value; the watchdog is not touched then). The
+whole transition (PMIC bit, status, watchdog) runs under one mutex,
+`sysdump_state_lock`, shared by the boot hook and the `/proc/sprd_sysdump`
+write; the panic path never takes it.
+
 ## Not verified
 
 Compile-tested only; no 4.14 device test of the reboot-mode path.

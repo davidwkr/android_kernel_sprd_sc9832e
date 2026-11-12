@@ -38,6 +38,7 @@
 #include <linux/uaccess.h>
 #include <linux/vmalloc.h>
 #include <linux/regmap.h>
+#include <linux/mutex.h>
 #ifdef CONFIG_SPRD_SIPC
 #include <linux/sipc.h>
 #endif
@@ -209,6 +210,7 @@ extern void sysdump_enable_watchdog(int on);
 #define sysdump_enable_watchdog(on) do { } while (0)
 #endif
 static int set_sysdump_enable(int on);
+static int sysdump_set_state(int on);
 
 
 void sprd_debug_check_crash_key(unsigned int code, int value)
@@ -679,13 +681,11 @@ static ssize_t sprd_sysdump_write(struct file *file, const char __user *buf,
 		if (!strncmp(sysdump_buf, "on", 2)) {
 			pr_info("%s: enable user version sysdump!!!\n",
 				__func__);
-			set_sysdump_enable(1);
-			sysdump_enable_watchdog(0);
+			sysdump_set_state(1);
 		} else if (!strncmp(sysdump_buf, "off", 3)) {
 			pr_info("%s: disable user version sysdump!!!\n",
 				__func__);
-			set_sysdump_enable(0);
-			sysdump_enable_watchdog(1);
+			sysdump_set_state(0);
 		}
 	}
 
@@ -807,30 +807,61 @@ error_pmic_node:
 static int set_sysdump_enable(int on)
 {
 	unsigned int val = 0;
-
+	int ret;
 
 	if (!regmap) {
 		pr_err("can not %s sysdump because of regmap is NULL\n",
 			on ? "enable" : "disable");
-		return -1;
+		return -ENODEV;
 	}
 
-	regmap_read(regmap, pmic_reg, &val);
+	ret = regmap_read(regmap, pmic_reg, &val);
+	if (ret) {
+		pr_err("%s: read rst mode failed (%d), sysdump not %s\n",
+			__func__, ret, on ? "enabled" : "disabled");
+		return ret;
+	}
 	pr_info("%s: get rst mode  value is = %x\n", __func__, val);
 
 	if (on) {
 		pr_info("%s: enable sysdump!\n", __func__);
 		val |= HWRST_STATUS_SYSDUMP;
-		regmap_write(regmap, pmic_reg, val);
-		sysdump_status = 1;
 	} else {
 		pr_info("%s: disable sysdump!\n", __func__);
 		val &= ~(HWRST_STATUS_SYSDUMP);
-		regmap_write(regmap, pmic_reg, val);
-		sysdump_status = 0;
 	}
 
+	ret = regmap_write(regmap, pmic_reg, val);
+	if (ret) {
+		pr_err("%s: write rst mode %x failed (%d), sysdump not %s\n",
+			__func__, val, ret, on ? "enabled" : "disabled");
+		return ret;
+	}
+
+	sysdump_status = on ? 1 : 0;
 	return 0;
+}
+
+/*
+ * Serializes the whole on/off transition between the boot hook and the
+ * /proc write.  Sleeping context only: the panic path must not take it.
+ */
+static DEFINE_MUTEX(sysdump_state_lock);
+
+static int sysdump_set_state(int on)
+{
+	int ret;
+
+	mutex_lock(&sysdump_state_lock);
+	ret = set_sysdump_enable(on);
+	if (!ret)
+		sysdump_enable_watchdog(on ? 0 : 1);
+	mutex_unlock(&sysdump_state_lock);
+
+	if (ret)
+		pr_err("%s: sysdump state not changed to %s (%d)\n",
+			__func__, on ? "on" : "off", ret);
+	return ret;
 }
 
 static int sysdump_shash_init(void)
@@ -1486,13 +1517,10 @@ int sysdump_sysctl_init(void)
 	sprd_sysdump_enable_prepare();
 	pr_info("%s: boot state %s\n", __func__,
 		sysdump_boot_on ? "on" : "off");
-	if (sysdump_boot_on) {
-		set_sysdump_enable(1);
-		sysdump_enable_watchdog(0);
-	} else {
-		set_sysdump_enable(0);
-		sysdump_enable_watchdog(1);
-	}
+	if (sysdump_set_state(sysdump_boot_on))
+		pr_err("%s: boot state %s not applied, sysdump_status stays %d\n",
+			__func__, sysdump_boot_on ? "on" : "off",
+			sysdump_status);
 #ifdef CONFIG_SPRD_MINI_SYSDUMP
 	minidump_init();
 #endif
