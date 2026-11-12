@@ -10,7 +10,6 @@ fields (board id `0x2668`, rev 1), on a copy of the stock DM63 boot image; in it
 (`devices/WCN_414_PORT.md`, debug info stripped) replace the 4.4.83 ones, and the stale 4.4.83 `mali.ko` with its `insmod` line is removed
 (`tools/sprd_ramdisk.py remove-module`). Build script: `devices/build_414_stock81.sh`.
 
-sha256 of the earlier image (`dm63_414_adf_adf_candidate.img`, DTB without `-ramoops`, `loglevel=1`): `423c515de75efa1aebdaef45b0892f8e22a646fe9ad24dc1461885c7bf18502f`
 
 **Current test images (2026-11-11):** the same build on the `-ramoops` DTB (`loglevel=7`, crash log:
 `devices/RAMOOPS_414.md`) and `watch_414_ramoops.fragment`, built by `devices/build_414_stock81.sh`
@@ -18,8 +17,8 @@ from the merge of `debug/ramoops-414` into `kernel-4.14` (`TOOLS` = a tree with 
 
 | Image | sha256 |
 |---|---|
-| `dm63_414_adf_ramoops_candidate.img` | `286ff6d21cd85197a48ad8185373972957264738b3614d7a272ec061de198352` |
-| `dm63_414_adf_ramoops_candidate_BENCHDEBUG.img` | `fa0cd2659b860566a26b74b9b432fe0e4b70d41afaf14974dc2695b554499708` |
+| `dm63_414_adf_ramoops_candidate.img` | `5d314ed62d2c66cb6e4c9833533f1cad68fc39209d4cd4a7fa14db9ec197e15c` |
+| `dm63_414_adf_ramoops_candidate_BENCHDEBUG.img` | `ff23b661c85bfc92e6a66ef0eefd9ebeee3632f33add9a7fd1e2b01e654a2521` |
 
 The BENCHDEBUG image adds `/adb_keys` and `init.benchdebug.rc` to the ramdisk: early authenticated adb for the
 bench host, nothing else changed (`devices/BENCH_DEBUG.md`). **Bench watches only: reflash the normal image

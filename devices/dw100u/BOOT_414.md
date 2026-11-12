@@ -10,7 +10,6 @@ fields (board id `0x2668`, rev 1), on a copy of the stock DW100U silver boot ima
 (`devices/WCN_414_PORT.md`, debug info stripped) replace the 4.4.83 ones, and the stale 4.4.83 `mali.ko` with its `insmod` line is removed
 (`tools/sprd_ramdisk.py remove-module`). Build script: `devices/build_414_stock81.sh`.
 
-sha256 of the earlier image (`dw100u-silver_414_adf_adf_candidate.img`, DTB without `-ramoops`, `loglevel=1`): `cefda2a54bb64c442199580b249f063f55d062188ad39fee9d96571297310a9c`
 
 **Current test images (2026-11-11):** the same build on the `-ramoops` DTB (`loglevel=7`, crash log:
 `devices/RAMOOPS_414.md`) and `watch_414_ramoops.fragment`, built by `devices/build_414_stock81.sh`
@@ -18,8 +17,8 @@ from the merge of `debug/ramoops-414` into `kernel-4.14` (`TOOLS` = a tree with 
 
 | Image | sha256 |
 |---|---|
-| `dw100u-silver_414_adf_ramoops_candidate.img` | `dcf1e9029a1f9a38446e67209b905ab6f74520a08cc10efc91d80700fdda5492` |
-| `dw100u-silver_414_adf_ramoops_candidate_BENCHDEBUG.img` | `72f7b8e6d968cb923ee2cad41ce1f97a69ee69a50aac45774381934d149b238d` |
+| `dw100u-silver_414_adf_ramoops_candidate.img` | `869b74e3611cd27d2e64fd7ae8b19d1996c50c348ad976e1e0a5356a1057c0c9` |
+| `dw100u-silver_414_adf_ramoops_candidate_BENCHDEBUG.img` | `e9fa6984bdf6300d53759eed4d9a88393e9a98b9b0c28b52eed212317c6b5f64` |
 
 The BENCHDEBUG image adds `/adb_keys` and `init.benchdebug.rc` to the ramdisk: early authenticated adb for the
 bench host, nothing else changed (`devices/BENCH_DEBUG.md`). **Bench watches only: reflash the normal image
