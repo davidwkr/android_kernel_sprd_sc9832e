@@ -26,6 +26,9 @@
 #ifdef CONFIG_DEVFREQ_THERMAL
 #include <linux/devfreq_cooling.h>
 #endif
+#ifdef CONFIG_SPRD_GPU_COOLING_DEVICE
+#include <linux/sprd_gpu_device.h>
+#endif
 
 #include <linux/version.h>
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 13, 0)
@@ -433,9 +436,27 @@ int kbase_devfreq_init(struct kbase_device *kbdev)
 	err = kbase_ipa_init(kbdev);
 	if (err) {
 		dev_err(kbdev->dev, "IPA initialization failed\n");
-		goto cooling_failed;
+		goto ipa_failed;
 	}
 
+#ifdef CONFIG_SPRD_GPU_COOLING_DEVICE
+	/*
+	 * The board DT thermal zone binds the "gpu-cooling-devices" child
+	 * nodes, not the GPU node, so register the cooling device against
+	 * those instead. A board without that node (or without the "lwfq/type"
+	 * property the helper checks) has no GPU trip points to serve: run
+	 * unthrottled rather than fail the GPU.
+	 */
+	err = create_gpu_cooling_device(kbdev->devfreq,
+			&kbdev->pm.debug_core_mask_all);
+	if (err == -ENODEV) {
+		dev_warn(kbdev->dev, "No GPU cooling device, not throttling\n");
+	} else if (err) {
+		dev_err(kbdev->dev,
+			"Failed to create cooling device (%d)\n", err);
+		goto cooling_failed;
+	}
+#else
 	kbdev->devfreq_cooling = of_devfreq_cooling_register_power(
 			kbdev->dev->of_node,
 			kbdev->devfreq,
@@ -448,11 +469,14 @@ int kbase_devfreq_init(struct kbase_device *kbdev)
 		goto cooling_failed;
 	}
 #endif
+#endif
 
 	return 0;
 
 #ifdef CONFIG_DEVFREQ_THERMAL
 cooling_failed:
+	kbase_ipa_term(kbdev);
+ipa_failed:
 	devfreq_unregister_opp_notifier(kbdev->dev, kbdev->devfreq);
 #endif /* CONFIG_DEVFREQ_THERMAL */
 opp_notifier_failed:
@@ -471,8 +495,12 @@ void kbase_devfreq_term(struct kbase_device *kbdev)
 	dev_dbg(kbdev->dev, "Term Mali devfreq\n");
 
 #ifdef CONFIG_DEVFREQ_THERMAL
+#ifdef CONFIG_SPRD_GPU_COOLING_DEVICE
+	destroy_gpu_cooling_device();
+#else
 	if (kbdev->devfreq_cooling)
 		devfreq_cooling_unregister(kbdev->devfreq_cooling);
+#endif
 
 	kbase_ipa_term(kbdev);
 #endif

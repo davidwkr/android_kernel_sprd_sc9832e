@@ -70,6 +70,13 @@ CONFIG_MALI_DEVFREQ=y
 # sharkle platform code turns into a devfreq floor (the sprd,dfs-range-max cap
 # still wins; see devices/MALI_R21P0.md).
 CONFIG_MALI_BOOST=y
+# GPU thermal throttling: devfreq cooling plus the sprd cooling device that
+# mali registers (create_gpu_cooling_device) for the gpu-cooling-devices node
+# the DM63 and DW100U gpu-thmzone binds; other boards have no such node and
+# the GPU simply runs unthrottled. The stock kernel has neither, so this goes
+# beyond stock (devices/MALI_R21P0.md).
+CONFIG_DEVFREQ_THERMAL=y
+CONFIG_SPRD_GPU_COOLING_DEVICE=y
 
 # SC2342 Wi-Fi, BT and FM clients (stock module names for the ramdisk insmod lines)
 CONFIG_SPRDWL_NG=m

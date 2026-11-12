@@ -22,7 +22,7 @@
 # compiled there - ipa/'s two headers are kept so mali_kbase.h's and
 # mali_kbase_core_linux.c's unconditional #includes resolve. The watches set
 # CONFIG_DEVFREQ_THERMAL for GPU thermal cooling (arch/arm64/configs/
-# watch_414_gpu_thermal.fragment).
+# watch_414.fragment).
 ifeq ($(CONFIG_DEVFREQ_THERMAL),y)
 
 mali-y += \

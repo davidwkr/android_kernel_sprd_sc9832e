@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * GPU thermal throttling of the DM63 and DW100U: the stock gpu-thmzone passive
+ * trips and its "sprd,mali-power-model" cooling device, with the stock values
+ * (identical on both watches). The mali driver registers the cooling device
+ * for this node (create_gpu_cooling_device(), CONFIG_SPRD_GPU_COOLING_DEVICE);
+ * without that option the node and the cooling map are inert. The critical
+ * trip stays in sp9832e-mach.dtsi.
+ */
+
+/ {
+	aliases {
+		gpu-cooling0 = &gpu_cooling0;
+	};
+
+	gpu-cooling-devices {
+		gpu_cooling0: gpu-cooling0 {
+			compatible = "sprd,mali-power-model";
+			#cooling-cells = <2>; /* min followed by max */
+			sprd,efuse-block7 = <7>;
+			sprd,efuse-block15 = <15>;
+			sprd,leak-core = <2 85 1869>;
+			sprd,leak-cluster = <2 85 2524>;
+			sprd,temp-scale = <400 100 100000 6940000>;
+			sprd,voltage-scale = <195 (-358) 343 91>;
+			sprd,hotplug-period = <0>;
+			sprd,core-base = <716>;
+			sprd,cluster-base = <0>;
+			sprd,dynamic-core = <9230 768 1050>;
+			sprd,dynamic-cluster = <0 0 0>;
+		};
+	};
+};
+
+&gpu_thmzone {
+	sustainable-power = <2000>;
+
+	trips {
+		gpu_threshold: trip-point@0 {
+			temperature = <70000>;
+			hysteresis = <1000>;
+			type = "passive";
+		};
+		gpu_target: trip-point@1 {
+			temperature = <85000>;
+			hysteresis = <1000>;
+			type = "passive";
+		};
+	};
+
+	cooling-maps {
+		map0 {
+			trip = <&gpu_target>;
+			contribution = <1024>;
+			cooling-device = <&gpu_cooling0
+				THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+		};
+	};
+};
