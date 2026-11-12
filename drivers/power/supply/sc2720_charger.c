@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0：
 // Copyright (C) 2019 Spreadtrum Communications Inc.
 
+#include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/nvmem-consumer.h>
 #include <linux/platform_device.h>
@@ -1519,6 +1520,24 @@ static void sc2720_charger_unwind(struct sc2720_charger_info *info)
 	mutex_unlock(&info->lock);
 }
 
+/*
+ * Force the charge off, a few tries with a short pause: a PMIC bus glitch
+ * at boot must not leave the firmware's charge setting in force.
+ */
+static int sc2720_charger_force_off(struct sc2720_charger_info *info)
+{
+	int i, ret = 0;
+
+	for (i = 0; i < 3; i++) {
+		ret = sc2720_charger_stop_charge(info);
+		if (!ret)
+			return 0;
+		msleep(20);
+	}
+
+	return ret;
+}
+
 static int sc2720_charger_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
@@ -1568,12 +1587,22 @@ static int sc2720_charger_probe(struct platform_device *pdev)
 	 * one. This is done before anything that can defer or fail.
 	 */
 	if (info->start_by_cm) {
-		ret = sc2720_charger_stop_charge(info);
+		ret = sc2720_charger_force_off(info);
 		if (ret) {
-			dev_err(&pdev->dev, "cannot force the charge off\n");
-			return ret;
+			/*
+			 * Do not fail the probe: without the supply nothing
+			 * would ever stop the charge. Register it reporting
+			 * "charging" (cached flag and the unreadable or still
+			 * clear CHG_PD) so charger-manager's strict reconcile
+			 * writes the stop again every poll.
+			 */
+			dev_err(&pdev->dev,
+				"cannot force the charge off (%d), charger-manager will retry\n",
+				ret);
+			info->charging = true;
+		} else {
+			info->charging = false;
 		}
-		info->charging = false;
 	}
 
 	/*
@@ -1583,7 +1612,8 @@ static int sc2720_charger_probe(struct platform_device *pdev)
 	info->usb_phy = devm_usb_get_phy_by_phandle(&pdev->dev, "phys", 0);
 	if (IS_ERR(info->usb_phy)) {
 		dev_err(&pdev->dev, "failed to find USB phy\n");
-		return PTR_ERR(info->usb_phy);
+		ret = PTR_ERR(info->usb_phy);
+		goto err_off;
 	}
 
 	charger_cfg.drv_data = info;
@@ -1594,7 +1624,8 @@ static int sc2720_charger_probe(struct platform_device *pdev)
 						   &charger_cfg);
 	if (IS_ERR(info->psy_usb)) {
 		dev_err(&pdev->dev, "failed to register power supply\n");
-		return PTR_ERR(info->psy_usb);
+		ret = PTR_ERR(info->psy_usb);
+		goto err_off;
 	}
 
 	/* after psy_usb exists: the work it queues calls power_supply_changed() */
@@ -1602,7 +1633,7 @@ static int sc2720_charger_probe(struct platform_device *pdev)
 	ret = usb_register_notifier(info->usb_phy, &info->usb_notify);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to register notifier:%d\n", ret);
-		return ret;
+		goto err_off;
 	}
 
 	if (info->data->is_sc2721) {
@@ -1611,7 +1642,7 @@ static int sc2720_charger_probe(struct platform_device *pdev)
 			dev_err(&pdev->dev, "failed to read cccv calibration: %d\n",
 				ret);
 			sc2720_charger_unwind(info);
-			return ret;
+			goto err_off;
 		}
 
 		mutex_lock(&sc2721_cv_lock);
@@ -1635,7 +1666,7 @@ static int sc2720_charger_probe(struct platform_device *pdev)
 	if (ret) {
 		sc2721_cv_release(info);
 		sc2720_charger_unwind(info);
-		return ret;
+		goto err_off;
 	}
 
 	/*
@@ -1648,13 +1679,19 @@ static int sc2720_charger_probe(struct platform_device *pdev)
 		if (ret) {
 			sc2721_cv_release(info);
 			sc2720_charger_unwind(info);
-			return ret;
+			goto err_off;
 		}
 	}
 
 	sc2720_charger_detect_status(info);
 
 	return 0;
+
+err_off:
+	/* no supply, no policy: do not leave the hardware charging */
+	if (info->start_by_cm)
+		sc2720_charger_force_off(info);
+	return ret;
 }
 
 static int sc2720_charger_remove(struct platform_device *pdev)
