@@ -353,6 +353,7 @@ static inline void sprd_sdhc_set_trans_and_cmd(struct sprd_sdhc_host *host,
 #define SPRD_SDHC_REG_32_RESP		0x10
 #define SPRD_SDHC_REG_32_PRES_STATE	0x24
 #define  SPRD_SDHC_DATA_LVL_MASK	0x00F00000
+#define  SPRD_SDHC_DATA_0_LVL_MASK	0x00100000
 
 #define SPRD_SDHC_REG_8_HOST_CTRL	0x28
 #define SPRD_SDHC_BIT_8_BIT_MODE	0x20
