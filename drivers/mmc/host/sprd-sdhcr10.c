@@ -1401,13 +1401,13 @@ static int sprd_sdhc_card_busy(struct mmc_host *mmc)
 	sprd_sdhc_runtime_pm_get(host);
 	spin_lock_irqsave(&host->lock, flags);
 
-	/* Check whether DAT[3:0] is 0000 */
+	/* the card signals busy on DAT[0] only (as upstream sdhci_card_busy) */
 	present_state = sprd_sdhc_readl(host, SPRD_SDHC_REG_32_PRES_STATE);
 
 	mmiowb();
 	spin_unlock_irqrestore(&host->lock, flags);
 	sprd_sdhc_runtime_pm_put(host);
-	return !(present_state & SPRD_SDHC_DATA_LVL_MASK);
+	return !(present_state & SPRD_SDHC_DATA_0_LVL_MASK);
 }
 
 static void sprd_sdhc_emmc_hw_reset(struct mmc_host *mmc)
