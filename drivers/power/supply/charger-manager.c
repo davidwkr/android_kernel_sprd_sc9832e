@@ -2488,7 +2488,13 @@ static int charger_manager_register_sysfs(struct charger_manager *cm)
 		}
 	}
 
-	if (chargers_externally_control) {
+	/*
+	 * Without regulator children the charger is driven through the STATUS
+	 * property of its power supply (cm-chargers), nothing can be
+	 * controlled externally. Only a regulator based setup where every
+	 * regulator was handed over to userspace is invalid.
+	 */
+	if (desc->num_charger_regulators && chargers_externally_control) {
 		dev_err(cm->dev, "Cannot register regulator because charger-manager must need at least one charger for charging battery\n");
 		return -EINVAL;
 	}
