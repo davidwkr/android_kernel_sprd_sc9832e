@@ -349,7 +349,7 @@ static struct virtqueue *_find_vq(struct virtio_device *vdev,
 		 id, tvr->vaddr, (u64)tvr->paddr, tvr->elem_num, tvr->notifyid);
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)
 	tvr->vq = vring_new_virtqueue(id, tvr->elem_num, tvr->align,
-				      vdev, true, true, tvr->vaddr,
+				      vdev, true, false, tvr->vaddr,
 				      trusty_virtio_notify, callback, name);
 #else
 	tvr->vq = vring_new_virtqueue(id, tvr->elem_num, tvr->align,
