@@ -47,9 +47,11 @@ The `Code:` words are `add x8,x8,#0x40; b.ge; add x8,x8,x4; sub x2,x2,x5;
 buffer for avoiding possible kernel info leaks", added by the 4.4.208 and
 4.4.213 stable updates; stock 4.4.83 does not have it). The SPRD platform
 driver (`sound/soc/sprd/platform/sprd-2stage-dmaengine-pcm.c`) provides that
-area as an `ioremap_nocache` / `pgprot_noncached` iram buffer or a
-`dma_alloc_writecombine` buffer. arm64 `memset()` zeroes large blocks with
-`DC ZVA`, which raises an alignment fault on Device memory. The first
+area as an `ioremap_nocache` / `pgprot_noncached` iram buffer (Device memory
+on arm64) or a `dma_alloc_writecombine` buffer (Normal non-cacheable). arm64
+`memset()` zeroes large blocks with `DC ZVA`, which raises an alignment fault
+on Device memory only; the Device-mapped buffers are the ones that fault, the
+writecombine ones are cleared with `memset_io()` too for simplicity. The first
 `SNDRV_PCM_IOCTL_HW_PARAMS` of a 32-bit audio process panics the kernel.
 
 pstore is not involved. `fs/pstore/ram_core.c` (4.4 and 4.14) updates the ring
@@ -65,5 +67,13 @@ from the stock Image), so it stays enabled.
 buffers with `memset_io()` (`__memset_io`: plain 8/1-byte stores); other buffer
 types keep `memset()`. Same change on kernel-4.14 (`fixes/pstore-crash-414`).
 
-Other `dma_area` accesses (`copy_from_user` into it, silence fills) are
-unchanged from stock and not touched.
+## Limits
+
+The fix covers the `hw_params` clear only, the access that stock lacks. Silence
+fills (`pcm_lib.c` -> `snd_pcm_format_set_silence()`, plain `memset()` for
+signed formats) can still run `DC ZVA` on the same Device-mapped buffers when
+userspace sets a silence threshold/size or on some xrun paths (4.4
+`pcm_lib.c` ~118/133/2188, 4.14 ~1972). Stock has the same code and the same
+exposure, so it is left unchanged; if a panic in `snd_pcm_format_set_silence`
+appears, extend the same `memset_io()` selection there. User copies and driver
+`memcpy` into the buffer do not use `DC ZVA`.

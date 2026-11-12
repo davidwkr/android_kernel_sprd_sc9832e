@@ -591,9 +591,9 @@ static int snd_pcm_hw_params(struct snd_pcm_substream *substream,
 	/* clear the buffer for avoiding possible kernel info leaks */
 	if (runtime->dma_area && !substream->ops->copy) {
 		/*
-		 * Device buffers are ioremapped or mapped non-cacheable by the
-		 * platform driver; arm64 memset() zeroes with DC ZVA, which
-		 * takes an alignment fault on such memory.
+		 * Device buffers may be mapped as Device memory (ioremap,
+		 * pgprot_noncached) by the platform driver; arm64 memset()
+		 * zeroes with DC ZVA, which takes an alignment fault there.
 		 */
 		if (substream->dma_buffer.dev.type == SNDRV_DMA_TYPE_DEV ||
 		    substream->dma_buffer.dev.type == SNDRV_DMA_TYPE_DEV_IRAM)
