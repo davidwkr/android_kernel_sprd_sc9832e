@@ -24,8 +24,8 @@ from the merge of `debug/ramoops-414` into `kernel-4.14` (`TOOLS` = a tree with 
 
 | Image | sha256 |
 |---|---|
-| `dm63_414_adf_ramoops_candidate.img` | `5d314ed62d2c66cb6e4c9833533f1cad68fc39209d4cd4a7fa14db9ec197e15c` |
-| `dm63_414_adf_ramoops_candidate_BENCHDEBUG.img` | `ff23b661c85bfc92e6a66ef0eefd9ebeee3632f33add9a7fd1e2b01e654a2521` |
+| `dm63_414_adf_candidate.img` | `9b823a9fa73a6a593f09ead5ebf07dd5b1611e3dcf13e324836b8a428fc1f3bb` |
+| `dm63_414_adf_candidate_BENCHDEBUG.img` | `ecac7aa2ac8f87201353818eb12ee0c79518edbd53dedf20f4e75646444193d9` |
 
 The BENCHDEBUG image adds `/adb_keys` and `init.benchdebug.rc` to the ramdisk: early authenticated adb for the
 bench host, nothing else changed (`devices/BENCH_DEBUG.md`). **Bench watches only: reflash the normal image
