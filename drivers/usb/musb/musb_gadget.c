@@ -2038,14 +2038,17 @@ static int musb_gadget_stop(struct usb_gadget *g)
 	musb->is_active = 0;
 	musb->gadget_driver = NULL;
 	musb_platform_try_idle(musb, 0);
-	spin_unlock_irqrestore(&musb->lock, flags);
 
 	/*
 	 * FIXME we need to be able to register another
 	 * gadget driver here and have everything work;
 	 * that currently misbehaves.
+	 *
+	 * Keep a pending REMOVED (see musb_g_disconnect()).
 	 */
-	usb_gadget_set_state(g, USB_STATE_NOTATTACHED);
+	if (g->state != USB_STATE_REMOVED)
+		usb_gadget_set_state(g, USB_STATE_NOTATTACHED);
+	spin_unlock_irqrestore(&musb->lock, flags);
 
 	pm_runtime_put(musb->controller);
 
