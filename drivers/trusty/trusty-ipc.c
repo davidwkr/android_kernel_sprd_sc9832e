@@ -127,6 +127,8 @@ struct tipc_virtio_dev {
 	wait_queue_head_t sendq;
 	struct idr addr_idr;
 	enum tipc_device_state state;
+	struct mutex rx_lock; /* serializes rxvq handling against remove */
+	bool rx_dead; /* rxvq is going away, protected by rx_lock */
 	struct tipc_cdev_node cdev_node;
 	char   cdev_name[MAX_DEV_NAME_LEN];
 };
@@ -302,8 +304,13 @@ static void vds_put_txbuf(struct tipc_virtio_dev *vds, struct tipc_msg_buf *mb)
 		return;
 
 	mutex_lock(&vds->lock);
-	_put_txbuf_locked(vds, mb);
-	wake_up_interruptible(&vds->sendq);
+	if (vds->state == VDS_DEAD) {
+		/* the free list is gone, nobody would ever take it */
+		_free_msg_buf(mb);
+	} else {
+		_put_txbuf_locked(vds, mb);
+		wake_up_interruptible(&vds->sendq);
+	}
 	mutex_unlock(&vds->lock);
 }
 
@@ -359,23 +366,21 @@ static int vds_queue_txbuf(struct tipc_virtio_dev *vds,
 {
 	int err;
 	struct scatterlist sg;
-	bool need_notify = false;
 
 	if (!vds)
 		return -EINVAL;
 
+	/* notify under the lock: remove frees the txvq once the state is DEAD */
 	mutex_lock(&vds->lock);
 	if (vds->state == VDS_ONLINE) {
 		sg_init_one(&sg, mb->buf_va, mb->wpos);
 		err = virtqueue_add_outbuf(vds->txvq, &sg, 1, mb, GFP_KERNEL);
-		need_notify = virtqueue_kick_prepare(vds->txvq);
+		if (virtqueue_kick_prepare(vds->txvq))
+			virtqueue_notify(vds->txvq);
 	} else {
 		err = -ENODEV;
 	}
 	mutex_unlock(&vds->lock);
-
-	if (need_notify)
-		virtqueue_notify(vds->txvq);
 
 	return err;
 }
@@ -1273,6 +1278,11 @@ static void destroy_cdev_node(struct tipc_virtio_dev *vds,
 static void _go_online(struct tipc_virtio_dev *vds)
 {
 	mutex_lock(&vds->lock);
+	if (vds->state == VDS_DEAD) {
+		/* a late GO_ONLINE must not create the node of a removed device */
+		mutex_unlock(&vds->lock);
+		return;
+	}
 	if (vds->state == VDS_OFFLINE)
 		vds->state = VDS_ONLINE;
 	mutex_unlock(&vds->lock);
@@ -1496,6 +1506,12 @@ static void _rxvq_cb(struct virtqueue *rxvq)
 	unsigned int msg_cnt = 0;
 	struct tipc_virtio_dev *vds = rxvq->vdev->priv;
 
+	mutex_lock(&vds->rx_lock);
+	if (vds->rx_dead) {
+		mutex_unlock(&vds->rx_lock);
+		return;
+	}
+
 	while ((mb = virtqueue_get_buf(rxvq, &len)) != NULL) {
 		if (_handle_rxbuf(vds, mb, len))
 			break;
@@ -1505,6 +1521,7 @@ static void _rxvq_cb(struct virtqueue *rxvq)
 	/* tell the other size that we added rx buffers */
 	if (msg_cnt)
 		virtqueue_kick(rxvq);
+	mutex_unlock(&vds->rx_lock);
 }
 
 static void _txvq_cb(struct virtqueue *txvq)
@@ -1518,6 +1535,11 @@ static void _txvq_cb(struct virtqueue *txvq)
 
 	/* detach all buffers */
 	mutex_lock(&vds->lock);
+	if (vds->state == VDS_DEAD) {
+		/* remove is cleaning the txvq up */
+		mutex_unlock(&vds->lock);
+		return;
+	}
 	while ((mb = virtqueue_get_buf(txvq, &len)) != NULL)
 		need_wakeup |= _put_txbuf_locked(vds, mb);
 	mutex_unlock(&vds->lock);
@@ -1546,6 +1568,7 @@ static int tipc_virtio_probe(struct virtio_device *vdev)
 	vds->vdev = vdev;
 
 	mutex_init(&vds->lock);
+	mutex_init(&vds->rx_lock);
 	kref_init(&vds->refcount);
 	init_waitqueue_head(&vds->sendq);
 	INIT_LIST_HEAD(&vds->free_buf_list);
@@ -1600,6 +1623,7 @@ static int tipc_virtio_probe(struct virtio_device *vdev)
 
 err_free_rx_buffers:
 	_cleanup_vq(vds->rxvq);
+	vdev->config->del_vqs(vdev);
 err_find_vqs:
 	kref_put(&vds->refcount, _free_vds);
 	return err;
@@ -1609,22 +1633,39 @@ static void tipc_virtio_remove(struct virtio_device *vdev)
 {
 	struct tipc_virtio_dev *vds = vdev->priv;
 
+	/*
+	 * Stop rxvq handling first: a running callback is done once rx_lock is
+	 * ours, later ones return, so no GO_ONLINE can bring the device back
+	 * while it is being removed.
+	 */
+	mutex_lock(&vds->rx_lock);
+	vds->rx_dead = true;
+	mutex_unlock(&vds->rx_lock);
+
 	_go_offline(vds);
 
+	/* from here on tx buffers are not queued, taken or put back */
 	mutex_lock(&vds->lock);
 	vds->state = VDS_DEAD;
-	vds->vdev = NULL;
 	mutex_unlock(&vds->lock);
 
 	vdev->config->reset(vdev);
 
 	idr_destroy(&vds->addr_idr);
 
+	/* the txvq callback and queue operations take the lock and see DEAD */
+	mutex_lock(&vds->lock);
 	_cleanup_vq(vds->rxvq);
 	_cleanup_vq(vds->txvq);
 	_free_msg_buf_list(&vds->free_buf_list);
+	mutex_unlock(&vds->lock);
 
-	vdev->config->del_vqs(vds->vdev);
+	/* vds->vdev was cleared here before, the original vdev is what del_vqs needs */
+	vdev->config->del_vqs(vdev);
+
+	mutex_lock(&vds->lock);
+	vds->vdev = NULL;
+	mutex_unlock(&vds->lock);
 
 	kref_put(&vds->refcount, _free_vds);
 }
