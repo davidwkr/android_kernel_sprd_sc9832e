@@ -682,6 +682,31 @@ static bool cm_strict(struct charger_manager *cm)
 	return !cm->desc->num_charger_regulators && cm->desc->jeita_tab_size;
 }
 
+/*
+ * True if a charger reports STATUS charging. A charger that cannot be read
+ * counts as charging: unknown is not stopped.
+ */
+static bool cm_charger_hw_charging(struct charger_manager *cm)
+{
+	union power_supply_propval val;
+	struct power_supply *psy;
+	bool charging = false;
+	int i, ret;
+
+	for (i = 0; cm->desc->psy_charger_stat[i]; i++) {
+		psy = power_supply_get_by_name(cm->desc->psy_charger_stat[i]);
+		if (!psy)
+			return true;
+		ret = power_supply_get_property(psy, POWER_SUPPLY_PROP_STATUS,
+						&val);
+		power_supply_put(psy);
+		if (ret || val.intval == POWER_SUPPLY_STATUS_CHARGING)
+			charging = true;
+	}
+
+	return charging;
+}
+
 static int try_charger_enable_by_psy(struct charger_manager *cm, bool enable)
 {
 	struct charger_desc *desc = cm->desc;
@@ -771,6 +796,15 @@ static int try_charger_enable(struct charger_manager *cm, bool enable)
 		}
 
 		err = try_charger_enable_by_psy(cm, enable);
+		/*
+		 * Strict mode: stopped means the charger says so. If it still
+		 * charges the stop failed, the flag stays set and the next
+		 * poll writes it again.
+		 */
+		if (!err && cm_strict(cm) && cm_charger_hw_charging(cm)) {
+			dev_err(cm->dev, "charger still charging after stop\n");
+			err = -EBUSY;
+		}
 	}
 
 	if (!err)
@@ -1395,14 +1429,20 @@ static int cm_manager_get_jeita_status_4(struct charger_manager *cm,
 static int cm_manager_get_jeita_status(struct charger_manager *cm, int cur_temp)
 {
 	struct charger_desc *desc = cm->desc;
-	int jeita_status = cm->jeita_zone < 0 ? 0 : cm->jeita_zone;
+	/* other boards: the previous sample (static), as in the original */
+	static int raw_status;
+	int jeita_status = !cm_strict(cm) ? raw_status :
+			   (cm->jeita_zone < 0 ? 0 : cm->jeita_zone);
 	int n = desc->jeita_tab_size;
 	struct charger_jeita_table *tab = desc->jeita_tab;
 	int i, z;
 	bool keep;
 
-	if (n == 4)
-		return cm_manager_get_jeita_status_4(cm, cur_temp, jeita_status);
+	if (n == 4) {
+		raw_status = cm_manager_get_jeita_status_4(cm, cur_temp,
+							   jeita_status);
+		return raw_status;
+	}
 
 	for (i = n - 1; i >= 0; i--) {
 		if ((cur_temp >= tab[i].temp && i > 0) ||
@@ -1438,6 +1478,7 @@ static int cm_manager_get_jeita_status(struct charger_manager *cm, int cur_temp)
 			jeita_status = z;
 	}
 
+	raw_status = jeita_status;
 	return jeita_status;
 }
 
@@ -1575,27 +1616,12 @@ out:
  */
 static void cm_sync_charger_state(struct charger_manager *cm)
 {
-	union power_supply_propval val;
-	struct power_supply *psy;
-	bool hw_charging = false;
-	int i;
+	bool hw_charging;
 
 	if (!cm_strict(cm))
 		return;
 
-	for (i = 0; cm->desc->psy_charger_stat[i]; i++) {
-		psy = power_supply_get_by_name(cm->desc->psy_charger_stat[i]);
-		if (!psy)
-			return;
-		if (power_supply_get_property(psy, POWER_SUPPLY_PROP_STATUS,
-					      &val)) {
-			power_supply_put(psy);
-			return;
-		}
-		power_supply_put(psy);
-		if (val.intval == POWER_SUPPLY_STATUS_CHARGING)
-			hw_charging = true;
-	}
+	hw_charging = cm_charger_hw_charging(cm);
 
 	if (cm->charger_enabled && !hw_charging && is_ext_pwr_online(cm)) {
 		dev_warn(cm->dev, "charger stopped by itself, re-evaluating\n");
@@ -1643,6 +1669,13 @@ static bool _cm_monitor(struct charger_manager *cm)
 	if (temp_alrt && cm->emergency_stop) {
 		dev_warn(cm->dev,
 			 "Emergency stop, temperature alert = %d\n", temp_alrt);
+		/*
+		 * Strict mode: the flag only means "stopped" once the charger
+		 * reports it, so write the stop again every poll until it
+		 * does (a failed write leaves charger_enabled set).
+		 */
+		if (cm_strict(cm))
+			try_charger_enable(cm, false);
 		return false;
 	}
 
@@ -3201,7 +3234,12 @@ static int charger_manager_probe(struct platform_device *pdev)
 	psy_cfg.drv_data = cm;
 
 	/* Initialize alarm timer */
-	if (alarmtimer_get_rtcdev()) {
+	/*
+	 * Strict mode: always set the alarm up. It only fires during suspend
+	 * when an rtc exists at that time (alarmtimer picks it then), and
+	 * cm_suspend_prepare() stops the charge if there is none.
+	 */
+	if (alarmtimer_get_rtcdev() || cm_strict(cm)) {
 		cm_timer = devm_kzalloc(cm->dev, sizeof(*cm_timer), GFP_KERNEL);
 		if (!cm_timer)
 			return -ENOMEM;
@@ -3301,7 +3339,8 @@ static int charger_manager_probe(struct platform_device *pdev)
 	if (!fuel_gauge) {
 		dev_err(&pdev->dev, "Cannot find power supply \"%s\"\n",
 			desc->psy_fuel_gauge);
-		return -ENODEV;
+		/* like the charger above: it may simply not be probed yet */
+		return -EPROBE_DEFER;
 	}
 	if (!power_supply_get_property(fuel_gauge,
 					  POWER_SUPPLY_PROP_CHARGE_NOW, &val)) {
@@ -3484,6 +3523,20 @@ static int cm_suspend_prepare(struct device *dev)
 	if (is_ext_pwr_online(cm))
 		cm_feed_watchdog(cm);
 	cm_timer_set = cm_setup_timer();
+
+	/*
+	 * Strict mode with no wake timer source: nothing would watch the
+	 * temperature, time limit or charger during suspend while the
+	 * hardware keeps charging, so stop the charge first. It is evaluated
+	 * from scratch (jeita zone, programming, enable) on resume.
+	 */
+	if (cm_strict(cm) && !alarmtimer_get_rtcdev() &&
+	    (cm->charger_enabled || is_ext_pwr_online(cm))) {
+		dev_warn(cm->dev, "no wake timer, stopping charge for suspend\n");
+		cm->jeita_stop = true;
+		cm->jeita_reeval = true;
+		try_charger_enable(cm, false);
+	}
 
 	if (cm_timer_set) {
 		cancel_work_sync(&setup_polling);
