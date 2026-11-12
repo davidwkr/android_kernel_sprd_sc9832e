@@ -2449,6 +2449,7 @@ static int32_t stk8baxx_get_file_content(char *r_buf, int8_t buf_size)
 		if (ret < 0) {
 			printk(KERN_ERR "%s: read error, ret=%d\n", __func__,
 			       (int)ret);
+			set_fs(fs);
 			filp_close(cali_file, NULL);
 			return -EIO;
 		}
@@ -2494,6 +2495,7 @@ static int stk8baxx_write_file(int mode, char write_buf[])
 					   &cali_file->f_pos);
 		if (ret != STK_ACC_CALI_FILE_SIZE) {
 			printk(KERN_ERR "%s: write error!\n", __func__);
+			set_fs(fs);
 			filp_close(cali_file, NULL);
 			return -STK_K_FAIL_W_FILE;
 		}
@@ -2504,6 +2506,7 @@ static int stk8baxx_write_file(int mode, char write_buf[])
 					  &cali_file->f_pos);
 		if (ret < 0) {
 			printk(KERN_ERR "%s: read error!\n", __func__);
+			set_fs(fs);
 			filp_close(cali_file, NULL);
 			return -STK_K_FAIL_R_BACK;
 
