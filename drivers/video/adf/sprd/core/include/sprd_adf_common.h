@@ -133,6 +133,41 @@ enum {
 	SPRD_N_LAYER,
 };
 
+/*
+ * The stock Android 8.1 hwcomposer (built against the older SPRD ADF uapi)
+ * posts 48-byte layer records, i.e. struct sprd_adf_hwlayer_custom_data up to
+ * and including compression; the stock kernel only requires a size of
+ * 12 + 48 and never reads height, header_size_* or y2r_coef.
+ */
+#define SPRD_ADF_STOCK_HWLAYER_SIZE \
+	offsetof(struct sprd_adf_hwlayer_custom_data, height)
+
+/*
+ * sprd_adf_hwlayer_stride - layer record size of a post's custom data
+ *
+ * Returns sizeof(struct sprd_adf_hwlayer_custom_data) when the data holds
+ * n_bufs full records, SPRD_ADF_STOCK_HWLAYER_SIZE when it is exactly the
+ * stock layout, 0 if the size fits neither. An empty post (n_bufs == 0) has no
+ * records to size: only the stock minimum is required.
+ */
+static inline size_t sprd_adf_hwlayer_stride(size_t custom_data_size,
+					     size_t n_bufs)
+{
+	size_t hdr = sizeof(struct sprd_adf_post_custom_data);
+
+	if (n_bufs > SPRD_N_LAYER)
+		return 0;
+	if (!n_bufs)
+		return custom_data_size >= hdr + SPRD_ADF_STOCK_HWLAYER_SIZE ?
+			sizeof(struct sprd_adf_hwlayer_custom_data) : 0;
+	if (custom_data_size >=
+	    hdr + n_bufs * sizeof(struct sprd_adf_hwlayer_custom_data))
+		return sizeof(struct sprd_adf_hwlayer_custom_data);
+	if (custom_data_size == hdr + n_bufs * SPRD_ADF_STOCK_HWLAYER_SIZE)
+		return SPRD_ADF_STOCK_HWLAYER_SIZE;
+	return 0;
+}
+
 enum {
 	/* no blending */
 	HWC_BLENDING_NONE     = 0x0100,

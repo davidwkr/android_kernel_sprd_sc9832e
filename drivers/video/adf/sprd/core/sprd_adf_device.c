@@ -123,9 +123,7 @@ static struct sprd_restruct_config *sprd_adf_restruct_post_config(
 	}
 
 	custom_data_size = (size_t)post->custom_data_size;
-	if (custom_data_size < FLIP_CUSTOM_DATA_MIN_SIZE ||
-	    (custom_data_size - sizeof(struct sprd_adf_post_custom_data)) /
-	    sizeof(struct sprd_adf_hwlayer_custom_data) < post->n_bufs) {
+	if (!sprd_adf_hwlayer_stride(custom_data_size, post->n_bufs)) {
 		ADF_DEBUG_WARN("data size is ilegal data_size = %zd;\n"
 				, custom_data_size);
 		goto err_out;
