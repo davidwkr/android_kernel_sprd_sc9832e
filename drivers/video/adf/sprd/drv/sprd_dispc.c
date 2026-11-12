@@ -497,6 +497,17 @@ int sprd_dispc_iommu_map(struct sprd_dispc *dispc,
 			layer->iova_plane[i] =
 				layer->iova_plane[i] + phys_addr;
 		} else {
+			/*
+			 * sprd_iommu_map() takes the ion_buffer (the dma-buf
+			 * priv of an ION buffer, as the DRM dpu passes it) and
+			 * rejects NULL; the sg table comes from that buffer.
+			 */
+			if (!ion_dma_buf_is_ion(dmabuf)) {
+				ret = -EINVAL;
+				pr_err("not an ion buffer\n");
+				goto map_fail;
+			}
+			iommu_data.buf = dmabuf->priv;
 			iommu_data.iova_size = dmabuf->size;
 			iommu_data.table = layer->mapping.sg_tables[i];
 			iommu_data.ch_type = SPRD_IOMMU_FM_CH_RW;
