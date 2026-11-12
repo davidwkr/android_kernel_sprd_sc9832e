@@ -309,6 +309,50 @@ Next boot must show, in order [H on the cause]:
 - `did not clear` means the reset bit never read back clear (register access, not the loader).
 - then `smsg_ch_open: channel 6-x` / `5-x` and the end of `sblock-5-13 not ready`.
 
+### Trusty IPC: 4.4 wire behaviour restored (branch fixes/414-trusty-ipc)
+
+Diagnosis from the boot logs: `/dev/trusty-ipc-dev0` is never created, keymaster gets -2 connecting and exits (init
+prints 'killed by signal 1'), no `is online` line. The device node is only created after the TEE's GO_ONLINE control
+message. Main suspect: the sprd scatter-gather `trusty-ipc.c` of 4.14 queues one 32-buffer chain as the only rx
+entry, while 4.4 queues independent single-buffer entries, which is what the stock TEE is built for [H, not proven].
+
+What changed (source comparison against the working 4.4 tree, nothing run on a device):
+
+- `trusty-ipc.c` / `trusty_ipc.h` are the 4.4 files again: one rx buffer per virtqueue entry (re-queued one by one
+  and kicked after a batch), one tx buffer per message, no `TIPC_DATA_MSG_F_NEXT`, `read()` returns one buffer,
+  `tipc_chan_queue_msg_list()` and the `flags` argument of `handle_msg` are gone (no other user in the tree). Only
+  API adaptations: `linux/sched/signal.h` and the two extra `find_vqs()` arguments. Node name and permissions
+  unchanged (`trusty-ipc-<dev_name>`, ueventd `0660 system system`).
+- Kept from 4.14 (security): the channel lifetime fix (`handle_release` frees the `tipc_dn_chan` when the last
+  channel reference goes; the channel holds its own vds reference). Not on the wire.
+- `trusty-virtio.c`: `vring_new_virtqueue(context = false)` as 4.4 behaved (4.14 had `true`, which disables
+  indirect descriptors); no effect on single-buffer entries.
+- Checked and equal to 4.4 in behaviour: smcall ids (whitespace only), `trusty.c` (return types only), the
+  notify/kick path and the descriptor `pa` (ex `reserved`) high-address field in `trusty-virtio.c`, and
+  `trusty-irq.c` (cpuhp multi-instance instead of the cpu notifier plus `on_each_cpu`, same enable/disable per
+  CPU). The FIQ glue is not built in this config. Nothing found there that blocks the handshake [S].
+- New info-level lines, in boot order: `tipc_virtio_probe: virtio id .. vendor ..` and `dev_name '..' rx vring N tx
+  vring N msg_buf_max_size ..`, `device descr: N bytes`, `registering virtio device id ..`, `vringN: va(pa) ..
+  qsz .. notifyid ..` (existing), `features: device 0x.. guest 0x..`, `N single-buffer rx entries queued,
+  offline`, `virtio started`, `first rx completion: N bytes`, `GO_ONLINE received`, `created
+  /dev/trusty-ipc-<name> (major:minor)`, `is online`, `GO_OFFLINE received` / `is offline`, `connect '<port>' from
+  local 0x..`, `connect response: addr 0x.. ok|refused` and the connect ioctl failures.
+
+Next boot must show, in order:
+
+1. the probe, vring and `features` lines, then `first rx completion` and `GO_ONLINE received` / `is online`. If the
+   probe and vring lines are there but no rx completion: the TEE never wrote to the rx ring (look at `virtio
+   started`, the notify SMC errors `vq notify (..) returned`, and the `trusty-irq` lines). If `dev_name ''` is
+   printed, the TEE sent no device name and no node is created (warning `empty dev_name`).
+2. `created /dev/trusty-ipc-dev0` and the node on the device (`ls -l /dev/trusty-ipc-dev0`, 0660 system system).
+3. keymaster connected: no `failed to connect to keymaster (-2)`, a `connect '..keymaster..'` response ok, no 5 s
+   restart cadence of `keymaster-3-0`. SIGHUP lines that remain would be userspace (see the trace_event item above).
+4. the `kernelbootcp` connect and the TEE lines `kbc_verify_all_avb2() ret = 0`, then the cproc lines
+   (`cproc_proc_open`, `start over`) and `smsg_ch_open: channel 5-x` (SIPC dst 5 open) and 6-x.
+
+If everything above is present and the symptom stays, the chained rx/tx was not the cause; the next suspects are the
+descriptors and feature bits the TEE offers (the `features` line) and the userspace side.
+
 ### Open blockers for a clean boot
 
 1. eMMC Auto-CMD/command timeouts in HS400ES: not seen in the fourth boot (0 errors).
