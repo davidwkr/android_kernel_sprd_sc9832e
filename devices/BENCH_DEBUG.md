@@ -1,6 +1,8 @@
 # Bench debug aids for the DM63 and DW100U silver test images
 
 **BENCHDEBUG images are for bench watches only. Reflash the normal image before a watch leaves the bench.**
+**They start adb from the ramdisk regardless of an MDM policy that disables adb: use them only on watches released
+from MDM or with the MDM administrator's approval.**
 They accept adb from one host key without any prompt, with no `/data` needed. Nothing here is flashed or tested
 yet: **UNTESTED ON HARDWARE.**
 
