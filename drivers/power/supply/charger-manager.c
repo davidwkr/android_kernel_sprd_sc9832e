@@ -715,6 +715,15 @@ static int try_charger_enable(struct charger_manager *cm, bool enable)
 			return -EAGAIN;
 
 		/*
+		 * Every path that enables the charger (adapter events,
+		 * recharge, duration and voltage restarts, battery in) ends
+		 * here: none of them may start a charge while the jeita zone
+		 * forbids it or the zone has not been programmed yet.
+		 */
+		if (cm->jeita_stop)
+			return -EAGAIN;
+
+		/*
 		 * Enable charge is permitted in calibration mode
 		 * even if use fake battery.
 		 * So it will not return in calibration mode.
@@ -1148,16 +1157,13 @@ enum cm_manager_jeita_status {
 };
 
 static bool cm_manager_adjust_current(struct charger_manager *cm,
-				      int jeita_status)
+				      int jeita_status, bool initial)
 {
 	struct charger_desc *desc = cm->desc;
 	union power_supply_propval val;
 	struct power_supply *psy;
 	int term_volt, target_cur, i, ret = -ENODEV;
-
-	if (cm->charging_status != 0 &&
-	    !(cm->charging_status & CM_CHARGE_TEMP_ABNORMAL))
-		return true;
+	bool resume;
 
 	if (jeita_status > desc->jeita_tab_size)
 		jeita_status = desc->jeita_tab_size;
@@ -1165,10 +1171,19 @@ static bool cm_manager_adjust_current(struct charger_manager *cm,
 	if (jeita_status == 0 || jeita_status == desc->jeita_tab_size) {
 		dev_warn(cm->dev,
 			 "stop charging due to battery overheat or cold\n");
+		/*
+		 * Set whether or not the zone just changed: this is also
+		 * called again while the zone stays out of range, and every
+		 * enable path is refused until a normal zone is programmed.
+		 */
+		cm->jeita_stop = true;
 		try_charger_enable(cm, false);
 		cm->charging_status |= CM_CHARGE_TEMP_ABNORMAL;
 		return false;
 	}
+
+	/* the charge is only (re)started if this code stopped it or it is new */
+	resume = initial || (cm->charging_status & CM_CHARGE_TEMP_ABNORMAL);
 
 	term_volt = desc->jeita_tab[jeita_status].term_volt;
 	target_cur = desc->jeita_tab[jeita_status].current_ua;
@@ -1215,11 +1230,26 @@ static bool cm_manager_adjust_current(struct charger_manager *cm,
 		}
 	}
 
-	if (ret)
+	if (ret) {
+		/*
+		 * The zone limits are not in force: do not keep charging
+		 * with those of another zone. The monitor retries every
+		 * poll while the zone stays the same.
+		 */
+		cm->jeita_stop = true;
+		try_charger_enable(cm, false);
+		cm->charging_status |= CM_CHARGE_TEMP_ABNORMAL;
 		return false;
+	}
 
-	try_charger_enable(cm, true);
+	cm->jeita_stop = false;
 	cm->charging_status &= ~CM_CHARGE_TEMP_ABNORMAL;
+	/*
+	 * Another abnormal state (voltage, health, duration) keeps the charger
+	 * off, it ends it itself.
+	 */
+	if (resume && !cm->charging_status)
+		try_charger_enable(cm, true);
 	return true;
 }
 
@@ -1361,15 +1391,32 @@ static int cm_manager_jeita_current_monitor(struct charger_manager *cm)
 			dev_info(cm->dev, "Disable jeita and force jeita state to STATUS_T1_TO_T2\n");
 			last_jeita_status = STATUS_T1_TO_T2;
 			desc->thm_adjust_cur = -EINVAL;
-			cm_manager_adjust_current(cm, last_jeita_status);
+			cm_manager_adjust_current(cm, last_jeita_status, true);
 		}
 
 		return 0;
 	}
 
+	/* a new adapter (or the first run) needs a full evaluation */
+	if (cm->jeita_reeval) {
+		cm->jeita_reeval = false;
+		last_jeita_status = -1;
+		temp_up_trigger = 0;
+		temp_down_trigger = 0;
+	}
+
 	ret = cm_get_battery_temperature_by_psy(cm, &cur_temp);
 	if (ret) {
 		dev_err(cm->dev, "failed to get battery temperature\n");
+		/*
+		 * Without a temperature nothing says charging is allowed:
+		 * stop, and evaluate from scratch when it can be read again.
+		 */
+		cm->jeita_stop = true;
+		try_charger_enable(cm, false);
+		cm->charging_status |= CM_CHARGE_TEMP_ABNORMAL;
+		last_jeita_status = -1;
+		is_normal = false;
 		return ret;
 	}
 
@@ -1383,7 +1430,8 @@ static int cm_manager_jeita_current_monitor(struct charger_manager *cm)
 	 * current when pluging in the cabel.
 	 */
 	if (last_jeita_status == -1) {
-		is_normal = cm_manager_adjust_current(cm, cur_jeita_status);
+		is_normal = cm_manager_adjust_current(cm, cur_jeita_status,
+						      true);
 		last_jeita_status = cur_jeita_status;
 		cm->jeita_zone = cur_jeita_status;
 		goto out;
@@ -1392,24 +1440,39 @@ static int cm_manager_jeita_current_monitor(struct charger_manager *cm)
 	if (cur_jeita_status > last_jeita_status) {
 		temp_down_trigger = 0;
 
-		if (++temp_up_trigger > 2) {
+		/* a zone that stops charging (too hot) is entered at once */
+		if (cur_jeita_status == desc->jeita_tab_size ||
+		    ++temp_up_trigger > 2) {
 			is_normal = cm_manager_adjust_current(cm,
-							      cur_jeita_status);
+							      cur_jeita_status,
+							      false);
 			last_jeita_status = cur_jeita_status;
 			cm->jeita_zone = cur_jeita_status;
 		}
 	} else if (cur_jeita_status < last_jeita_status) {
 		temp_up_trigger = 0;
 
-		if (++temp_down_trigger > 2) {
+		/* a zone that stops charging (too cold) is entered at once */
+		if (cur_jeita_status == 0 || ++temp_down_trigger > 2) {
 			is_normal = cm_manager_adjust_current(cm,
-							      cur_jeita_status);
+							      cur_jeita_status,
+							      false);
 			last_jeita_status = cur_jeita_status;
 			cm->jeita_zone = cur_jeita_status;
 		}
 	} else {
 		temp_up_trigger = 0;
 		temp_down_trigger = 0;
+
+		/*
+		 * Same zone: a stop is enforced again (nothing may have
+		 * restarted the charger meanwhile), and settings that could
+		 * not be programmed are retried.
+		 */
+		if (!is_normal)
+			is_normal = cm_manager_adjust_current(cm,
+							      last_jeita_status,
+							      false);
 	}
 
 out:
@@ -1675,19 +1738,50 @@ static void battout_handler(struct charger_manager *cm)
 static void misc_event_handler(struct charger_manager *cm,
 			enum cm_event_types type)
 {
+	bool online, plug, legacy;
+
 	if (cm_suspended)
 		device_set_wakeup_capable(cm->dev, true);
 
-	if (is_ext_pwr_online(cm))
-		try_charger_enable(cm, true);
-	else
+	/*
+	 * With a jeita table only a real change of the external power state
+	 * resets the fault state and may start a charge. The charger driver
+	 * also reports every adapter notification here; such an event must
+	 * not restart a charge that jeita, the duration limit or the voltage
+	 * check stopped, or clear their flags. Without a jeita table the
+	 * original behaviour is kept.
+	 */
+	online = is_ext_pwr_online(cm);
+	plug = online != cm->ext_pwr_online;
+	legacy = !cm->desc->jeita_tab_size;
+	cm->ext_pwr_online = online;
+
+	if (plug) {
+		cm->recharge_period = false;
+		if (!legacy) {
+			/*
+			 * Not allowed to charge until the zone for the
+			 * current temperature is evaluated and programmed.
+			 */
+			cm->jeita_stop = true;
+			cm->jeita_reeval = true;
+		}
+	}
+
+	if (!online)
 		try_charger_enable(cm, false);
+	else if (plug || legacy)
+		try_charger_enable(cm, true);
 
 	if (cm->desc->force_set_full)
 		cm->desc->force_set_full = false;
 
-	if (cm->charging_status)
+	if (cm->charging_status && (plug || legacy))
 		cm->charging_status = 0;
+
+	/* evaluate the jeita zone now, not at the next poll */
+	if (plug && online && !legacy && cm_wq)
+		mod_delayed_work(cm_wq, &cm_monitor_work, 0);
 
 	if (is_polling_required(cm) && cm->desc->polling_interval_ms)
 		schedule_work(&setup_polling);
@@ -3093,6 +3187,9 @@ static int charger_manager_probe(struct platform_device *pdev)
 
 	cm->desc->thm_adjust_cur = -EINVAL;
 	cm->jeita_zone = -1;
+	/* no charge before the first jeita evaluation */
+	cm->jeita_stop = desc->jeita_tab_size > 0;
+	cm->jeita_reeval = true;
 
 	cur_time = ktime_to_timespec64(ktime_get_boottime());
 	cm->desc->update_capacity_time = cur_time.tv_sec;

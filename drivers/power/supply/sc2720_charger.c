@@ -112,6 +112,13 @@ struct sc2720_charger_info {
 	/* SC2721 only: VCHG over-voltage and CV-state PMIC EIC lines, both optional */
 	struct gpio_desc *ovp_gpiod;
 	struct gpio_desc *cv_gpiod;
+	/*
+	 * "sprd,charge-start-by-cm": charger-manager decides when a charge
+	 * runs (jeita, timeout, recharge), through the STATUS property. The
+	 * adapter work then only reports online and the type and never
+	 * starts a charge by itself.
+	 */
+	bool start_by_cm;
 	/* protected by info->lock: input OVP comparator currently tripped */
 	bool ovp_fault;
 	/* protected by info->lock: PMIC CHGR_STATUS CV bit, last read from the irq */
@@ -929,16 +936,15 @@ static int sc2720_charger_set_status(struct sc2720_charger_info *info,
 		 * SC2721: make sure the last requested current and CV are in
 		 * the registers when the charge starts, and that the current
 		 * follows the adapter type now attached. Never start with
-		 * settings that could not be applied. A request of 0 means
-		 * nobody asked yet, the adapter work then sets the current.
+		 * settings that could not be applied. Without a request the
+		 * adapter current is used.
 		 */
 		if (info->data->is_sc2721) {
-			if (info->cur_req_ua) {
-				ret = sc2720_charger_set_current(info,
-							info->cur_req_ua);
-				if (ret)
-					return ret;
-			}
+			ret = sc2720_charger_set_current(info,
+				info->cur_req_ua ? info->cur_req_ua :
+				sc2720_charger_adapter_cur(info));
+			if (ret)
+				return ret;
 			mutex_lock(&sc2721_cv_lock);
 			ret = info->cv_last_req_mv ?
 				sc2721_program_cccv(info,
@@ -987,7 +993,15 @@ static void sc2720_charger_work(struct work_struct *data)
 
 	mutex_lock(&info->lock);
 
-	if (info->limit > 0 && !info->charging && present) {
+	if (info->start_by_cm && info->limit > 0 && !info->charging) {
+		/*
+		 * Nothing to start: charger-manager gets the notification
+		 * below, re-evaluates the temperature zone, programs the
+		 * zone current and CV and then writes STATUS. Starting here
+		 * would restart a charge that jeita had stopped on every
+		 * adapter notification.
+		 */
+	} else if (info->limit > 0 && !info->charging && present) {
 		/* set charger current and start to charge */
 		switch (info->usb_phy->chg_type) {
 		case SDP_TYPE:
@@ -1520,6 +1534,9 @@ static int sc2720_charger_probe(struct platform_device *pdev)
 
 	if (info->data->is_sc2721)
 		of_property_read_u32(np, "sprd,ovp-microvolt", &info->ovp_uv);
+
+	info->start_by_cm = of_property_read_bool(np,
+						  "sprd,charge-start-by-cm");
 
 	charger_cfg.drv_data = info;
 	charger_cfg.of_node = np;

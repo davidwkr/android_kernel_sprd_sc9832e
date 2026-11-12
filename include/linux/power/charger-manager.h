@@ -317,6 +317,18 @@ struct charger_manager {
 
 	/* jeita zone in force (committed), -1 before the first evaluation */
 	int jeita_zone;
+	/*
+	 * The charger must stay off: the jeita zone does not allow charging
+	 * or has not been evaluated and programmed since the adapter was
+	 * attached. try_charger_enable() refuses to enable while it is set.
+	 */
+	bool jeita_stop;
+	/* force a full jeita evaluation at the next monitor run */
+	bool jeita_reeval;
+	/* external power state seen by the last charger event */
+	bool ext_pwr_online;
+	/* the next charge is a recharge or a restart after the time limit */
+	bool recharge_period;
 };
 
 #ifdef CONFIG_CHARGER_MANAGER

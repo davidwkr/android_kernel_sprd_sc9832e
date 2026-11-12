@@ -217,8 +217,9 @@
 
 	/*
 	 * charger-manager (psy based in this tree, no regulator child: the
-	 * charger is the internal SC2721 one and is started by the charger
-	 * driver and by STATUS writes from charger-manager).
+	 * charger is the internal SC2721 one and is started and stopped only
+	 * by STATUS writes from charger-manager, see sprd,charge-start-by-cm
+	 * on the charger node).
 	 * [stock] = value derived from the stock battery node, [base] = value
 	 * of the 4.14 sl8541e-1h10 reference board, no stock equivalent.
 	 *
@@ -566,6 +567,13 @@
 		reg = <0xec0>;
 		phys = <&hsphy>;
 		monitored-battery = <&bat>;
+		/*
+		 * Not in stock (4.4 sprd_battery.c is both the policy and the
+		 * only caller): the 4.14 charger driver must not start a
+		 * charge on an adapter notification, or it restarts a charge
+		 * that charger-manager stopped for temperature.
+		 */
+		sprd,charge-start-by-cm;
 		sprd,ovp-microvolt = <6500000>;
 		chg-ovi-gpios = <&pmic_eic 6 GPIO_ACTIVE_HIGH>;
 		chg-cv-gpios = <&pmic_eic 4 GPIO_ACTIVE_HIGH>;
