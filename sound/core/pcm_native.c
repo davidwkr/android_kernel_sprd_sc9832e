@@ -589,8 +589,19 @@ static int snd_pcm_hw_params(struct snd_pcm_substream *substream,
 		runtime->boundary *= 2;
 
 	/* clear the buffer for avoiding possible kernel info leaks */
-	if (runtime->dma_area && !substream->ops->copy)
-		memset(runtime->dma_area, 0, runtime->dma_bytes);
+	if (runtime->dma_area && !substream->ops->copy) {
+		/*
+		 * Device buffers may be mapped as Device memory (ioremap,
+		 * pgprot_noncached) by the platform driver; arm64 memset()
+		 * zeroes with DC ZVA, which takes an alignment fault there.
+		 */
+		if (substream->dma_buffer.dev.type == SNDRV_DMA_TYPE_DEV ||
+		    substream->dma_buffer.dev.type == SNDRV_DMA_TYPE_DEV_IRAM)
+			memset_io((void __iomem *)runtime->dma_area, 0,
+				  runtime->dma_bytes);
+		else
+			memset(runtime->dma_area, 0, runtime->dma_bytes);
+	}
 
 	snd_pcm_timer_resolution_change(substream);
 	snd_pcm_set_state(substream, SNDRV_PCM_STATE_SETUP);
