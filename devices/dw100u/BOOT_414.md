@@ -1,16 +1,29 @@
 # DW100U silver boot image candidate, kernel 4.14 with ADF
 
 **UNTESTED ON HARDWARE. Do not flash without the owner's explicit OK.** The image is not in the repo (images are never
-committed); it is kept in `~/.cache/dw100u-silver-414-candidate/dw100u-silver_414_adf_candidate.img`. This is a bring-up image, built the same way as the K18 one: see
+committed); it is kept in `~/.cache/dw100u-silver-414-candidate/dw100u-silver_414_adf_ramoops_candidate.img` (and `..._BENCHDEBUG.img`, see below). This is a bring-up image, built the same way as the K18 one: see
 `../k18/BOOT_414.md` for the commands, the contents and what to expect, which apply here except as noted.
 
 Built from `kernel-4.14` commit `cfe3fd4ff26e` (2026-11-11), kernel release 4.14.336+, config `sprd_sharkle_defconfig` +
-`watch_414.fragment` + `watch_414_adf.fragment` + `watch_414_stock81.fragment`, DTB `sp9832e-1h10-dw100u-silver-adf.dtb` in a new SPRD DT table with the stock header and entry
+`watch_414.fragment` + `watch_414_adf.fragment` + `watch_414_stock81.fragment` + `watch_414_ramoops.fragment`, DTB `sp9832e-1h10-dw100u-silver-adf-ramoops.dtb` in a new SPRD DT table with the stock header and entry
 fields (board id `0x2668`, rev 1), on a copy of the stock DW100U silver boot image; in its ramdisk the 4.14 builds of sprdwl_ng.ko, sprdbt_tty.ko and sprd_fm.ko
 (`devices/WCN_414_PORT.md`, debug info stripped) replace the 4.4.83 ones, and the stale 4.4.83 `mali.ko` with its `insmod` line is removed
 (`tools/sprd_ramdisk.py remove-module`). Build script: `devices/build_414_stock81.sh`.
 
-sha256 `cefda2a54bb64c442199580b249f063f55d062188ad39fee9d96571297310a9c`
+sha256 of the earlier image (`dw100u-silver_414_adf_adf_candidate.img`, DTB without `-ramoops`, `loglevel=1`): `cefda2a54bb64c442199580b249f063f55d062188ad39fee9d96571297310a9c`
+
+**Current test images (2026-11-11):** the same build on the `-ramoops` DTB (`loglevel=7`, crash log:
+`devices/RAMOOPS_414.md`) and `watch_414_ramoops.fragment`, built by `devices/build_414_stock81.sh`
+from the merge of `debug/ramoops-414` into `kernel-4.14` (`TOOLS` = a tree with `tools/ramdisk-benchdebug`):
+
+| Image | sha256 |
+|---|---|
+| `dw100u-silver_414_adf_ramoops_candidate.img` | `2615cf0148766dabc612f3c08d35bde08a72924e8a294799a8c7f1e8f5c9d933` |
+| `dw100u-silver_414_adf_ramoops_candidate_BENCHDEBUG.img` | `f175f05533905edc2535bce4c137772e6798bc8582af483cb4522824c7d3faeb` |
+
+The BENCHDEBUG image adds `/adb_keys` and `init.benchdebug.rc` to the ramdisk: early authenticated adb for the
+bench host, nothing else changed (`devices/BENCH_DEBUG.md`). **Bench watches only: reflash the normal image
+before the watch leaves the bench.**
 
 What this build adds over the first candidates (all reviewed, compile-tested only):
 - the stock `android,fstab` node in the DT (`sp9832e-watch-firmware.dtsi`): without it 8.1 init mounts neither `/system` nor `/vendor`;
