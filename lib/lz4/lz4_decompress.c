@@ -264,8 +264,13 @@ static FORCE_INLINE int LZ4_decompress_generic(
 			ip += length;
 			op += length;
 
-			/* Necessarily EOF, due to parsing restrictions */
-			if (!partialDecoding || (cpy == oend))
+			/*
+			 * Necessarily EOF, due to parsing restrictions;
+			 * when partial decoding, also stop if the input
+			 * has no room left for a match offset
+			 */
+			if (!partialDecoding || (cpy == oend) ||
+			    (ip >= iend - 2))
 				break;
 		} else {
 			/* may overwrite up to WILDCOPYLENGTH beyond cpy */
