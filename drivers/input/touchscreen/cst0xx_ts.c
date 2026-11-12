@@ -22,6 +22,11 @@
  * device exists for ABI compatibility with the other touch drivers: it reads
  * 0 and writing 1 fails with -EOPNOTSUPP. See devices/TOUCH_WAKE.md.
  *
+ * Palm cover ("cover the screen to turn it off"): the controller sends a
+ * report with the gesture byte 0xaa. Like the stock driver, such a report
+ * is sent to user space as a KEY_F4 press and release, and the report
+ * thread then sleeps 100 ms. See devices/CST0XX_PALM.md.
+ *
  * While the system is suspended the I2C bus is not usable, so a report
  * that arrives then is only noted and read on resume, and a blank state
  * change is applied on resume.
@@ -66,6 +71,9 @@
 #define CST0XX_REG_POINTS	3
 
 #define CST0XX_GESTURE_MARK	0xaa
+/* first point byte >> 4: event flag 0 (down) or 1 (up), bits [5:4] clear */
+#define CST0XX_PALM_EVENT_MASK	(~0x04)
+#define CST0XX_PALM_DELAY_MS	100
 #define CST0XX_MAX_POINTS	5
 #define CST0XX_POINT_LEN	6
 #define CST0XX_REPORT_LEN	(CST0XX_REG_POINTS + \
@@ -170,8 +178,14 @@ static void cst0xx_hw_reset(struct cst0xx_ts *ts)
 	msleep(200);
 }
 
-/* Called with ts->lock held. */
-static void cst0xx_process_report(struct cst0xx_ts *ts)
+static bool cst0xx_is_palm(const u8 *report)
+{
+	return report[CST0XX_REG_GESTURE] == CST0XX_GESTURE_MARK &&
+	       !((report[CST0XX_REG_POINTS] >> 4) & CST0XX_PALM_EVENT_MASK);
+}
+
+/* Called with ts->lock held. Returns true if a palm cover was reported. */
+static bool cst0xx_process_report(struct cst0xx_ts *ts)
 {
 	struct input_dev *input = ts->input;
 	const u8 *report = ts->report;
@@ -183,23 +197,26 @@ static void cst0xx_process_report(struct cst0xx_ts *ts)
 
 	/* the irq was masked without waiting for this handler */
 	if (ts->asleep)
-		return;
+		return false;
 
 	ret = cst0xx_read(ts, CST0XX_REG_REPORT, ts->report,
 			  sizeof(ts->report));
 	if (ret) {
 		dev_err_ratelimited(&ts->client->dev,
 				    "failed to read report: %d\n", ret);
-		return;
+		return false;
 	}
 
-	/* a gesture report has no point data */
-	if (report[CST0XX_REG_GESTURE] == CST0XX_GESTURE_MARK)
-		return;
+	if (cst0xx_is_palm(report)) {
+		input_report_key(input, KEY_F4, 1);
+		input_report_key(input, KEY_F4, 0);
+		input_sync(input);
+		return true;
+	}
 
 	count = report[CST0XX_REG_COUNT] & 0x07;
 	if (count > CST0XX_MAX_POINTS)
-		return;
+		return false;
 
 	/* validate the whole frame before reporting any slot */
 	for (i = 0; i < count; i++) {
@@ -211,7 +228,7 @@ static void cst0xx_process_report(struct cst0xx_ts *ts)
 		y[i] = ((p[CST0XX_PT_YH] & 0x0f) << 8) | p[CST0XX_PT_YL];
 
 		if (id[i] >= CST0XX_NUM_SLOTS || test_bit(id[i], &seen))
-			return;
+			return false;
 
 		__set_bit(id[i], &seen);
 	}
@@ -244,20 +261,27 @@ static void cst0xx_process_report(struct cst0xx_ts *ts)
 
 	input_mt_sync_frame(input);
 	input_sync(input);
+
+	return false;
 }
 
 static irqreturn_t cst0xx_irq_thread(int irq, void *dev_id)
 {
 	struct cst0xx_ts *ts = dev_id;
+	bool palm = false;
 
 	mutex_lock(&ts->lock);
 	if (ts->suspended) {
 		/* the I2C bus is down: read the report on resume */
 		ts->pending = true;
 	} else {
-		cst0xx_process_report(ts);
+		palm = cst0xx_process_report(ts);
 	}
 	mutex_unlock(&ts->lock);
+
+	/* the stock report thread sleeps after each palm report */
+	if (palm)
+		msleep(CST0XX_PALM_DELAY_MS);
 
 	return IRQ_HANDLED;
 }
@@ -511,6 +535,8 @@ static int cst0xx_register_input(struct cst0xx_ts *ts)
 
 	/* the wake key of the common ABI, see wake_gesture */
 	input_set_capability(input, EV_KEY, KEY_WAKEUP);
+	/* the palm cover key of the stock driver */
+	input_set_capability(input, EV_KEY, KEY_F4);
 
 	input_set_abs_params(input, ABS_MT_POSITION_X, 0, ts->max_x, 0, 0);
 	input_set_abs_params(input, ABS_MT_POSITION_Y, 0, ts->max_y, 0, 0);
