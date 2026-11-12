@@ -1098,11 +1098,13 @@ static ssize_t tipc_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 		goto out;
 	}
 
-	if (copy_to_iter(mb_get_data(mb, len), len, iter) != len) {
+	/* take the data without moving the cursor until it is copied out */
+	if (copy_to_iter((u8 *)mb->buf_va + mb->rpos, len, iter) != len) {
 		ret = -EFAULT;
 		goto out;
 	}
 
+	mb_get_data(mb, len);
 	ret = len;
 	list_del(&mb->node);
 	dn->rx_msg_cnt--;
