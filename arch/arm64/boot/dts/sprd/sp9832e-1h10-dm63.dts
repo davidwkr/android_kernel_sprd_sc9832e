@@ -782,6 +782,29 @@
 	status = "okay";
 };
 
+/*
+ * Stock 4.4 DT enables the VSP (video-codec@21900000) and its IOMMU. The
+ * sharkle.dtsi nodes default to disabled, so without these the sprd_vsp
+ * driver never probes, /dev/sprd_vsp is absent and the stock OMX H.264
+ * encoder aborts in H264EncPreInit.
+ */
+&iommu_vsp {
+	status = "okay";
+};
+
+&vsp {
+	status = "okay";
+};
+
+/* JPEG codec, enabled in stock as well (jpeg-codec@60b00000, iommu@60b00000). */
+&iommu_jpg {
+	status = "okay";
+};
+
+&jpg {
+	status = "okay";
+};
+
 &dsi {
 	status = "okay";
 	#address-cells = <1>;
