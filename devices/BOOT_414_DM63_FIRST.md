@@ -128,7 +128,7 @@ Build-tested only (Image, modules, `sp9832e-1h10-dm63-adf.dtb`); none of it has 
   (clears 0x200 and any other bit). The panic mode keeps the read-modify-write. Independent of
   `fixes/sysdump-default-off-414`, which clears 0x200 at boot.
 
-### eMMC errors: root cause not established, nothing changed
+### eMMC errors, first 4.14 boot: root cause not established (see the next section)
 
 What was compared and found equal to 4.4 and stock [S]: the `sdio@20600000` node of the built DTB (clock tree
 entries, `sprd,hs400es/hs400/hs200/ddr52-dly`, `bus-width 8`, `mmc-hs400-enhanced-strobe`, 1.8 V HS400/HS200/DDR,
@@ -161,6 +161,38 @@ midpoint of the requested window (2.95 V for 2.9-3.0 V), the mainline-style 4.14
 (c) the early boot (probe line with the real base clock, regulator and pinctrl messages) is missing from the
 captures, so the actual SDCLK and voltage are unknown. A capture of the first 30 s with `mmc0`/`sprd-sdhcr10`
 lines, or `/sys/kernel/debug/clk/clk_summary` and the `vddemmccore` voltage from `/sys/class/regulator`, would settle (c).
+
+### eMMC write errors, second 4.14 boot (vddemmccore pinned 2.95 V)
+
+Facts [D]: HS400ES at 200 MHz comes up at 1.55 s, reads and the ext4/f2fs mounts work; the first error is at 4.493 s,
+`CMD25 int 0x1008001` on an 8-block write (sector 6512640), register dump `0x0C = 193a002b` (CMD25, auto CMD23,
+multi-block, DMA), ARG2 (0x00) = 8, Auto-CMD error register (0x3C) = 0x0002 (timeout), ADMA error 0, ADMA still at
+descriptor 2. So the controller sent the automatic CMD23 and got no response; the data phase never starts. Host ctrl2
+(0x3E) = 0x3807. The pin to 2.95 V did not change the failure, so the supply voltage is not the cause.
+
+Compared with 4.4 [S]: sbc is filled by the same core rule (`MMC_BLK_CMD23`, rel-wr bit 31, tag bit 29), the driver
+has the same Auto-CMD23 path, `card_busy_detect()` and the CMD6/flush handling are unchanged, ADMA limits and the
+runtime-PM clock gating are the same. `sdio_2x_eb`/`sdio_1x_eb` are optional and warn on 4.4 too; the eMMC gate is
+`sdio_ahb_enable` (EMMC_EB). The one functional driver difference is the DLL lock loop: 4.4 waits for
+`DLL_STS0` locked (bit 18) AND error (bit 17) clear, 4.14 only for locked.
+
+Commits on `fixes/414-emmc-write`:
+
+1. DLL wait restored to the 4.4 condition (most likely cause [H], moderate confidence: a DLL reporting an error
+   while locked gives a wrong sampling phase for the response, which fits a CMD23 response timeout; it cannot be
+   shown from the existing logs because the status was never printed).
+2. Failed-command log: arg, block count, sbc and its argument, auto mode, `acmd_err`, host flags, clock, timing,
+   `DLL_STS0/1`; "dpll locked done" now prints `DLL_STS0`.
+3. `vddemmccore` window 2.95-3.1 V: the core requests 3.0-3.1 V (OCR bit 18 from `voltage-ranges <3000 3000>`),
+   which the 2.95 V pin made fail with -EPERM (`could not set regulator OCR (-1)`). Hygiene fix, unlikely [H] to be
+   the write failure (the first boot with the 2.9 V default failed the same way).
+
+Next boot must show: `dpll locked done, DLL_STS0 0x...` (bit 17 = 0x20000 must be clear; any `dpll locked faile`
+lines mean 4.4's loop was needed); no `could not set regulator OCR`; `/sys/class/regulator` vddemmccore at 3.0 V; and
+either no `CMD25 int` or the new `CMD25 arg ... acmd_err ...` line. If errors persist, `acmd_err` 0x0002 with
+`sbc arg` bits 31/29 set means reliable-write/tag CMD23s are the trigger; the same with a plain block count points at
+the response sampling (retry with `sprd,hs400es-dly` re-tuned or HS400 without ES). A DLL_STS0 error bit with the
+error persisting would make the DLL itself the suspect.
 
 ### Keymaster / rpmbproxyd / storagensproxyd
 
