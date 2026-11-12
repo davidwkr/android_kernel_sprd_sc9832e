@@ -128,6 +128,7 @@ struct tipc_virtio_dev {
 	wait_queue_head_t sendq;
 	struct idr addr_idr;
 	enum tipc_device_state state;
+	bool rx_seen; /* first rx completion logged */
 	struct tipc_cdev_node cdev_node;
 	char   cdev_name[MAX_DEV_NAME_LEN];
 };
@@ -605,6 +606,9 @@ int tipc_chan_connect(struct tipc_chan *chan, const char *name)
 		/* save service name we are connecting to */
 		strcpy(chan->srv_name, body->name);
 
+		dev_info_ratelimited(&chan->vds->vdev->dev,
+				     "connect '%s' from local 0x%x\n",
+				     body->name, chan->local);
 		fill_msg_hdr(txbuf, chan->local, TIPC_CTRL_ADDR);
 		err = vds_queue_txbuf(chan->vds, txbuf);
 		if (err) {
@@ -920,11 +924,16 @@ static int dn_connect_ioctl(struct tipc_dn_chan *dn, char __user *usr_name)
 
 	/* send connect request */
 	err = tipc_chan_connect(dn->chan, name);
-	if (err)
+	if (err) {
+		pr_info("%s: connect '%s' failed: %d\n", __func__, name, err);
 		return err;
+	}
 
 	/* and wait for reply */
-	return dn_wait_for_reply(dn, REPLY_TIMEOUT);
+	err = dn_wait_for_reply(dn, REPLY_TIMEOUT);
+	if (err)
+		pr_info("%s: connect '%s' reply: %d\n", __func__, name, err);
+	return err;
 }
 
 static long tipc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
@@ -1192,10 +1201,13 @@ static int _create_cdev_node(struct device *parent,
 				 devt, NULL, "trusty-ipc-%s", name);
 	if (IS_ERR(cdn->dev)) {
 		ret = PTR_ERR(cdn->dev);
-		dev_dbg(parent, "%s: device_create failed: %d\n",
+		dev_err(parent, "%s: device_create failed: %d\n",
 			__func__, ret);
 		goto err_device_create;
 	}
+
+	dev_info(parent, "created /dev/trusty-ipc-%s (%u:%u)\n", name,
+		 tipc_major, cdn->minor);
 
 	return 0;
 
@@ -1218,6 +1230,9 @@ static void create_cdev_node(struct tipc_virtio_dev *vds,
 		kref_get(&vds->refcount);
 		default_vdev = vds->vdev;
 	}
+
+	if (!vds->cdev_name[0])
+		dev_warn(&vds->vdev->dev, "empty dev_name, no ipc device node\n");
 
 	if (vds->cdev_name[0] && !cdn->dev) {
 		kref_get(&vds->refcount);
@@ -1306,10 +1321,14 @@ static void _handle_conn_rsp(struct tipc_virtio_dev *vds,
 		return;
 	}
 
-	dev_dbg(&vds->vdev->dev,
-		"%s: connection response: for addr 0x%x: "
-		"status %d remote addr 0x%x\n",
-		__func__, rsp->target, rsp->status, rsp->remote);
+	if (rsp->status)
+		dev_info(&vds->vdev->dev,
+			 "connect response: addr 0x%x refused, status %d\n",
+			 rsp->target, rsp->status);
+	else
+		dev_info_ratelimited(&vds->vdev->dev,
+				     "connect response: addr 0x%x ok, remote 0x%x\n",
+				     rsp->target, rsp->remote);
 
 	/* Lookup channel */
 	chan = vds_lookup_channel(vds, rsp->target);
@@ -1381,10 +1400,12 @@ static void _handle_ctrl_msg(struct tipc_virtio_dev *vds,
 
 	switch (msg->type) {
 	case TIPC_CTRL_MSGTYPE_GO_ONLINE:
+		dev_info(&vds->vdev->dev, "GO_ONLINE received\n");
 		_go_online(vds);
 	break;
 
 	case TIPC_CTRL_MSGTYPE_GO_OFFLINE:
+		dev_info(&vds->vdev->dev, "GO_OFFLINE received\n");
 		_go_offline(vds);
 	break;
 
@@ -1474,6 +1495,11 @@ static void _rxvq_cb(struct virtqueue *rxvq)
 	struct tipc_virtio_dev *vds = rxvq->vdev->priv;
 
 	while ((mb = virtqueue_get_buf(rxvq, &len)) != NULL) {
+		if (!vds->rx_seen) {
+			vds->rx_seen = true;
+			dev_info(&rxvq->vdev->dev,
+				 "first rx completion: %u bytes\n", len);
+		}
 		if (_handle_rxbuf(vds, mb, len))
 			break;
 		msg_cnt++;
@@ -1514,7 +1540,8 @@ static int tipc_virtio_probe(struct virtio_device *vdev)
 	vq_callback_t *vq_cbs[] = {_rxvq_cb, _txvq_cb};
 	const char *vq_names[] = { "rx", "tx" };
 
-	dev_dbg(&vdev->dev, "%s:\n", __func__);
+	dev_info(&vdev->dev, "%s: virtio id %u vendor 0x%x\n", __func__,
+		 vdev->id.device, vdev->id.vendor);
 
 	vds = kzalloc(sizeof(*vds), GFP_KERNEL);
 	if (!vds)
@@ -1542,8 +1569,10 @@ static int tipc_virtio_probe(struct virtio_device *vdev)
 
 	/* find tx virtqueues (rx and tx and in this order) */
 	err = vdev->config->find_vqs(vdev, 2, vqs, vq_cbs, vq_names, NULL, NULL);
-	if (err)
+	if (err) {
+		dev_err(&vdev->dev, "%s: find_vqs failed: %d\n", __func__, err);
 		goto err_find_vqs;
+	}
 
 	vds->rxvq = vqs[0];
 	vds->txvq = vqs[1];
@@ -1551,6 +1580,12 @@ static int tipc_virtio_probe(struct virtio_device *vdev)
 	/* save max buffer size and count */
 	vds->msg_buf_max_sz = config.msg_buf_max_size;
 	vds->msg_buf_max_cnt = virtqueue_get_vring_size(vds->txvq);
+
+	dev_info(&vdev->dev,
+		 "%s: dev_name '%s' rx vring %u tx vring %u msg_buf_max_size %zu align %u\n",
+		 __func__, vds->cdev_name, virtqueue_get_vring_size(vds->rxvq),
+		 virtqueue_get_vring_size(vds->txvq), vds->msg_buf_max_sz,
+		 config.msg_buf_alignment);
 
 	/* set up the receive buffers */
 	for (i = 0; i < virtqueue_get_vring_size(vds->rxvq); i++) {
@@ -1572,7 +1607,8 @@ static int tipc_virtio_probe(struct virtio_device *vdev)
 	vdev->priv = vds;
 	vds->state = VDS_OFFLINE;
 
-	dev_dbg(&vdev->dev, "%s: done\n", __func__);
+	dev_info(&vdev->dev, "%s: %u single-buffer rx entries queued, offline\n",
+		 __func__, virtqueue_get_vring_size(vds->rxvq));
 	return 0;
 
 err_free_rx_buffers:
