@@ -158,6 +158,7 @@ void DrvCommonReadFile(char *pFilePath, u8 *pBuf, u16 nLength)
 	pFile = filp_open(pFilePath, O_RDONLY, 0);
 	if (IS_ERR(pFile)) {
 		DBG(&g_I2cClient->dev, "Open file failed: %s\n", pFilePath);
+		set_fs(old_fs);
 		return;
 	}
 
