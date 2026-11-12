@@ -164,6 +164,7 @@ static void sensor_write_work( struct work_struct *work )
 	pWorkInfo = container_of((struct delayed_work*)work, struct work_info, write_work);
 	if (pWorkInfo == NULL){            
 		MI_ERR("get pWorkInfo failed!");       
+		set_fs(orgfs);
 		return;
 	}
 
@@ -197,6 +198,7 @@ static void sensor_read_work( struct work_struct *work )
 	pWorkInfo = container_of((struct delayed_work*)work, struct work_info, read_work);
 	if (pWorkInfo == NULL){            
 		MI_ERR("get pWorkInfo failed!");       
+		set_fs(orgfs);
 		return;
 	}
 

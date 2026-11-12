@@ -721,12 +721,14 @@ static void cali_save_file(char *path, struct wifi_cali_t *p)
 {
 	struct file *fp;
 	int i, j;
+	mm_segment_t fs = get_fs();
 
 	set_fs(KERNEL_DS);
 
 	fp = filp_open(path, O_RDWR | O_CREAT | O_TRUNC, 0755);
 	if (IS_ERR_OR_NULL(fp)) {
 		pr_err("%s(), open error!\n", __func__);
+		set_fs(fs);
 		return;
 	}
 	DUMP(fp, "[SETCTION 0]\r\n");
@@ -976,7 +978,7 @@ static void cali_save_file(char *path, struct wifi_cali_t *p)
 
 
 	filp_close(fp, NULL);
-	set_fs(USER_DS);
+	set_fs(fs);
 
 }
 
