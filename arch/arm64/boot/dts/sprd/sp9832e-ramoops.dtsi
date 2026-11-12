@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Persistent crash log for bring-up, included only by the -ramoops board
+ * variants (devices/RAMOOPS_414.md). The region and the zone sizes are the
+ * stock ones, unchanged: the boards already declare them as pstore_reserved
+ * (ramoops@8845a800, 256 KiB; record, console and pmsg 32 KiB each, as the
+ * stock 4.4 DT's pstore@8845a800 and ramoops node), so there is nothing new to
+ * conflict with the bootloader, the modem or ION, and the stock 4.4 kernel
+ * can read what 4.14 wrote (ramoops finds the zones by their offsets).
+ *
+ * This only raises the loglevel: the stock bootargs have
+ * loglevel=1, which keeps almost every message out of the consoles, the
+ * pstore one included (the UART is slower for it, the boot is not).
+ *
+ * No "unbuffered": on arm64 it maps the region as Device-nGnRnE, and the
+ * pmsg path copies from userspace with wide, possibly unaligned stores
+ * (__copy_from_user in fs/pstore/ram_core.c), which fault on Device memory.
+ * The default write-combining mapping is kept, as on stock.
+ */
+
+/ {
+	chosen {
+		bootargs = "earlycon=sprd_serial,0x70100000,115200n8 console=ttyS1,115200n8 loglevel=7 init=/init root=/dev/ram0 rw androidboot.hardware=sl8541e_1h10";
+	};
+};

@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * DW100U silver ADF board (sp9832e-1h10-dw100u-silver-adf.dts) with a bigger,
+ * uncached ramoops console zone for bring-up, see devices/RAMOOPS_414.md.
+ */
+
+#include "sp9832e-1h10-dw100u-silver-adf.dts"
+#include "sp9832e-ramoops.dtsi"
