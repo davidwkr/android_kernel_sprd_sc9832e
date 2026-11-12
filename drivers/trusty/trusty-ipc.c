@@ -42,6 +42,11 @@
 #define MAX_DEV_NAME_LEN		32
 
 #define DEFAULT_MSG_BUF_SIZE		PAGE_SIZE
+/* a buffer holds a connect request, tipc_msg_hdr.len is 16 bit */
+#define MIN_MSG_BUF_SIZE		(sizeof(struct tipc_msg_hdr) + \
+					 sizeof(struct tipc_ctrl_msg) + \
+					 sizeof(struct tipc_conn_req_body))
+#define MAX_MSG_BUF_SIZE		(sizeof(struct tipc_msg_hdr) + U16_MAX)
 #define DEFAULT_MSG_BUF_ALIGN		PAGE_SIZE
 
 #define TIPC_CTRL_ADDR			53
@@ -1645,6 +1650,17 @@ static int tipc_virtio_probe(struct virtio_device *vdev)
 
 	/* get configuration if present */
 	vdev->config->get(vdev, 0, &config, sizeof(config));
+
+	/* the size comes from the secure side, check what it is used for */
+	if (config.msg_buf_max_size < MIN_MSG_BUF_SIZE ||
+	    config.msg_buf_max_size > MAX_MSG_BUF_SIZE) {
+		dev_err(&vdev->dev,
+			"%s: invalid msg_buf_max_size %u (%zu..%zu)\n",
+			__func__, config.msg_buf_max_size,
+			(size_t)MIN_MSG_BUF_SIZE, (size_t)MAX_MSG_BUF_SIZE);
+		err = -EINVAL;
+		goto err_find_vqs;
+	}
 
 	/* copy dev name */
 	strncpy(vds->cdev_name, config.dev_name, sizeof(vds->cdev_name));
