@@ -46,8 +46,12 @@ What is added to a copy of the stock ramdisk (`tools/sprd_ramdisk.py add-file` /
      `write .../UDC ${sys.usb.controller}`. A property based start is not used because a property change is
      queued behind the `late-init` triggers, so even a `sys.usb.config=adb` set here would only act after `fs`.
   3. `fs` mounts `/data` (the stall that motivated this): adb is already up.
-  4. `early-boot` (bench rc): `setprop sys.usb.config adb`, after `load_persist_props_action`, so it also wins
-     over `persist.sys.usb.config` (the vendor default is `ptp`).
+  4. `early-boot` (bench rc): `setprop sys.usb.config adb`. This alone does not win over
+     `persist.sys.usb.config` (the vendor default is `ptp`): 8.1 init runs the initial property-trigger scan after
+     the queued events, and the stock `on property:persist.sys.usb.config=*` (init.usb.rc) then copies `ptp` back.
+  5. The bench rc has an action with the same trigger, parsed after init.usb.rc (it is imported at the end of
+     `/init.rc`), so it runs last and sets `sys.usb.config adb` again: adb is the final state, also if the stored
+     value changes later.
   5. `boot` (stock): `sys.usb.configfs=1`. With `config=adb`, `configfs=1` and `mode=normal` the stock rules
      fire again: `start adbd` (already running) and, as `sys.usb.ffs.ready=1`, the same relink and UDC write.
      In this kernel unlinking a function from a bound gadget unbinds the UDC first
