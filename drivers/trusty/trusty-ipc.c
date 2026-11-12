@@ -228,17 +228,22 @@ static inline void mb_reset(struct tipc_msg_buf *mb)
 	mb->rpos = 0;
 }
 
-static void _free_chan(struct kref *kref)
-{
-	struct tipc_chan *ch = container_of(kref, struct tipc_chan, refcount);
-	kfree(ch);
-}
-
 static void _free_vds(struct kref *kref)
 {
 	struct tipc_virtio_dev *vds =
 		container_of(kref, struct tipc_virtio_dev, refcount);
 	kfree(vds);
+}
+
+static void _free_chan(struct kref *kref)
+{
+	struct tipc_chan *ch = container_of(kref, struct tipc_chan, refcount);
+
+	if (ch->ops && ch->ops->handle_release)
+		ch->ops->handle_release(ch->ops_arg);
+
+	kref_put(&ch->vds->refcount, _free_vds);
+	kfree(ch);
 }
 
 static struct tipc_msg_buf *vds_alloc_msg_buf(struct tipc_virtio_dev *vds)
@@ -687,13 +692,7 @@ EXPORT_SYMBOL(tipc_chan_shutdown);
 
 void tipc_chan_destroy(struct tipc_chan *chan)
 {
-	mutex_lock(&chan->lock);
-	if (chan->vds) {
-		vds_del_channel(chan->vds, chan);
-		kref_put(&chan->vds->refcount, _free_vds);
-		chan->vds = NULL;
-	}
-	mutex_unlock(&chan->lock);
+	vds_del_channel(chan->vds, chan);
 	kref_put(&chan->refcount, _free_chan);
 }
 EXPORT_SYMBOL(tipc_chan_destroy);
@@ -831,9 +830,15 @@ static void dn_handle_event(void *data, int event)
 	}
 }
 
+static void dn_handle_release(void *data)
+{
+	kfree(data);
+}
+
 static struct tipc_chan_ops _dn_ops = {
 	.handle_msg = dn_handle_msg,
 	.handle_event = dn_handle_event,
+	.handle_release = dn_handle_release,
 };
 
 #define cdev_to_cdn(c) container_of((c), struct tipc_cdev_node, cdev)
@@ -1113,8 +1118,6 @@ static int tipc_release(struct inode *inode, struct file *filp)
 
 	/* and destroy it */
 	tipc_chan_destroy(dn->chan);
-
-	kfree(dn);
 
 	return 0;
 }
