@@ -95,6 +95,7 @@ struct sc7a22_data {
 	struct delayed_work flag_work; /* retries a failed flag read */
 	struct mutex irq_lock; /* Serializes flag servicing and re-arming. */
 	unsigned int flag_retries; /* under irq_lock */
+	bool suspended; /* under irq_lock: no retry is queued */
 	struct mutex lock; /* Serializes enable, delay, and work transitions. */
 	struct kref ref; /* probe + one per open misc descriptor */
 	bool removed; /* under lock: no enabling after teardown started */
@@ -627,8 +628,9 @@ static irqreturn_t sc7a22_irq_thread(int irq, void *dev_id)
 		dev_warn_ratelimited(&data->client->dev,
 				     "flag read failed: %d\n", seen);
 		data->flag_retries = SC7A22_FLAG_RETRIES;
-		schedule_delayed_work(&data->flag_work,
-				      msecs_to_jiffies(SC7A22_FLAG_RETRY_MS));
+		if (!data->suspended)
+			schedule_delayed_work(&data->flag_work,
+					      msecs_to_jiffies(SC7A22_FLAG_RETRY_MS));
 	} else {
 		data->flag_retries = 0;
 		cancel_delayed_work(&data->flag_work);
@@ -652,8 +654,9 @@ static void sc7a22_flag_work(struct work_struct *work)
 	if (seen >= 0) {
 		data->flag_retries = 0;
 	} else if (--data->flag_retries) {
-		schedule_delayed_work(&data->flag_work,
-				      msecs_to_jiffies(SC7A22_FLAG_RETRY_MS));
+		if (!data->suspended)
+			schedule_delayed_work(&data->flag_work,
+					      msecs_to_jiffies(SC7A22_FLAG_RETRY_MS));
 	} else {
 		dev_err(&data->client->dev,
 			"flag read still failing: %d\n", seen);
@@ -1354,6 +1357,10 @@ static int sc7a22_suspend(struct device *dev)
 {
 	struct sc7a22_data *data = dev_get_drvdata(dev);
 
+	/* The IRQ thread stays live: keep it from queuing a retry. */
+	mutex_lock(&data->irq_lock);
+	data->suspended = true;
+	mutex_unlock(&data->irq_lock);
 	cancel_delayed_work_sync(&data->flag_work);
 	if (data->irq_requested && device_may_wakeup(dev))
 		irq_set_irq_wake(data->irq, 1);
@@ -1371,6 +1378,7 @@ static int sc7a22_resume(struct device *dev)
 		irq_set_irq_wake(data->irq, 0);
 	/* Resume a retry that suspend cancelled. */
 	mutex_lock(&data->irq_lock);
+	data->suspended = false;
 	if (data->flag_retries)
 		schedule_delayed_work(&data->flag_work,
 				      msecs_to_jiffies(SC7A22_FLAG_RETRY_MS));
