@@ -5,17 +5,17 @@ built by `devices/build_candidates_44.sh` into `~/.cache/{dm63,dw100u-silver}-ca
 
 ## Current images (2026-11-11)
 
-Built from `devices/k18-mali-candidate` commit `9d1f71587d5d` (kernel content unchanged from the previous
+Built from `devices/k18-mali-candidate` commit `885eb904b7c9` (v5: Mali evict_node, ADF stock layer records, SC7A22 interrupt storm, GPU cap/thermal/boost, zram/lz4, stock loglevel=1) (kernel content unchanged from the previous
 table; the Mali refusal logging and the sprdwcn `strncpy` bound are in). The DT now has `loglevel=7` instead of
 `loglevel=1`; the `_BENCHDEBUG` images also carry early authenticated adb (`BENCH_DEBUG.md`: **bench watches
 only, reflash the normal image before a watch leaves the bench**).
 
 | Watch | Image | sha256 |
 |---|---|---|
-| DM63 | `dm63_mali_candidate.img` | `0e1f0f52cc18eb2c7f97cf339d59cc620e2f3d8613e4d698de0a7dfcd4ddf12e` |
-| DM63 | `dm63_mali_candidate_BENCHDEBUG.img` | `a5aae8ad80815155dbb4fec1393964f3d632ad43007d0bf5e8d592ba366420d5` |
-| DW100U silver | `dw100u-silver_mali_candidate.img` | `c729b0459adeb203c9d030448770521386d2e9ca821d420638ef10f6b8c47506` |
-| DW100U silver | `dw100u-silver_mali_candidate_BENCHDEBUG.img` | `4e668c06aafcad1058ce04739638e90a9e0ce8644dfc3c4d1978e697c2d5a341` |
+| DM63 | `dm63_v5.img` | `e385d0428eec7caff39a35e16709ee918a327499eb468b84d75975b76048f973` |
+| DM63 | `dm63_v5_BENCHDEBUG.img` | `ceaf7298573116b5134e7c501fcf94cb511819f9534860a263bfe621e7e6cb42` |
+| DW100U silver | `dw100u-silver_v5.img` | `c88b38f1ba92b0e9f9afcdbefa713359f873ca112b1fdc698da07b97496f5e01` |
+| DW100U silver | `dw100u-silver_v5_BENCHDEBUG.img` | `155d258185e20caf497e7e7d5462b9d985a0364c4f963f4a0c3b3d4262455407` |
 
 Build: `SFD=<stock images dir> devices/build_candidates_44.sh`; the BENCHDEBUG images need `BENCH_DEBUG=1` and
 `ADB_PUBKEY=<path>/adbkey.pub` too.
