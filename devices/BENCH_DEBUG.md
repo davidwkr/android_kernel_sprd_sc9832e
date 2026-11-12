@@ -27,17 +27,35 @@ What is added to a copy of the stock ramdisk (`tools/sprd_ramdisk.py add-file` /
 - `/adb_keys`, mode 0644 root:root: the bench host's adb **public** key (`~/.android/adbkey.pub`). adbd
   loads authorized keys from `/adb_keys` and `/data/misc/adb/adb_keys` [I: from memory of the AOSP O-MR1 adbd;
   the source was not reachable when this was written. The stock ramdisk's `init.rc` has `restorecon /adb_keys`,
-  which fits]. The file is checked by `tools/sprd_adbkey_check.py` (name `adbkey.pub`, one `QAAAA... comment`
-  line) and its content is never printed or committed.
-- `/init.benchdebug.rc` (imported from `/init.rc` like `init.watch_tweaks.rc`): on `early-boot` it sets
-  `sys.usb.controller` and `sys.usb.config adb`. The gadget, the FunctionFS adb function and
-  `sys.usb.mode=normal` come from the stock `init.usb.rc` (`on init`); `on boot` sets `sys.usb.configfs=1`,
-  and the stock configfs rules then start adbd and bind the UDC. `early-boot` runs after
-  `load_persist_props_action`, so the value also wins over a stored `persist.sys.usb.config`, and it does not
-  wait for `/data`: init starts adbd without it. The stock `init.sl8541e_1h10.usb.rc` is empty.
-  [I: `musb-hdrc.0.auto` as UDC name is inferred from the fstab path `20200000.usb/musb-hdrc.0.auto`; nothing
-  in the ramdisk sets `sys.usb.controller`. If `adb devices` stays empty but the kernel log shows the gadget
-  bound to nothing, read `/sys/class/udc/` of a running stock system and correct the rc.]
+  which fits]. It is an **additional** authorized key: hosts already in `/data/misc/adb/adb_keys` stay
+  authorized once `/data` is mounted. The file is checked by `tools/sprd_adbkey_check.py` (name `adbkey.pub`,
+  a regular file, not a symlink; one `<base64> comment` line whose strictly decoded base64 is a valid 524-byte
+  Android RSAPublicKey: 64 words, `n0inv` and `rr` consistent with the 2048-bit modulus, exponent 3 or 65537)
+  and its content is never printed or committed.
+- `/init.benchdebug.rc` (imported from `/init.rc` like `init.watch_tweaks.rc`): starts adbd **before `/data`
+  is mounted**. Stock order (`init.rc` `on late-init`): `early-fs`, `fs` (`init.common.rc` mounts the fstab,
+  userdata included), `post-fs`, `late-fs`, `post-fs-data`, `zygote-start`, `load_persist_props_action`,
+  `early-boot`, `boot`. These are queued events, so all `on late-init` commands, the bench rc's included, run
+  before the first of them. /system and /vendor come from the first-stage early mount, so adbd and
+  `/vendor/default.prop` are available there. The order in the image:
+  1. `on init` (stock `init.usb.rc`): mounts configfs, makes gadget `g1` with ids and strings, config `b.1`,
+     the `ffs.adb` function and the functionfs mount on `/dev/usb-ffs/adb`; sets `sys.usb.mode=normal`.
+  2. `on late-init` (bench rc): `start adbd`, `wait /dev/usb-ffs/adb/ep1 10` (adbd writes the FunctionFS
+     descriptors, which creates the endpoint files), then the body of the stock `init.usb.configfs.rc` rule for
+     `sys.usb.config=adb` (ids `18d1:4EE7`, relink `ffs.adb` plus `gser.gs0-7` into `b.1`) and
+     `write .../UDC ${sys.usb.controller}`. A property based start is not used because a property change is
+     queued behind the `late-init` triggers, so even a `sys.usb.config=adb` set here would only act after `fs`.
+  3. `fs` mounts `/data` (the stall that motivated this): adb is already up.
+  4. `early-boot` (bench rc): `setprop sys.usb.config adb`, after `load_persist_props_action`, so it also wins
+     over `persist.sys.usb.config` (the vendor default is `ptp`).
+  5. `boot` (stock): `sys.usb.configfs=1`. With `config=adb`, `configfs=1` and `mode=normal` the stock rules
+     fire again: `start adbd` (already running) and, as `sys.usb.ffs.ready=1`, the same relink and UDC write.
+     In this kernel unlinking a function from a bound gadget unbinds the UDC first
+     (`config_usb_cfg_unlink`), so the stock rule rebinds adb cleanly; it does not leave a ptp or empty gadget.
+  `sys.usb.controller` is not set by the bench rc: the vendor `default.prop` has
+  `sys.usb.controller=musb-hdrc.0.auto` and property defaults are loaded before the first action. If it were
+  still empty at `late-init`, the UDC write fails and step 4/5 binds it once the property is there.
+  The stock `init.sl8541e_1h10.usb.rc` is empty.
 - Unchanged: `ro.adb.secure`, `ro.debuggable`, SELinux. adbd runs as `shell` and only accepts a host holding
   the matching private key. Anyone with that private key and USB access to the watch has a shell, so keep the
   key on the bench host only. Once the Android framework is up, the USB settings may change `sys.usb.config`
