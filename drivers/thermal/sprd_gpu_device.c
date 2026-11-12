@@ -138,7 +138,7 @@ static u64 get_voltage_scale(int cluster_id, unsigned long m_volt)
 	return v_scale;
 }
 
-/* voltage in uV and temperature in mC */
+/* voltage in mV and temperature in mC */
 static unsigned long get_static_power(struct devfreq *df, unsigned long m_volt)
 {
 
@@ -146,8 +146,7 @@ static unsigned long get_static_power(struct devfreq *df, unsigned long m_volt)
 	struct thermal_zone_device *gpu_tz;
 	unsigned long t_scale, v_scale;
 	u32 gpu_coeff;
-	u32 tmp_power = 0;
-	unsigned long power;
+	u64 tmp_power, power;
 	int gpu_cluster = GPU_CLUSTER_ID;
 	int gpu_cores = GPU_CORE_NUM;
 	int temperature = 0;
@@ -177,10 +176,11 @@ static unsigned long get_static_power(struct devfreq *df, unsigned long m_volt)
 	/* get Vscale * 1000 */
 	v_scale = get_voltage_scale(gpu_cluster, m_volt);
 
-	tmp_power = t_scale * v_scale;
-	power = (gpu_cores * gpu_coeff * tmp_power) / 100000000;
+	tmp_power = (u64)t_scale * v_scale;
+	power = (u64)gpu_cores * gpu_coeff * tmp_power;
+	do_div(power, 100000000);
 
-	pr_debug("temp:%d m_volt:%lu static_power:%lu gpu_coeff:%u t_scale:%lu v_scale:%lu\n",
+	pr_debug("temp:%d m_volt:%lu static_power:%llu gpu_coeff:%u t_scale:%lu v_scale:%lu\n",
 		temperature, m_volt, power, gpu_coeff, t_scale, v_scale);
 
 	return power;
