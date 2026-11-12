@@ -72,3 +72,15 @@ is unlocked.
 
 No device test of this change. Expected on hardware: `sysdump_status = 0` right
 after boot, panic reboots by itself and pstore keeps its records.
+
+## Hardware result (DM63, v9, 2026-11-12)
+
+On the DM63 ROM the vendor daemon `/vendor/bin/systemDebuggerd` (oneshot service in `init.common.rc`) applies
+`persist.sys.sysdump` to `/proc/sprd_sysdump` at every boot, after this kernel default; with the property unset it
+turns the dump **on**. So on these watches the property decides: v9 booted with `persist.sys.sysdump=on` reported
+`sysdump_status = 1`. The kernel default only covers the time before the daemon runs and ROMs without it.
+
+Operational fix, once per watch (stock or our kernel): `setprop debug.sysdump.enabled false` (init writes `off`
+and stores `persist.sys.sysdump=off`; the daemon re-applies it at boot). Verified on v9: `sysdump_status = 0`, a
+`sysrq` panic rebooted the watch by itself in 40 s and pstore kept console and dmesg records. With `on`, the same
+panic left the watch at the boot logo until a forced power-off (bench DM63, v8).
