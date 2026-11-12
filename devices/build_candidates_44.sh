@@ -1,7 +1,7 @@
 #!/bin/bash
 # Builds the DM63 and DW100U 4.4 candidate boot images (devices/CANDIDATES_44.md). Inputs: SRC (this tree,
 # default), SFD (directory with the stock dm63/boot.img and dw100u-silver/boot.bin, required), OUT (output base,
-# default ~/.cache). Each device gets the normal image (DT bootargs loglevel=7) and, with BENCH_DEBUG=1 and
+# default ~/.cache). Each device gets the normal image (stock DT bootargs; LOGLEVEL7=1 for loglevel=7) and, with BENCH_DEBUG=1 and
 # ADB_PUBKEY=<path>/adbkey.pub (the bench host's adb PUBLIC key), a *_BENCHDEBUG.img with early authenticated adb
 # (devices/BENCH_DEBUG.md). The kernel build tree is deleted once both images are packed (KEEP_BUILD=1 keeps it).
 set -euo pipefail
@@ -23,8 +23,14 @@ build() { # device outbase stock_img out_img
   python3 -I tools/sprd_ramdisk.py replace-modules $W/dir/ramdisk $W/rd1.gz --kernel $OB/$D/Image --symvers $OB/obj-$D/Module.symvers \
     --module $OB/$D/mali.ko --module $OB/$D/sprdwl_ng.ko --module $OB/$D/sprdbt_tty.ko --module $OB/$D/sprd_fm.ko
   python3 -I tools/sprd_ramdisk.py add-rc $W/rd1.gz $W/rd2.gz --fragment devices/common/init.watch_tweaks.rc
-  # the stock DT with loglevel=7 instead of loglevel=1, nothing else changed
-  python3 -I tools/sprd_bootimg.py dt-bootargs $W/dir/dt $W/dt7 --replace loglevel=1 loglevel=7 | tail -1
+  # stock DT bootargs (loglevel=1) by default: loglevel=7 sends every kernel message to the 115200-baud
+  # serial console synchronously, which kept all four CPUs busy and overheated the DM63 bench boots.
+  # LOGLEVEL7=1 restores it for a short attended debug boot only.
+  if [ "${LOGLEVEL7:-0}" = 1 ]; then
+    python3 -I tools/sprd_bootimg.py dt-bootargs $W/dir/dt $W/dt7 --replace loglevel=1 loglevel=7 | tail -1
+  else
+    cp $W/dir/dt $W/dt7
+  fi
   mkdir -p "$(dirname $IMG)"
   pack() { # ramdisk out
     python3 -I tools/sprd_bootimg.py pack $W/dir $2 --kernel $OB/$D/Image --ramdisk $1 --dt $W/dt7
