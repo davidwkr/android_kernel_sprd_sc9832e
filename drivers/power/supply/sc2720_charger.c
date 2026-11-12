@@ -88,6 +88,8 @@ struct sc2720_charger_data {
 
 struct sc2720_charger_info {
 	struct device *dev;
+	/* per device copy of data->desc: only .type changes, see sc2720_charger_update_type() */
+	struct power_supply_desc desc;
 	struct regmap *regmap;
 	struct usb_phy *usb_phy;
 	struct notifier_block usb_notify;
@@ -928,6 +930,27 @@ static int sc2720_charger_set_status(struct sc2720_charger_info *info,
 	return ret;
 }
 
+/*
+ * The stock 4.4 sprd_battery.c reports two supplies: "usb" (type USB) online
+ * for SDP and CDP, "ac" (type Mains) online for everything else. Android 8.1
+ * healthd classifies by the sysfs "type" attribute and maps "USB_DCP" to AC
+ * and "USB" to USB, so follow the adapter with the type of the one charger
+ * supply instead of adding a second one that cm and the CV override would
+ * have to know about. Online stays as is, charger-manager reads it.
+ */
+static void sc2720_charger_update_type(struct sc2720_charger_info *info)
+{
+	switch (info->usb_phy->chg_type) {
+	case SDP_TYPE:
+	case CDP_TYPE:
+		info->desc.type = POWER_SUPPLY_TYPE_USB;
+		break;
+	default:
+		info->desc.type = info->limit ? POWER_SUPPLY_TYPE_USB_DCP :
+						POWER_SUPPLY_TYPE_USB;
+	}
+}
+
 static void sc2720_charger_work(struct work_struct *data)
 {
 	struct sc2720_charger_info *info =
@@ -978,9 +1001,11 @@ static void sc2720_charger_work(struct work_struct *data)
 	}
 
 out:
+	sc2720_charger_update_type(info);
 	mutex_unlock(&info->lock);
 	dev_info(info->dev, "battery present = %d, charger type = %d\n",
 		 present, info->usb_phy->chg_type);
+	power_supply_changed(info->psy_usb);
 	cm_notify_event(info->psy_usb, CM_EVENT_CHG_START_STOP, NULL);
 }
 
@@ -1468,8 +1493,9 @@ static int sc2720_charger_probe(struct platform_device *pdev)
 
 	charger_cfg.drv_data = info;
 	charger_cfg.of_node = np;
+	info->desc = *info->data->desc;
 	info->psy_usb = devm_power_supply_register(&pdev->dev,
-						   info->data->desc,
+						   &info->desc,
 						   &charger_cfg);
 	if (IS_ERR(info->psy_usb)) {
 		dev_err(&pdev->dev, "failed to register power supply\n");
