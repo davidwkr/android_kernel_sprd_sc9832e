@@ -375,8 +375,6 @@ static int gnss_dump_share_memory(u32 len)
 	if (len == 0)
 		return -1;
 	GNSSDUMP_INFO("gnss_dump_share_memory\n");
-	fs = get_fs();
-	set_fs(KERNEL_DS);
 	base_addr = wcn_get_gnss_base_addr();
 	virt_addr = shmem_ram_vmap_nocache(base_addr, len);
 	if (!virt_addr) {
@@ -389,6 +387,7 @@ static int gnss_dump_share_memory(u32 len)
 			O_RDWR | O_CREAT | O_APPEND, 0666);
 		if (IS_ERR(gnss_dump_file)) {
 			GNSSDUMP_ERR("%s open file mem error\n", __func__);
+			shmem_ram_unmap(virt_addr);
 			return PTR_ERR(gnss_dump_file);
 		}
 	}
@@ -396,15 +395,18 @@ static int gnss_dump_share_memory(u32 len)
 	ddr_buffer = vmalloc(len);
 	if (!ddr_buffer) {
 		GNSSDUMP_ERR(" %s vmalloc ddr_buffer fail\n", __func__);
+		shmem_ram_unmap(virt_addr);
 		return -1;
 	}
 	memset(ddr_buffer, 0, len);
 	memcpy(ddr_buffer, virt_addr, len);
+	fs = get_fs();
+	set_fs(KERNEL_DS);
 	pos = gnss_dump_file->f_pos;
 	ret = vfs_write(gnss_dump_file, ddr_buffer, len, &pos);
 	gnss_dump_file->f_pos = pos;
-	shmem_ram_unmap(virt_addr);
 	set_fs(fs);
+	shmem_ram_unmap(virt_addr);
 	vfree(ddr_buffer);
 	if (ret != len) {
 		GNSSDUMP_ERR("%s dump ddr error,data len is %ld\n", __func__,
