@@ -9,3 +9,6 @@ CONFIG_PSTORE_CONSOLE=y
 CONFIG_PSTORE_PMSG=y
 # No ftrace zone: the region has no room for it and ftrace is off.
 # CONFIG_PSTORE_FTRACE is not set
+
+# bring-up: keep the early boot in dmesg (WCN polling wraps 512 KB in ~30 s)
+CONFIG_LOG_BUF_SHIFT=21
