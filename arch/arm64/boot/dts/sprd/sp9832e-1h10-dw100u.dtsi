@@ -867,3 +867,24 @@
 /delete-node/ &seth_ch29;
 /delete-node/ &seth_ch30;
 /delete-node/ &seth_ch31;
+
+/*
+ * Video and JPEG codecs with their IOMMUs, enabled in stock (silver and
+ * V13M). sharkle.dtsi leaves them disabled; without the VSP the stock H.264
+ * encoder aborts in H264EncPreInit.
+ */
+&iommu_vsp {
+	status = "okay";
+};
+
+&vsp {
+	status = "okay";
+};
+
+&iommu_jpg {
+	status = "okay";
+};
+
+&jpg {
+	status = "okay";
+};
