@@ -700,14 +700,6 @@ static void sprd_musb_work(struct work_struct *work)
 		charging_only = glue->charging_mode;
 		spin_unlock_irqrestore(&glue->lock, flags);
 		usb_gadget_set_state(&musb->g, USB_STATE_REMOVED);
-		/*
-		 * The gadget state work only sees the last state written, and
-		 * musb_g_disconnect() overwrites REMOVED with NOTATTACHED
-		 * (ignored by the charger) before that work runs, so report
-		 * the unplug directly.
-		 */
-		if (uchger)
-			usb_charger_plug_by_gadget(&musb->g, USB_STATE_REMOVED);
 		if (charging_only || pm_runtime_suspended(glue->dev)) {
 			dev_info(glue->dev,
 					"musb device had been in suspend status!\n");
