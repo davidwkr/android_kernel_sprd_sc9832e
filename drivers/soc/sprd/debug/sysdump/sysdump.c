@@ -1437,6 +1437,24 @@ static int prepare_exception_info(struct pt_regs *regs,
 	return 0;
 }
 #endif  /*	minidump code end	*/
+/*
+ * A dump-enabled panic leaves the bootloader in dump mode (no USB, stuck at
+ * the logo) on a watch that has no host attached, so boot with the dump off
+ * unless the command line says sysdump=on.  /proc/sprd_sysdump still
+ * switches it at runtime.
+ */
+static int sysdump_boot_on;
+
+static int __init sysdump_boot_setup(char *str)
+{
+	if (str && !strcmp(str, "on"))
+		sysdump_boot_on = 1;
+	else if (str && !strcmp(str, "off"))
+		sysdump_boot_on = 0;
+	return 0;
+}
+early_param("sysdump", sysdump_boot_setup);
+
 int sysdump_sysctl_init(void)
 {
 	/*get_sprd_sysdump_info_paddr(); */
@@ -1470,10 +1488,15 @@ int sysdump_sysctl_init(void)
 	sprd_sysdump_init = 1;
 
 	sprd_sysdump_enable_prepare();
-#if defined(CONFIG_SPRD_DEBUG)
-	pr_info("userdebug enable sysdump in default !!!\n");
-	set_sysdump_enable(1);
-#endif
+	pr_info("%s: boot state %s\n", __func__,
+		sysdump_boot_on ? "on" : "off");
+	if (sysdump_boot_on) {
+		set_sysdump_enable(1);
+		sysdump_enable_watchdog(0);
+	} else {
+		set_sysdump_enable(0);
+		sysdump_enable_watchdog(1);
+	}
 #ifdef CONFIG_SPRD_MINI_SYSDUMP
 	minidump_init();
 #endif
