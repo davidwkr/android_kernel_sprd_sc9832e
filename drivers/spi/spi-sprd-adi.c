@@ -421,10 +421,19 @@ static int sprd_adi_restart_handler(struct notifier_block *this,
 	else
 		reboot_mode = HWRST_STATUS_NORMAL;
 
-	/* Record the reboot mode */
-	sprd_adi_read(sadi, sadi->slave_pbase + sadi->data->rst_sts, &val);
-	val &= ~HWRST_STATUS_WATCHDOG;
-	val |= reboot_mode;
+	/*
+	 * Record the reboot mode. A panic keeps the other status bits (the
+	 * sysdump flag among them); a normal restart writes exactly the mode,
+	 * clearing them, as the 4.4 arch_reset() does.
+	 */
+	if (reboot_mode == HWRST_STATUS_PANIC) {
+		sprd_adi_read(sadi, sadi->slave_pbase + sadi->data->rst_sts,
+			      &val);
+		val &= ~HWRST_STATUS_WATCHDOG;
+		val |= reboot_mode;
+	} else {
+		val = reboot_mode;
+	}
 	sprd_adi_write(sadi, sadi->slave_pbase + sadi->data->rst_sts, val);
 
 	/* Enable the interface clock of the watchdog */
