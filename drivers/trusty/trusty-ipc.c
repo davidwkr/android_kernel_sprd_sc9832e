@@ -156,6 +156,24 @@ struct tipc_chan {
 	char srv_name[MAX_SRV_NAME_LEN];
 };
 
+#define LOG_NAME_LEN			48
+
+/*
+ * Copy a service name for logging: the caller supplies it, so keep printable
+ * ASCII only and bound the length.
+ */
+static void tipc_log_name(char *dst, const char *src)
+{
+	size_t i;
+
+	for (i = 0; i < LOG_NAME_LEN - 1 && src[i]; i++) {
+		unsigned char c = src[i];
+
+		dst[i] = (c >= 0x20 && c < 0x7f) ? c : '?';
+	}
+	dst[i] = '\0';
+}
+
 static struct class *tipc_class;
 static unsigned int tipc_major;
 
@@ -612,6 +630,7 @@ int tipc_chan_connect(struct tipc_chan *chan, const char *name)
 	struct tipc_ctrl_msg *msg;
 	struct tipc_conn_req_body *body;
 	struct tipc_msg_buf *txbuf;
+	char logname[LOG_NAME_LEN];
 
 	txbuf = vds_get_txbuf(chan->vds, TXBUF_TIMEOUT);
 	if (IS_ERR(txbuf))
@@ -634,9 +653,9 @@ int tipc_chan_connect(struct tipc_chan *chan, const char *name)
 		/* save service name we are connecting to */
 		strcpy(chan->srv_name, body->name);
 
-		dev_info_ratelimited(&chan->vds->vdev->dev,
-				     "connect '%s' from local 0x%x\n",
-				     body->name, chan->local);
+		tipc_log_name(logname, body->name);
+		pr_info_ratelimited("%s: connect '%s' from local 0x%x\n",
+				    __func__, logname, chan->local);
 		fill_msg_hdr(txbuf, chan->local, TIPC_CTRL_ADDR);
 		err = vds_queue_txbuf(chan->vds, txbuf);
 		if (err) {
@@ -940,12 +959,13 @@ static int dn_connect_ioctl(struct tipc_dn_chan *dn, char __user *usr_name)
 {
 	int err;
 	char name[MAX_SRV_NAME_LEN];
+	char logname[LOG_NAME_LEN];
 
 	/* copy in service name from user space */
 	err = strncpy_from_user(name, usr_name, sizeof(name));
 	if (err < 0) {
-		pr_err("%s: copy_from_user (%p) failed (%d)\n",
-		       __func__, usr_name, err);
+		pr_err_ratelimited("%s: copy_from_user (%p) failed (%d)\n",
+				   __func__, usr_name, err);
 		return err;
 	}
 	name[sizeof(name)-1] = '\0';
@@ -953,14 +973,19 @@ static int dn_connect_ioctl(struct tipc_dn_chan *dn, char __user *usr_name)
 	/* send connect request */
 	err = tipc_chan_connect(dn->chan, name);
 	if (err) {
-		pr_info("%s: connect '%s' failed: %d\n", __func__, name, err);
+		tipc_log_name(logname, name);
+		pr_info_ratelimited("%s: connect '%s' failed: %d\n",
+				    __func__, logname, err);
 		return err;
 	}
 
 	/* and wait for reply */
 	err = dn_wait_for_reply(dn, REPLY_TIMEOUT);
-	if (err)
-		pr_info("%s: connect '%s' reply: %d\n", __func__, name, err);
+	if (err) {
+		tipc_log_name(logname, name);
+		pr_info_ratelimited("%s: connect '%s' reply: %d\n",
+				    __func__, logname, err);
+	}
 	return err;
 }
 
@@ -1359,9 +1384,9 @@ static void _handle_conn_rsp(struct tipc_virtio_dev *vds,
 	}
 
 	if (rsp->status)
-		dev_info(&vds->vdev->dev,
-			 "connect response: addr 0x%x refused, status %d\n",
-			 rsp->target, rsp->status);
+		dev_info_ratelimited(&vds->vdev->dev,
+				     "connect response: addr 0x%x refused, status %d\n",
+				     rsp->target, rsp->status);
 	else
 		dev_info_ratelimited(&vds->vdev->dev,
 				     "connect response: addr 0x%x ok, remote 0x%x\n",
