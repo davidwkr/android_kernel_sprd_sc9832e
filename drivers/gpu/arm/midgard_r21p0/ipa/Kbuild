@@ -17,10 +17,12 @@
 # gates kbdev->ipa (the struct these files access) in mali_kbase_defs.h, and
 # what mali_kbase_ipa.h's own "#else" branch checks before reducing the API
 # it declares to inert stubs. This tree builds with CONFIG_MALI_DEVFREQ=y but
-# CONFIG_DEVFREQ_THERMAL unset (matches the stock mali.ko: no ipa/cooling
-# symbols in its symbol table either), so none of this is compiled - ipa/'s
-# two headers are kept only so mali_kbase.h's and mali_kbase_core_linux.c's
-# unconditional #includes resolve.
+# CONFIG_DEVFREQ_THERMAL unset by default (matches the stock mali.ko: no
+# ipa/cooling symbols in its symbol table either), so none of this is
+# compiled there - ipa/'s two headers are kept so mali_kbase.h's and
+# mali_kbase_core_linux.c's unconditional #includes resolve. The watches set
+# CONFIG_DEVFREQ_THERMAL for GPU thermal cooling (arch/arm64/configs/
+# watch_414_gpu_thermal.fragment).
 ifeq ($(CONFIG_DEVFREQ_THERMAL),y)
 
 mali-y += \
@@ -29,11 +31,11 @@ mali-y += \
 
 mali-$(CONFIG_DEBUG_FS) += ipa/mali_kbase_ipa_debugfs.o
 
-ifneq ($(wildcard $(src)/ipa/mali_kbase_ipa_vinstr_g71.c),)
-  mali-y += \
+# mali_kbase_ipa.c references kbase_g71_ipa_model_ops unconditionally, so these
+# are always built. (A $(wildcard $(src)/...) guard does not find the files in
+# an O= build and left that symbol undefined.)
+mali-y += \
 	ipa/mali_kbase_ipa_vinstr_g71.o \
 	ipa/mali_kbase_ipa_vinstr_common.o
-
-endif
 
 endif
