@@ -1359,6 +1359,9 @@ struct kbase_context {
 	struct file *filp;
 	struct kbase_device *kbdev;
 	u32 id; /* System wide unique id */
+#ifdef CONFIG_MALI_BOOST
+	u32 sprd_boost; /* Boost level set with KBASE_IOCTL_SPRD_BOOST */
+#endif
 	unsigned long api_version;
 	phys_addr_t pgd;
 	struct list_head event_list;

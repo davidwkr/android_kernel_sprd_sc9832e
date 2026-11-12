@@ -903,6 +903,17 @@ static int kbase_api_mem_profile_add(struct kbase_context *kctx,
 	return kbasep_mem_profile_debugfs_insert(kctx, buf, data->len);
 }
 
+#ifdef CONFIG_MALI_BOOST
+static int kbase_api_sprd_boost(struct kbase_context *kctx, __u32 *level)
+{
+	if (!kbase_platform_boost_level_valid(*level))
+		return -EINVAL;
+
+	WRITE_ONCE(kctx->sprd_boost, *level);
+	return 0;
+}
+#endif
+
 static int kbase_api_soft_event_update(struct kbase_context *kctx,
 		struct kbase_ioctl_soft_event_update *update)
 {
@@ -1086,6 +1097,11 @@ static long kbase_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		KBASE_HANDLE_IOCTL_IN(KBASE_IOCTL_SOFT_EVENT_UPDATE,
 				kbase_api_soft_event_update,
 				struct kbase_ioctl_soft_event_update);
+#ifdef CONFIG_MALI_BOOST
+		KBASE_HANDLE_IOCTL_IN(KBASE_IOCTL_SPRD_BOOST,
+				kbase_api_sprd_boost,
+				__u32);
+#endif
 
 #if MALI_UNIT_TEST
 		KBASE_HANDLE_IOCTL_IN(KBASE_IOCTL_TLSTREAM_TEST,

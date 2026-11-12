@@ -350,6 +350,68 @@ Known, accepted (same ordering as stock, GPU idle, needs a failing or unusual re
 - The legacy `CONFIG_MALI_MIDGARD_DVFS` path writes `freq_next` without the semaphore; the watches build
   `CONFIG_MALI_DEVFREQ`.
 
+## GPU cap, thermal cooling and the boost hint
+
+Three follow-ups to the devfreq wiring (untested on hardware).
+
+**Cap edge case.** `kbase_devfreq_target()` clamps to `sprd,dfs-range-max`
+with `DEVFREQ_FLAG_LEAST_UPPER_BOUND`, but 4.4's `devfreq_recommended_opp()`
+falls back from the floor to the ceiling when no enabled OPP is at or below
+the request (for example when thermal cooling disabled the low OPPs). The
+chosen OPP is now checked against the cap; if above, a strict
+`dev_pm_opp_find_freq_floor()` is tried and the request fails when there is
+none.
+
+**Thermal cooling (DM63, DW100U only).** The DT `gpu-thmzone` (trips 70 C and
+85 C passive, 110 C critical; the cooling map acts at 85 C) binds
+`gpu-cooling-devices/gpu-cooling0` (`sprd,mali-power-model`). The stock
+kernel and the stock `mali.ko` contain no GPU cooling code at all (no
+`devfreq_cooling`, no sprd gpu cooling, no IPA), and the stock DT zones equal
+ours (only phandle numbering differs), so stock never throttled the GPU
+thermally. Ours goes beyond stock: `gpu_thermal_sharkle.fragment` sets
+`DEVFREQ_THERMAL` and `SPRD_GPU_COOLING_DEVICE` for dm63/dw100u, and r21p0
+calls `create_gpu_cooling_device()` (as the old midgard driver does) instead
+of registering against the GPU node. IPA still initialises, because the job
+manager calls into it. Trip temperatures are unchanged. Check on a device:
+`/sys/class/thermal/cooling_device*/type` should list the GPU device and
+`gpu-thmzone` should show it bound. Revert the commit to return to stock
+behaviour.
+
+Why the power model stays: neither DT zone has a `governor` property (4.4's
+`of-thermal` does not read one) and the merged config sets
+`THERMAL_DEFAULT_GOV_POWER_ALLOCATOR=y` for every zone, so `gpu-thmzone` runs
+power_allocator. That governor ignores cooling devices without power ops
+(`-ENODEV` when none is an actor), so a plain state-based devfreq cooling
+device would never throttle, and switching the zone to step_wise would mean
+changing the default for the other zones. The power callbacks were fixed
+instead: `devfreq_cooling` passes frequency in Hz and voltage in mV, so the
+dynamic callback now converts Hz to MHz (it used Hz as MHz) and the static
+callback takes mV (it divided by 1000 again, expecting uV). A zero dynamic
+coefficient or voltage base (DM63 has `sprd,dynamic-cluster = <0 0 0>`) now
+yields no power instead of dividing by zero. The constants themselves are
+unchanged vendor values and unverified on hardware. Failure paths also
+unwind: a partial registration unregisters the devices already registered,
+and `kbase_devfreq_init()` calls `kbase_ipa_term()` when cooling
+registration fails.
+
+**Boost hint ioctl.** The stock GPU library issues `0x4004801d`
+(`_IOW(0x80, 29, u32)`). Stock stores the value in the context and
+`kbase_jd_submit()` passes it to `kbase_platform_set_boost()` on every submit,
+which keeps the highest pending level in `gpu_boost_level`;
+`kbase_platform_modify_target_freq()` consumes it. Ours (`CONFIG_MALI_BOOST`,
+all watches): the ioctl accepts 0/5/7/9/10 and returns `-EINVAL` otherwise
+(stock accepted any value); the level is stored per context
+(`kctx->sprd_boost`, accessed with `WRITE_ONCE`/a single `READ_ONCE` in
+submit) and applied at submit as in stock. 10 means the highest
+list entry, 9/7/5 the `sprd,dfs-scene-extreme/medium/low` entries.
+`kbase_devfreq_target()` takes the pending level once (it is cleared) and
+uses its frequency as a floor for that request, then applies the
+`sprd,dfs-range-max` cap, so the cap wins. Stock instead pinned min and max
+to the boost frequency for that evaluation; a floor lets the governor go
+higher on its own. The boost also ignores a user `max_freq` set through
+devfreq sysfs; thermal limits still hold because cooling disables OPPs.
+`kbase_platform_modify_target_freq()` is kept but unused.
+
 ## Open items
 
 - **Hardware bring-up is untested** (offline-only task: no device access).
@@ -359,8 +421,9 @@ Known, accepted (same ordering as stock, GPU idle, needs a failing or unusual re
 - Power-domain force-shutdown register: see the residual-uncertainty note
   above (point 1) - the exact bit-level behavior of stock's hand-rolled
   ioremap path wasn't fully reconstructed from disassembly.
-- `CONFIG_MALI_BOOST` (gpu_boost_level / modify_target_freq) is present in
-  stock but not wired up here - no known caller in this tree.
+- `CONFIG_MALI_BOOST` is wired up for the ioctl and the devfreq floor (see
+  "GPU cap, thermal cooling and the boost hint"); `gpu_boost_level` is not
+  yet confirmed to be what the stock library expects on a device.
 - `MALI_GATOR_SUPPORT`/Streamline tracing (ARM's own Kconfig default `y`)
   did not resolve to `y` through this tree's defconfig-merge path either,
   same as `MALI_DEVFREQ`; left off since it isn't needed for DDK

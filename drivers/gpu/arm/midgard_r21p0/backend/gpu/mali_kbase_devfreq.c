@@ -26,6 +26,9 @@
 #ifdef CONFIG_DEVFREQ_THERMAL
 #include <linux/devfreq_cooling.h>
 #endif
+#ifdef CONFIG_SPRD_GPU_COOLING_DEVICE
+#include <linux/sprd_gpu_device.h>
+#endif
 
 #include <linux/version.h>
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 13, 0)
@@ -84,16 +87,30 @@ kbase_devfreq_target(struct device *dev, unsigned long *target_freq, u32 flags)
 	unsigned long voltage;
 	int err;
 	u64 core_mask;
+#if defined(MALI_PLATFORM_SHARKLE) && defined(CONFIG_MALI_BOOST)
+	unsigned long boost_freq;
+#endif
 
 	freq = *target_freq;
 #ifdef MALI_PLATFORM_SHARKLE
+#ifdef CONFIG_MALI_BOOST
+	/*
+	 * A boost hint from the GPU library is a floor for this request: pick
+	 * the OPP at or above it. The cap below still wins.
+	 */
+	boost_freq = kbase_platform_take_boost_freq();
+	if (freq < boost_freq) {
+		freq = boost_freq;
+		flags &= ~DEVFREQ_FLAG_LEAST_UPPER_BOUND;
+	}
+#endif
 	/*
 	 * The OPP table goes up to 680 MHz, but the board limit is
 	 * "sprd,dfs-range-max" (600 MHz on the watches), which the stock
 	 * driver honoured: never ask for more. Round down to an OPP at or
 	 * below the cap.
 	 */
-	if (kbase_platform_max_freq() && freq > kbase_platform_max_freq()) {
+	if (kbase_platform_max_freq() && freq >= kbase_platform_max_freq()) {
 		freq = kbase_platform_max_freq();
 		flags |= DEVFREQ_FLAG_LEAST_UPPER_BOUND;
 	}
@@ -101,6 +118,18 @@ kbase_devfreq_target(struct device *dev, unsigned long *target_freq, u32 flags)
 
 	rcu_read_lock();
 	opp = devfreq_recommended_opp(dev, &freq, flags);
+#ifdef MALI_PLATFORM_SHARKLE
+	/*
+	 * devfreq_recommended_opp() falls back from the floor to the ceiling
+	 * when no OPP exists at or below the cap, so check the result: if it
+	 * is above the cap, look strictly below it, or fail.
+	 */
+	if (!IS_ERR_OR_NULL(opp) && kbase_platform_max_freq() &&
+			freq > kbase_platform_max_freq()) {
+		freq = kbase_platform_max_freq();
+		opp = dev_pm_opp_find_freq_floor(dev, &freq);
+	}
+#endif
 	voltage = dev_pm_opp_get_voltage(opp);
 	rcu_read_unlock();
 	if (IS_ERR_OR_NULL(opp)) {
@@ -381,9 +410,23 @@ int kbase_devfreq_init(struct kbase_device *kbdev)
 	err = kbase_ipa_init(kbdev);
 	if (err) {
 		dev_err(kbdev->dev, "IPA initialization failed\n");
-		goto cooling_failed;
+		goto ipa_failed;
 	}
 
+#ifdef CONFIG_SPRD_GPU_COOLING_DEVICE
+	/*
+	 * The board DT thermal zone binds the "gpu-cooling-devices" child
+	 * nodes, not the GPU node, so register the cooling device against
+	 * those instead.
+	 */
+	err = create_gpu_cooling_device(kbdev->devfreq,
+			&kbdev->pm.debug_core_mask_all);
+	if (err) {
+		dev_err(kbdev->dev,
+			"Failed to create cooling device (%d)\n", err);
+		goto cooling_failed;
+	}
+#else
 	kbdev->devfreq_cooling = of_devfreq_cooling_register_power(
 			kbdev->dev->of_node,
 			kbdev->devfreq,
@@ -396,11 +439,14 @@ int kbase_devfreq_init(struct kbase_device *kbdev)
 		goto cooling_failed;
 	}
 #endif
+#endif
 
 	return 0;
 
 #ifdef CONFIG_DEVFREQ_THERMAL
 cooling_failed:
+	kbase_ipa_term(kbdev);
+ipa_failed:
 	devfreq_unregister_opp_notifier(kbdev->dev, kbdev->devfreq);
 #endif /* CONFIG_DEVFREQ_THERMAL */
 opp_notifier_failed:
@@ -419,8 +465,12 @@ void kbase_devfreq_term(struct kbase_device *kbdev)
 	dev_dbg(kbdev->dev, "Term Mali devfreq\n");
 
 #ifdef CONFIG_DEVFREQ_THERMAL
+#ifdef CONFIG_SPRD_GPU_COOLING_DEVICE
+	destroy_gpu_cooling_device();
+#else
 	if (kbdev->devfreq_cooling)
 		devfreq_cooling_unregister(kbdev->devfreq_cooling);
+#endif
 
 	kbase_ipa_term(kbdev);
 #endif

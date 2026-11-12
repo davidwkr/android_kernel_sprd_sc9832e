@@ -1,0 +1,7 @@
+# GPU thermal throttling for the watches whose DT gpu-thmzone binds the
+# gpu-cooling-devices/gpu-cooling0 node (DM63, DW100U): devfreq cooling plus
+# the sprd cooling device registered by mali.ko (create_gpu_cooling_device).
+# The stock kernel has neither (no devfreq_cooling, no sprd gpu cooling
+# code), so stock never throttles the GPU thermally; see devices/MALI_R21P0.md.
+CONFIG_DEVFREQ_THERMAL=y
+CONFIG_SPRD_GPU_COOLING_DEVICE=y

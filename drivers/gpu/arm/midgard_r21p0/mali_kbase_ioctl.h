@@ -520,7 +520,16 @@ struct kbase_ioctl_soft_event_update {
 #define KBASE_IOCTL_SOFT_EVENT_UPDATE \
 	_IOW(KBASE_IOCTL_TYPE, 28, struct kbase_ioctl_soft_event_update)
 
-/* IOCTLs 29-32 are reserved */
+/**
+ * KBASE_IOCTL_SPRD_BOOST - SPRD GPU boost hint (not part of ARM's r21p0 ioctls)
+ *
+ * The argument is a __u32 boost level: 0 (none), 5, 7, 9 or 10. The stock GPU
+ * library issues it as 0x4004801d. Only built with CONFIG_MALI_BOOST.
+ */
+#define KBASE_IOCTL_SPRD_BOOST \
+	_IOW(KBASE_IOCTL_TYPE, 29, __u32)
+
+/* IOCTLs 30-32 are reserved */
 
 /***************
  * test ioctls *
