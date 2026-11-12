@@ -71,7 +71,7 @@ struct cluster_power_coefficients {
 
 
 static struct cluster_power_coefficients *cluster_data;
-struct thermal_zone_device *gpu_tz;
+static int cluster_count;
 
 /* return (leak * 100)  */
 static int get_gpu_static_power_coeff(int cluster_id)
@@ -86,6 +86,10 @@ static u64 get_gpu_dyn_power(int cluster_id,
 	int voltage_base = cluster_data[cluster_id].core_coeff.voltage_base;
 	int dyn_base = cluster_data[cluster_id].core_coeff.dynperghz;
 	unsigned int freq_mhz = freq_hz / 1000000;
+
+	/* an unset coefficient or base in the DT contributes no power */
+	if (!dyn_base || !voltage_base)
+		return 0;
 
 	power = (u64)dyn_base * freq_mhz * voltage_mv * voltage_mv;
 	do_div(power, voltage_base * voltage_base);
@@ -140,6 +144,7 @@ static unsigned long get_static_power(struct devfreq *df, unsigned long m_volt)
 {
 
 	struct thermal_cooling_device *tcd;
+	struct thermal_zone_device *gpu_tz;
 	unsigned long t_scale, v_scale;
 	u32 gpu_coeff;
 	u32 tmp_power = 0;
@@ -156,7 +161,8 @@ static unsigned long get_static_power(struct devfreq *df, unsigned long m_volt)
 		return 0ul;
 	}
 
-	if (gpu_tz) {
+	gpu_tz = thermal_zone_get_zone_by_name("gpu-thmzone");
+	if (!IS_ERR_OR_NULL(gpu_tz)) {
 		err = gpu_tz->ops->get_temp(gpu_tz, &temperature);
 		if (err) {
 			pr_warn("Error reading temperature:%d\n", err);
@@ -205,12 +211,14 @@ static u64 get_leak_base(int cluster_id, int val, int *coeff)
 struct thermal_cooling_device *
 cluster_data_get_dev_by_name(const char *name)
 {
-	int i = 0;
+	int i;
 
-	while (&cluster_data[i] != NULL) {
+	if (!cluster_data)
+		return NULL;
+
+	for (i = 0; i < cluster_count; i++) {
 		if (!strncmp(name, cluster_data[i].devname, strlen(name)))
 			return cluster_data[i].gpu_cooling;
-		i++;
 	}
 
 	return NULL;
@@ -337,11 +345,24 @@ static int sprd_get_power_model_coeff(struct device_node *np,
 	return 0;
 }
 
+static void unregister_cooling_devices(void)
+{
+	int i;
+
+	for (i = 0; i < cluster_count; i++) {
+		if (!IS_ERR_OR_NULL(cluster_data[i].gpu_cooling))
+			devfreq_cooling_unregister(cluster_data[i].gpu_cooling);
+	}
+
+	kfree(cluster_data);
+	cluster_data = NULL;
+	cluster_count = 0;
+}
+
 int create_gpu_cooling_device(struct devfreq *gpudev, u64 *mask)
 {
 	struct device_node *np, *child;
 	struct thermal_cooling_device *devfreq_cooling;
-	int cluster_count;
 	int ret = 0;
 	char chip_type[64];
 
@@ -364,12 +385,18 @@ int create_gpu_cooling_device(struct devfreq *gpudev, u64 *mask)
 		return -ENODEV;
 	}
 
+	if (cluster_data) {
+		pr_err("gpu cooling devices already registered\n");
+		return -EBUSY;
+	}
+
 	cluster_count = of_get_child_count(np);
 
 	cluster_data = kcalloc(cluster_count,
 		sizeof(struct cluster_power_coefficients), GFP_KERNEL);
 	if (cluster_data == NULL) {
 		pr_err("fail to allocate memory\n");
+		cluster_count = 0;
 		return -ENOMEM;
 	}
 
@@ -379,6 +406,7 @@ int create_gpu_cooling_device(struct devfreq *gpudev, u64 *mask)
 		if (!of_device_is_compatible(child, "sprd,mali-power-model")) {
 			pr_err("power_model incompatible\n");
 			ret = -ENODEV;
+			of_node_put(child);
 			goto free_cluster;
 		}
 
@@ -387,9 +415,10 @@ int create_gpu_cooling_device(struct devfreq *gpudev, u64 *mask)
 			continue;
 
 		cluster_id = of_alias_get_id(child, "gpu-cooling");
-		if (cluster_id == -ENODEV) {
+		if (cluster_id < 0 || cluster_id >= cluster_count) {
 			pr_err("fail to get cooling devices id\n");
-			ret = -ENODEV;
+			ret = -EINVAL;
+			of_node_put(child);
 			goto free_cluster;
 		}
 
@@ -397,6 +426,7 @@ int create_gpu_cooling_device(struct devfreq *gpudev, u64 *mask)
 			&cluster_data[cluster_id], cluster_id);
 		if (ret) {
 			pr_err("fail to get power model coeff !\n");
+			of_node_put(child);
 			goto free_cluster;
 		}
 
@@ -404,23 +434,22 @@ int create_gpu_cooling_device(struct devfreq *gpudev, u64 *mask)
 			gpudev, &power_model_ops);
 
 		if (IS_ERR_OR_NULL(devfreq_cooling)) {
-			ret = PTR_ERR(devfreq_cooling);
+			ret = devfreq_cooling ? PTR_ERR(devfreq_cooling) : -ENODEV;
 			pr_err("fail to register cool-dev (%d)\n", ret);
+			of_node_put(child);
 			goto free_cluster;
 		}
 
 		strlcpy(cluster_data[cluster_id].devname,
-			child->name, strlen(child->name));
+			child->name, sizeof(cluster_data[cluster_id].devname));
 		cluster_data[cluster_id].gpu_cooling = devfreq_cooling;
-
-		gpu_tz = thermal_zone_get_zone_by_name("gpu-thmzone");
 	}
 
 	return ret;
 
 free_cluster:
-	kfree(cluster_data);
-	cluster_data = NULL;
+	/* unregister the devices registered before the failure */
+	unregister_cooling_devices();
 
 	return ret;
 }
@@ -428,25 +457,7 @@ EXPORT_SYMBOL_GPL(create_gpu_cooling_device);
 
 int destroy_gpu_cooling_device(void)
 {
-	struct device_node *np, *child;
-
-	np = of_find_node_by_name(NULL, "gpu-cooling-devices");
-	if (!np) {
-		pr_err("unable to find thermal zones\n");
-		return -ENODEV;
-	}
-
-	for_each_child_of_node(np, child) {
-		struct thermal_cooling_device *cdev;
-
-		cdev = cluster_data_get_dev_by_name(child->name);
-		if (IS_ERR(cdev))
-			continue;
-		devfreq_cooling_unregister(cdev);
-	}
-
-	kfree(cluster_data);
-	cluster_data = NULL;
+	unregister_cooling_devices();
 
 	return 0;
 }
