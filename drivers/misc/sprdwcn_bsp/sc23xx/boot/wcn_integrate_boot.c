@@ -39,6 +39,17 @@ struct sprdwcn_gnss_ops *gnss_ops;
 
 void wcn_boot_init(void)
 {
+	/* the stock wcnmodem firmware shares memory at these offsets */
+	BUILD_BUG_ON(sizeof(struct wifi_config_t) != 0x268);
+	BUILD_BUG_ON(sizeof(struct wifi_cali_t) != 0xcdc);
+	BUILD_BUG_ON(offsetof(struct wcn_special_share_mem,
+			      wifi.calibration_flag) != 0xf50);
+	BUILD_BUG_ON(offsetof(struct wcn_special_share_mem,
+			      marlin.init_status) != 0xf54);
+	BUILD_BUG_ON(offsetof(struct wcn_special_share_mem,
+			      efuse_temper_magic) != 0xf6c);
+	BUILD_BUG_ON(offsetof(struct wcn_special_share_mem,
+			      efuse_temper_val) != 0xf70);
 	mutex_init(&marlin_lock);
 }
 
