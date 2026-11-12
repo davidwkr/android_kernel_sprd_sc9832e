@@ -56,6 +56,8 @@ static void sprd_cproc_init_debugfs(void);
 /*used for ioremap to limit vmalloc size, shi yunlong*/
 #define CPROC_VMALLOC_SIZE_LIMIT 4096
 #define MAX_CPROC_ENTRY_NUM		0x10
+/* longest wait for a reset bit to clear when starting the CP */
+#define CPROC_RESET_TIMEOUT_MS		1000
 
 enum {
 	CP_NORMAL_STATUS = 0,
@@ -280,7 +282,7 @@ static int cproc_proc_open(struct inode *inode, struct file *filp)
 	struct cproc_proc_entry
 	*entry = (struct cproc_proc_entry *)PDE_DATA(inode);
 
-	pr_debug("%s: %s\n!", __func__, entry->name);
+	pr_info("%s: %s/%s\n", __func__, entry->cproc->name, entry->name);
 
 	filp->private_data = entry;
 
@@ -612,7 +614,7 @@ static ssize_t cproc_proc_write(struct file *filp,
 	char *type = entry->name;
 	u32 base, size, offset;
 	void *vmem;
-	int i;
+	int i, rc;
 	unsigned long r = count;
 	unsigned int flag;
 
@@ -622,13 +624,16 @@ static ssize_t cproc_proc_write(struct file *filp,
 	if ((flag & BE_WRONLY) == 0) {
 		return -EPERM;
 	} else if ((flag & BE_CTRL_ON) != 0) {
-		pr_debug("%s: start!\n", __func__);
-		cproc->initdata->start(cproc);
+		pr_info("%s: %s start!\n", __func__, cproc->name);
+		rc = cproc->initdata->start(cproc);
+		if (rc)
+			pr_err("%s: %s start failed %d\n", __func__,
+			       cproc->name, rc);
 		cproc->wdtcnt = CPROC_WDT_FLASE;
 		cproc->status = CP_NORMAL_STATUS;
 		return count;
 	} else if ((flag & BE_CTRL_OFF) != 0) {
-		pr_debug("%s: stop!\n", __func__);
+		pr_info("%s: %s stop!\n", __func__, cproc->name);
 		cproc->initdata->stop(cproc);
 		cproc->status = CP_STOP_STATUS;
 		return count;
@@ -638,8 +643,12 @@ static ssize_t cproc_proc_write(struct file *filp,
 		size = cproc->initdata->segs[i].maxsz;
 		offset = *ppos;
 
-		pr_debug("%s: write %s, offse = %d!\n",
-			 __func__, type, offset);
+		if (!offset)
+			pr_info("%s: write %s/%s, base = 0x%x, max size = 0x%x\n",
+				__func__, cproc->name, type, base, size);
+		else
+			pr_debug("%s: write %s, offse = %d!\n",
+				 __func__, type, offset);
 
 		if (!cproc->initdata->ctrl->iram_loaded &&
 		    cproc->initdata->ctrl->iram_size > 0)
@@ -907,18 +916,19 @@ static inline void sprd_cproc_fs_init(struct cproc_device *cproc)
 		if (flag & (BE_CPDUMP | BE_MNDUMP))
 			mode |= S_IROTH;
 
-		pr_debug("%s: entry name is %s type 0x%x addr: 0x%p\n",
+		pr_info("%s: /proc/%s/%s type 0x%x\n",
 			__func__,
+			cproc->name,
 			cproc->procfs.entrys[i].name,
-			cproc->procfs.entrys[i].flag,
-			&cproc->procfs.entrys[i]);
+			cproc->procfs.entrys[i].flag);
+		/* set before the entry is visible, open() reads it */
+		cproc->procfs.entrys[i].cproc = cproc;
 		cproc->procfs.entrys[i].entry = proc_create_data(
 				cproc->procfs.entrys[i].name,
 				mode,
 				cproc->procfs.procdir,
 				&cpproc_fs_fops,
 				&cproc->procfs.entrys[i]);
-		cproc->procfs.entrys[i].cproc = cproc;
 	}
 }
 
@@ -993,18 +1003,39 @@ static irqreturn_t sprd_cproc_irq_handler(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
+/* wait until the reset bits of @index read back as cleared */
+static int sprd_cproc_wait_cleared(struct cproc_ctrl *ctrl, u32 index)
+{
+	unsigned long timeout = jiffies +
+				msecs_to_jiffies(CPROC_RESET_TIMEOUT_MS);
+	u32 mask = ctrl->ctrl_mask[index];
+	u32 state;
+
+	do {
+		/* a failed read must not look like a cleared bit */
+		state = mask;
+		sprd_cproc_regmap_read(ctrl, index, &state);
+		if (!(state & mask))
+			return 0;
+
+		usleep_range(1000, 2000);
+	} while (time_before(jiffies, timeout));
+
+	return -ETIMEDOUT;
+}
+
 static int sprd_cproc_native_arm_start(void *arg)
 {
 	struct cproc_device *cproc = (struct cproc_device *)arg;
 	struct cproc_init_data *pdata = cproc->initdata;
 	struct cproc_ctrl *ctrl;
-	u32 state;
+	int ret = 0;
 
 	if (!pdata)
 		return -ENODEV;
 	ctrl = pdata->ctrl;
 
-	pr_debug("%s: %s, type = 0x%x, status = 0x%x\n",
+	pr_info("%s: %s, type = 0x%x, status = 0x%x\n",
 		__func__,
 		pdata->devname,
 		cproc->type,
@@ -1067,12 +1098,10 @@ static int sprd_cproc_native_arm_start(void *arg)
 			ctrl->ctrl_mask[CPROC_CTRL_CORE_RESET],
 			~ctrl->ctrl_mask[CPROC_CTRL_CORE_RESET]);
 
-		while (1) {
-			sprd_cproc_regmap_read(ctrl,
-					       CPROC_CTRL_CORE_RESET,
-					       &state);
-			if (!(state & ctrl->ctrl_mask[CPROC_CTRL_CORE_RESET]))
-				break;
+		if (sprd_cproc_wait_cleared(ctrl, CPROC_CTRL_CORE_RESET)) {
+			pr_err("%s: %s core reset did not clear\n",
+			       __func__, pdata->devname);
+			ret = -ETIMEDOUT;
 		}
 	}
 
@@ -1089,16 +1118,15 @@ static int sprd_cproc_native_arm_start(void *arg)
 			ctrl->ctrl_mask[CPROC_CTRL_SYS_RESET],
 			~ctrl->ctrl_mask[CPROC_CTRL_SYS_RESET]);
 
-		while (1) {
-			sprd_cproc_regmap_read(ctrl,
-					       CPROC_CTRL_SYS_RESET,
-					       &state);
-			if (!(state & ctrl->ctrl_mask[CPROC_CTRL_SYS_RESET]))
-				break;
+		if (sprd_cproc_wait_cleared(ctrl, CPROC_CTRL_SYS_RESET)) {
+			pr_err("%s: %s sys reset did not clear\n",
+			       __func__, pdata->devname);
+			ret = -ETIMEDOUT;
 		}
 	}
 
-	return 0;
+	pr_info("%s: %s start over, ret = %d\n", __func__, pdata->devname, ret);
+	return ret;
 }
 
 static int sprd_cproc_native_arm_stop(void *arg)
@@ -1650,6 +1678,17 @@ static int sprd_cproc_parse_dt(struct cproc_init_data **init,
 
 	pdata->segnr = segnr;
 
+	pr_info("%s: %s: cp base = 0x%llx, size = 0x%x, %d segments\n",
+		__func__, pdata->devname, (unsigned long long)pdata->base,
+		pdata->maxsz, segnr);
+	for (i = 0; i < segnr; i++)
+		pr_info("%s: %s: segment %s base = 0x%x, size = 0x%x\n",
+			__func__, pdata->devname, pdata->segs[i].name,
+			pdata->segs[i].base, pdata->segs[i].maxsz);
+	if (!segnr)
+		pr_warn("%s: %s has no image segments, only start/stop work\n",
+			__func__, pdata->devname);
+
 	pdata->start = pcproc_data->start;
 	pdata->stop = pcproc_data->stop;
 
@@ -1744,9 +1783,10 @@ static int sprd_cproc_probe(struct platform_device *pdev)
 				return rval;
 			}
 
-			pr_debug("%s: cp boot mode: 0x%x\n",
-				 __func__,
-				 cp_boot_mode);
+			pr_info("%s: %s: cp boot mode: 0x%x\n",
+				__func__,
+				cproc->name,
+				cp_boot_mode);
 			if (!cp_boot_mode)
 				cproc->status = CP_NORMAL_STATUS;
 			else
