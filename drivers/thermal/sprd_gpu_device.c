@@ -22,7 +22,6 @@
 #include <linux/slab.h>
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
-#include <linux/soc/sprd/hwfeature.h>
 
 #if defined(CONFIG_OTP_SPRD_AP_EFUSE)
 #include <linux/sprd_otp.h>
@@ -364,19 +363,10 @@ int create_gpu_cooling_device(struct devfreq *gpudev, u64 *mask)
 	struct device_node *np, *child;
 	struct thermal_cooling_device *devfreq_cooling;
 	int ret = 0;
-	char chip_type[64];
-
-	memset(chip_type, 0, sizeof(chip_type));
-	sprd_kproperty_get("lwfq/type", chip_type, "-1");
-
-	if (!strncmp(chip_type, "-1", strlen("-1"))) {
-		pr_err("don't support gpu cooling\n");
-		return -ENODEV;
-	}
 
 	if (gpudev == NULL || mask == NULL) {
 		pr_err("params is not complete!\n");
-		return -ENODEV;
+		return -EINVAL;
 	}
 
 	np = of_find_node_by_name(NULL, "gpu-cooling-devices");
@@ -405,7 +395,7 @@ int create_gpu_cooling_device(struct devfreq *gpudev, u64 *mask)
 
 		if (!of_device_is_compatible(child, "sprd,mali-power-model")) {
 			pr_err("power_model incompatible\n");
-			ret = -ENODEV;
+			ret = -EINVAL;
 			of_node_put(child);
 			goto free_cluster;
 		}
@@ -434,7 +424,7 @@ int create_gpu_cooling_device(struct devfreq *gpudev, u64 *mask)
 			gpudev, &power_model_ops);
 
 		if (IS_ERR_OR_NULL(devfreq_cooling)) {
-			ret = devfreq_cooling ? PTR_ERR(devfreq_cooling) : -ENODEV;
+			ret = devfreq_cooling ? PTR_ERR(devfreq_cooling) : -EINVAL;
 			pr_err("fail to register cool-dev (%d)\n", ret);
 			of_node_put(child);
 			goto free_cluster;

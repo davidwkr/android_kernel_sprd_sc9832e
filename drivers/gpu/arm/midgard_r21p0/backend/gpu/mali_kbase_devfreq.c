@@ -443,9 +443,8 @@ int kbase_devfreq_init(struct kbase_device *kbdev)
 	/*
 	 * The board DT thermal zone binds the "gpu-cooling-devices" child
 	 * nodes, not the GPU node, so register the cooling device against
-	 * those instead. A board without that node (or without the "lwfq/type"
-	 * property the helper checks) has no GPU trip points to serve: run
-	 * unthrottled rather than fail the GPU.
+	 * those instead. A board without that node has no GPU trip points to
+	 * serve: run unthrottled rather than fail the GPU.
 	 */
 	err = create_gpu_cooling_device(kbdev->devfreq,
 			&kbdev->pm.debug_core_mask_all);
