@@ -838,11 +838,6 @@ static int32_t sprd_dispc_resume(struct sprd_dispc *dispc)
 	if (dispc->glb) {
 		dispc->glb->reset(ctx);
 		usleep_range(3000, 4000);
-		
-		/* !!! 新增修复 !!! */
-		/* 复位后再次使能，防止 Reset 操作把 Enable 位给清掉了 */
-		pr_info("sprd_dispc_resume: Re-enable GLB after reset\n");
-		dispc->glb->enable(ctx);
 	}
 
 	/* 4. 配置像素时钟 (必须在 Reset 之后) */
