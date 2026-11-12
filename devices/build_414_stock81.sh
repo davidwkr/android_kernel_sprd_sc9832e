@@ -3,20 +3,28 @@
 # (devices/dm63/BOOT_414.md, devices/dw100u/BOOT_414.md). Inputs: K (this tree, default), TOOLS (a 4.4 tree
 # with tools/sprd_bootimg.py and sprd_ramdisk.py, default ../android_kernel_sprd_sc9832e), SFD (directory with
 # the stock dm63/boot.img and dw100u-silver/boot.bin, required), O (build dir).
+# The images use the -ramoops DTBs (loglevel=7, devices/RAMOOPS_414.md) and watch_414_ramoops.fragment. With
+# BENCH_DEBUG=1 and ADB_PUBKEY=<path>/adbkey.pub (the bench host's adb PUBLIC key) each watch also gets a
+# *_BENCHDEBUG.img with early authenticated adb (devices/BENCH_DEBUG.md); TOOLS must then hold
+# tools/sprd_adbkey_check.py and tools/benchdebug/ (branch tools/ramdisk-benchdebug). The build tree is deleted
+# once the images are packed (KEEP_BUILD=1 keeps it).
 set -euo pipefail
 K=${K:-$(cd "$(dirname "$0")/.." && pwd)}
 T=${TOOLS:-$K/../android_kernel_sprd_sc9832e}
 SFD=${SFD:?set SFD to the directory with the stock boot images}
+if [ "${BENCH_DEBUG:-0}" = 1 ]; then
+  python3 -I $T/tools/sprd_adbkey_check.py "${ADB_PUBKEY:-}" || { echo "BENCH_DEBUG=1 needs ADB_PUBKEY=<...>/adbkey.pub"; exit 1; }
+fi
 cd $K; echo "source $(git log --oneline -1)"
 M() { make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=$O "$@"; }
 # ADF config
 O=${O:-$HOME/.cache/k414adf-full}; rm -rf $O; mkdir -p $O
 export TMPDIR=${TMPDIR:-$HOME/.cache/tmp-build}; mkdir -p $TMPDIR
 M sprd_sharkle_defconfig >/dev/null 2>&1
-scripts/kconfig/merge_config.sh -m -O $O $O/.config arch/arm64/configs/watch_414.fragment arch/arm64/configs/watch_414_adf.fragment arch/arm64/configs/watch_414_stock81.fragment >/dev/null 2>&1
+scripts/kconfig/merge_config.sh -m -O $O $O/.config arch/arm64/configs/watch_414.fragment arch/arm64/configs/watch_414_adf.fragment arch/arm64/configs/watch_414_stock81.fragment arch/arm64/configs/watch_414_ramoops.fragment >/dev/null 2>&1
 M olddefconfig >/dev/null 2>&1
 grep -E '^CONFIG_(ADF_SPRD|MALI_MIDGARD|MALI_DEVFREQ|NETFILTER_XT_MATCH_QTAGUID|ANDROID_LOW_MEMORY_KILLER|SPRD_VIBRATOR|ANDROID_TIMED_OUTPUT|SPRD_GSP)=' $O/.config
-M -j16 Image modules sprd/sp9832e-1h10-dm63-adf.dtb sprd/sp9832e-1h10-dw100u-silver-adf.dtb > /tmp/b414-adf.log 2>&1 || { grep error /tmp/b414-adf.log | head; exit 1; }
+M -j16 Image modules sprd/sp9832e-1h10-dm63-adf-ramoops.dtb sprd/sp9832e-1h10-dw100u-silver-adf-ramoops.dtb > /tmp/b414-adf.log 2>&1 || { grep error /tmp/b414-adf.log | head; exit 1; }
 echo "adf build ok, warnings: $(grep -c 'warning:' /tmp/b414-adf.log || true)"
 pack() { # dev stock dtb out
   local W; W=$(mktemp -d $TMPDIR/c414-$1.XXXX)
@@ -35,11 +43,21 @@ pack() { # dev stock dtb out
   python3 -I tools/sprd_ramdisk.py remove-module $W/rd.gz $W/rd2.gz --module mali.ko | grep removed
   mv $W/rd2.gz $W/rd.gz
   mkdir -p "$(dirname $4)"
-  python3 -I tools/sprd_bootimg.py pack $W/dir $4 --kernel $O/arch/arm64/boot/Image --dt $W/dt414 --ramdisk $W/rd.gz 2>&1 | grep -v '^warning'
-  python3 -I tools/sprd_bootimg.py info $4 | grep -E 'kernel |dt table|\[0\]|id check|avb hash'
-  sha256sum $4; rm -rf $W
+  packimg() { # ramdisk out
+    python3 -I tools/sprd_bootimg.py pack $W/dir $2 --kernel $O/arch/arm64/boot/Image --dt $W/dt414 --ramdisk $1 2>&1 | grep -v '^warning'
+    python3 -I tools/sprd_bootimg.py info $2 | grep -E 'kernel |dt table|\[0\]|id check|avb hash'
+    sha256sum $2
+  }
+  packimg $W/rd.gz $4
+  if [ "${BENCH_DEBUG:-0}" = 1 ]; then
+    python3 -I tools/sprd_ramdisk.py add-file $W/rd.gz $W/rd3.gz --path /adb_keys --file "$ADB_PUBKEY" --mode 0644 --uid 0 --gid 0 | cut -c1-60
+    python3 -I tools/sprd_ramdisk.py add-rc $W/rd3.gz $W/rd4.gz --fragment tools/benchdebug/init.benchdebug.rc --name init.benchdebug.rc | cut -c1-60
+    packimg $W/rd4.gz ${4%.img}_BENCHDEBUG.img
+  fi
+  rm -rf $W
   cd $K
 }
-pack dm63 $SFD/dm63/boot.img sp9832e-1h10-dm63-adf.dtb ${OUT:-$HOME/.cache}/dm63-414-candidate/dm63_414_adf_candidate.img
-pack dw100u-silver $SFD/dw100u-silver/boot.bin sp9832e-1h10-dw100u-silver-adf.dtb ${OUT:-$HOME/.cache}/dw100u-silver-414-candidate/dw100u-silver_414_adf_candidate.img
+pack dm63 $SFD/dm63/boot.img sp9832e-1h10-dm63-adf-ramoops.dtb ${OUT:-$HOME/.cache}/dm63-414-candidate/dm63_414_adf_ramoops_candidate.img
+pack dw100u-silver $SFD/dw100u-silver/boot.bin sp9832e-1h10-dw100u-silver-adf-ramoops.dtb ${OUT:-$HOME/.cache}/dw100u-silver-414-candidate/dw100u-silver_414_adf_ramoops_candidate.img
+[ "${KEEP_BUILD:-0}" = 1 ] || rm -rf $O
 echo ALLDONE
