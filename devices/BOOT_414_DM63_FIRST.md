@@ -353,6 +353,31 @@ Next boot must show, in order:
 If everything above is present and the symptom stays, the chained rx/tx was not the cause; the next suspects are the
 descriptors and feature bits the TEE offers (the `features` line) and the userspace side.
 
+### Trusty IPC review fixes (branch fixes/414-trusty-ipc, also on the 4.4 branch fixes/trusty-ipc-hardening-44)
+
+Review findings in `drivers/trusty/trusty-ipc.c`, present in 4.4 and 4.14, fixed in both:
+
+1. GO_OFFLINE loop: `_go_offline()` looked a channel up by `TIPC_ANY_ADDR` and dropped only the lookup reference, the
+   channel stayed in the IDR and was found again; an application holding the fd made the loop spin until it closed
+   it. Channels are now detached from the IDR (the IDR's reference is taken over, `local` cleared) one by one.
+2. `tipc_virtio_remove()` cleared `vds->vdev` and then called `del_vqs(vds->vdev)`. It now stops rxvq handling
+   first (`rx_lock`/`rx_dead`), goes offline, marks the device DEAD under `vds->lock` (tx callback, queue and tx
+   buffer put check it, the tx kick is done under the lock), resets, cleans the queues under the lock and passes the
+   original vdev to `del_vqs`; `vds->vdev` is cleared last. Probe now also deletes the vqs when the rx buffer
+   allocation fails.
+3. (4.14 only) The connect failure and refusal logs are rate-limited and the service name an application passes is
+   printed as a copy cut to 48 characters with non-printable bytes replaced by `?`. The connect log no longer uses
+   `vds->vdev`.
+4. The per-channel rx queue is capped at 128 messages (`MAX_RX_BACKLOG`), further messages are discarded like an
+   allocation failure.
+5. `msg_buf_max_size` from the device config must be at least one connect request (header + control message +
+   request body, 280 bytes) and at most the 16 bit header length plus the header; probe fails with -EINVAL
+   otherwise. The stock values (page size) are inside.
+6. `tipc_read_iter()` advances the read cursor only after `copy_to_iter()` succeeded.
+
+Build-tested only. Watch for `invalid msg_buf_max_size` in the probe (it would mean the TEE announces something
+unexpected) and for `discard incoming message` bursts (a reader slower than the cap).
+
 ### Open blockers for a clean boot
 
 1. eMMC Auto-CMD/command timeouts in HS400ES: not seen in the fourth boot (0 errors).
