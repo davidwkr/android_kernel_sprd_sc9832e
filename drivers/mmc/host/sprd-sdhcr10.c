@@ -749,7 +749,7 @@ static int irq_err_handle(struct sprd_sdhc_host *host, u32 intmask)
 		 * ACMD_ERR: bit 0 not executed, 1 timeout, 2 CRC, 3 end bit,
 		 * 4 index, 7 not issued.
 		 */
-		dev_info(dev,
+		dev_info_ratelimited(dev,
 			 "CMD%d arg 0x%08x blocks %u sbc %d sbc arg 0x%08x auto 0x%x acmd_err 0x%04x flags 0x%x clk %u timing %u dll sts0 0x%08x sts1 0x%08x\n",
 			 host->cmd->opcode, host->cmd->arg,
 			 host->cmd->data ? host->cmd->data->blocks : 0,
@@ -1197,27 +1197,26 @@ static void sprd_sdhc_enable_dpll(struct sprd_sdhc_host *host)
 	sprd_sdhc_writel(host, tmp, SPRD_SDHC_REG_32_DLL_CFG);
 	mdelay(1);
 
+	/*
+	 * Runs under host->lock with IRQs off: poll quietly, report once.
+	 * Never hang the boot: give up after 100 polls of 1 ms.
+	 */
 	tmp = sprd_sdhc_readl(host, SPRD_SDHC_REG_32_DLL_STS0);
 	while (((tmp & SPRD_SDHC_DLL_LOCKED) != SPRD_SDHC_DLL_LOCKED) ||
 		((tmp & SPRD_SDHC_DLL_ERROR) == SPRD_SDHC_DLL_ERROR)) {
-		/* never hang the boot: give up after ~100 ms, as before if locked */
-		if (++tries > 100) {
-			dev_err(dev, "DLL not clean after %d ms, DLL_STS0 0x%x\n",
-				tries, tmp);
+		if (++tries > 100)
 			break;
-		}
-		dev_warn(dev, "dpll locked faile!\n");
-		dev_info(dev, "DLL_STS0 : 0x%x, DLL_CFG : 0x%x\n",
-			 sprd_sdhc_readl(host, SPRD_SDHC_REG_32_DLL_STS0),
-			 sprd_sdhc_readl(host, SPRD_SDHC_REG_32_DLL_CFG));
-		dev_info(dev, "DLL_DLY : 0x%x, DLL_STS1 : 0x%x\n",
-			 sprd_sdhc_readl(host, SPRD_SDHC_REG_32_DLL_DLY),
-			 sprd_sdhc_readl(host, SPRD_SDHC_REG_32_DLL_STS1));
 		mdelay(1);
 		tmp = sprd_sdhc_readl(host, SPRD_SDHC_REG_32_DLL_STS0);
 	}
 
-	dev_info(dev, "dpll locked done, DLL_STS0 0x%x\n", tmp);
+	if (tries > 100)
+		dev_err(dev, "DLL not clean after 100 polls: DLL_STS0 0x%x DLL_CFG 0x%x DLL_DLY 0x%x DLL_STS1 0x%x\n",
+			tmp, sprd_sdhc_readl(host, SPRD_SDHC_REG_32_DLL_CFG),
+			sprd_sdhc_readl(host, SPRD_SDHC_REG_32_DLL_DLY),
+			sprd_sdhc_readl(host, SPRD_SDHC_REG_32_DLL_STS1));
+	else
+		dev_info(dev, "dpll locked done, DLL_STS0 0x%x\n", tmp);
 }
 
 static void sprd_sdhc_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
