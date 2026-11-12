@@ -1,0 +1,18 @@
+# BENCHDEBUG images only (devices/BENCH_DEBUG.md): start adbd without /data and
+# without persist.sys.usb.config. Properties, SELinux and the key check are
+# not touched: adbd still runs as shell and only accepts the key in /adb_keys.
+#
+# init.usb.rc already created the gadget and the FunctionFS adb function
+# ("on init"); "on boot" sets sys.usb.configfs=1. The configfs rules in
+# init.usb.configfs.rc fire once sys.usb.config=adb, sys.usb.configfs=1 and
+# sys.usb.mode=normal all hold: they start adbd, which writes the FFS
+# descriptors (sys.usb.ffs.ready=1), then the UDC is bound. early-boot comes
+# after load_persist_props_action, so this value also wins over a stored
+# persist.sys.usb.config on this boot. init.sl8541e_1h10.usb.rc is empty in
+# the stock ramdisk.
+on early-boot
+    # sys.usb.controller is not set by any rc in the ramdisk (stock gets it
+    # from a later partition); the UDC of the MUSB glue is named after its
+    # platform device, as in the fstab path 20200000.usb/musb-hdrc.0.auto
+    setprop sys.usb.controller musb-hdrc.0.auto
+    setprop sys.usb.config adb

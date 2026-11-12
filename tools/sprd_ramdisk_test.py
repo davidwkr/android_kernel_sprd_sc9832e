@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0
 #
-# Tests for sprd_ramdisk.py add-rc on a synthetic ramdisk built in a temp
+# Tests for sprd_ramdisk.py add-rc and add-file on a synthetic ramdisk built in a temp
 # directory (no device dumps). Run: python3 -I tools/sprd_ramdisk_test.py
 
 import gzip
@@ -315,6 +315,109 @@ class Case(unittest.TestCase):
             r, out = self.rm(ins + extra)
             self.assertEqual(r.returncode, 1, extra)
             self.assertFalse(os.path.exists(out), extra)
+
+    # ---- add-rc --name, add-file (synthetic key file, never a real one)
+
+    def test_add_rc_second_name(self):
+        o1, o2 = self.path('o1.gz'), self.path('o2.gz')
+        frag = self.put('f.rc', b'on early-boot\n    setprop a b\n')
+        self.assertEqual(self.run_tool('add-rc', self.stock(), o1,
+                                       '--fragment', FRAG).returncode, 0)
+        r = self.run_tool('add-rc', o1, o2, '--fragment', frag,
+                          '--name', 'init.benchdebug.rc')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        b, ob = self.unpack(o2)
+        self.assertEqual(ob[-3:], ['init.watch_tweaks.rc',
+                                   'init.benchdebug.rc', 'TRAILER!!!'])
+        self.assertEqual(b['init.rc'][1], RC + b'import /init.watch_tweaks.rc\n'
+                         b'import /init.benchdebug.rc\n')
+        r = self.run_tool('add-rc', o2, self.path('o3.gz'),
+                          '--fragment', frag, '--name', 'init.benchdebug.rc')
+        self.assertIn('already applied', r.stdout)
+
+    def test_add_rc_bad_name(self):
+        for n in ('init.rc', 'x.rc', 'init..rc', '../init.a.rc', 'init.A.rc',
+                  'init.a/b.rc'):
+            r = self.run_tool('add-rc', self.stock(), self.path('o.gz'),
+                              '--fragment', FRAG, '--name', n)
+            self.assertEqual(r.returncode, 1, n)
+
+    KEY = b'QAAAAFAKEKEYFAKEKEYFAKEKEY= nobody@nowhere\n'
+
+    def add_file(self, *extra, src=None, path='/adb_keys', mode='0644'):
+        return self.run_tool('add-file', src or self.stock(),
+                             self.path('o.gz'), '--path', path, '--file',
+                             self.put('k', self.KEY), '--mode', mode, *extra)
+
+    def test_add_file(self):
+        src = self.stock()
+        r = self.add_file(src=src)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        a, oa = self.unpack(src)
+        b, ob = self.unpack(self.path('o.gz'))
+        self.assertEqual(ob[:-2], oa[:-1])
+        self.assertEqual(ob[-2:], ['adb_keys', 'TRAILER!!!'])
+        self.assertEqual(b['adb_keys'][1], self.KEY)
+        fl = b['adb_keys'][0]
+        self.assertEqual((fl[1], fl[2], fl[3], fl[4], fl[5]),
+                         (0o100644, 0, 0, 1, a['init.rc'][0][5]))
+        for n in oa:
+            if n != 'TRAILER!!!':
+                self.assertEqual(a[n], b[n], n)
+
+    def test_add_file_modes_owner(self):
+        r = self.add_file('--uid', '1000', '--gid', '2000', mode='0600')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        b, _ = self.unpack(self.path('o.gz'))
+        self.assertEqual(b['adb_keys'][0][1:4], [0o100600, 1000, 2000])
+
+    def test_add_file_refusals(self):
+        for p in ('adb_keys', '/', '/a/', '/../x', '/a/../x', '/./x', '//x',
+                  '/a//x', '/nodir/x', '/init.rc', '/sbin'):
+            r = self.add_file(path=p)
+            self.assertEqual(r.returncode, 1, p)
+            self.assertFalse(os.path.exists(self.path('o.gz')), p)
+        for m in ('644x', '9', '07777', '', '-1'):
+            self.assertEqual(self.add_file(mode=m).returncode, 1, m)
+        self.assertEqual(self.add_file('--replace').returncode, 1)  # absent
+
+    def test_add_file_in_subdir(self):
+        r = self.add_file(path='/sbin/k')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        _, ob = self.unpack(self.path('o.gz'))
+        self.assertEqual(ob[-2:], ['sbin/k', 'TRAILER!!!'])
+
+    def test_add_file_replace(self):
+        src = self.stock(STOCK + [(9, 'adb_keys', b'old', 0o100600)])
+        self.assertEqual(self.add_file(src=src).returncode, 1)
+        r = self.add_file('--replace', src=src)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        a, oa = self.unpack(src)
+        b, ob = self.unpack(self.path('o.gz'))
+        self.assertEqual(oa, ob)                # same order, in place
+        self.assertEqual(b['adb_keys'][1], self.KEY)
+        self.assertEqual(b['adb_keys'][0][0], a['adb_keys'][0][0])  # inode
+        self.assertEqual(b['adb_keys'][0][1], 0o100644)
+        for n in oa:
+            if n != 'adb_keys':
+                self.assertEqual(a[n], b[n], n)
+
+    def test_add_file_replace_special(self):
+        for ent in ((9, 'adb_keys', b'', 0o120777),
+                    (9, 'adb_keys', b'x', 0o100600, 2)):
+            src = self.stock(STOCK + [ent])
+            self.assertEqual(self.add_file('--replace', src=src).returncode,
+                             1, ent)
+
+    def test_add_file_same_out_and_big(self):
+        src = self.stock()
+        r = self.run_tool('add-file', src, src, '--path', '/x', '--file',
+                          self.put('k', b'x'), '--mode', '0644')
+        self.assertEqual(r.returncode, 1)
+        r = self.run_tool('add-file', src, self.path('o.gz'), '--path', '/x',
+                          '--file', self.put('big', b'x' * (1 << 20 | 1)),
+                          '--mode', '0644')
+        self.assertEqual(r.returncode, 1)
 
 
 if __name__ == '__main__':
