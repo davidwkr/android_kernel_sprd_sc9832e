@@ -41,8 +41,11 @@ suspend/resume cycle the count is 2 at resume and 1 after suspend, so
 `DISPC_EB` stays set for good while the display is off.
 
 The second enable was unnecessary: the reset writes `REG_AP_AHB_AHB_RST`
-(`BIT_AP_AHB_DISPC_SOFT_RST`), a different register from `AHB_EB`; it cannot
-clear the enable bit. Both messages (`Powering up...`, `Re-enable GLB`,
+(`BIT_AP_AHB_DISPC_SOFT_RST`), a different register from `AHB_EB`. The source
+cannot prove that the silicon reset has no side effect on `AHB_EB`, but the
+second enable could not have helped anyway: the clock framework only counts a
+second `clk_prepare_enable()` on an enabled gate and does not write the
+hardware again. Both messages (`Powering up...`, `Re-enable GLB`,
 `Final Fix V2`) are absent from the stock image strings, which only has
 "dispc suspend OK" / "dispc resume OK". The modified resume is present since
 the squashed import commit (`git log -S` shows only `df2e35f95603`).
@@ -55,5 +58,13 @@ the "Powering up" step and again at "Re-enable GLB after reset") and the same
 
 ## Fix
 
-Drop the second `glb->enable()` in `sprd_dispc_resume()`; `enable`/`disable`
-are balanced again and runtime suspend releases `DISPC_EB`.
+Drop the second `glb->enable()` in `sprd_dispc_resume()`; on the successful
+paths `enable`/`disable` are balanced again and runtime suspend releases
+`DISPC_EB`. To confirm on a watch: with the screen off on battery the check no
+longer prints `DISPC_EB not 0`, and `AP_DEEP_SLEEP_CNT` rises (if it stays 0,
+another source still blocks deep sleep).
+
+Open (pre-existing, both trees): when a clock enable fails, the error paths of
+`dispc_glb_enable()` (`sharkle/global_dispc.c`), the core/DPI clock enable and
+`global_dsi.c` disable clocks they never acquired, and init/resume ignore the
+failure, so the next suspend disables again. Only reachable on a clock failure.
