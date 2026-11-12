@@ -208,8 +208,9 @@
 	 * (sc2720_charger_set_current()); the stock 0x7fff (no limit) zone is
 	 * written as 32767 mA so the adapter current applies.
 	 * cm-wdt-interval is left out: stock chg-wdt is disabled and the
-	 * charger driver has no watchdog property. Stock rechg-vol (4320 / 4370
-	 * mV) has no 4.14 property, the [base] vchkdrop values stay.
+	 * charger driver has no watchdog property.
+	 * Recharge: stock rechg-vol (4320 / 4370 mV) is cm-fullbatt-voltage minus
+	 * cm-fullbatt-vchkdrop-volt, set per unit with the fullbatt voltage.
 	 */
 	cm: charger-manager {
 		compatible = "charger-manager";
@@ -219,7 +220,6 @@
 		cm-battery-stat = <2>;			/* [base] fuel gauge PRESENT (always 1 here) */
 
 		cm-fullbatt-vchkdrop-ms = <30000>;	/* [base] */
-		cm-fullbatt-vchkdrop-volt = <60000>;	/* [base] */
 		cm-fullbatt-current = <60000>;		/* [stock] chg-end-cur */
 		cm-fullbatt-capacity = <100>;		/* [base] */
 
@@ -234,6 +234,11 @@
 		cm-battery-temp-diff = <30>;
 
 		cm-charging-max = <21600000>;		/* [stock] chg-timeout 21600 s */
+		/*
+		 * [stock] chg-rechg-timeout 5400 s: limit of every charge after
+		 * the first, as on the DM63.
+		 */
+		cm-recharging-max = <5400000>;
 		cm-discharging-max = <2700000>;		/* [base] */
 
 		cm-shutdown-voltage = <3050000>;	/* [stock] soft-vbat-uvlo */
@@ -522,6 +527,13 @@
 		reg = <0xec0>;
 		phys = <&hsphy>;
 		monitored-battery = <&bat>;
+		/*
+		 * Not in stock (4.4 sprd_battery.c is both the policy and the
+		 * only caller): the 4.14 charger driver must not start a
+		 * charge on an adapter notification, or it restarts a charge
+		 * that charger-manager stopped for temperature.
+		 */
+		sprd,charge-start-by-cm;
 		sprd,ovp-microvolt = <6500000>;
 		nvmem-cells = <&cccv_calib_data>, <&cccv_calib_valid>;
 		nvmem-cell-names = "cccv_calib", "cccv_calib_valid";
