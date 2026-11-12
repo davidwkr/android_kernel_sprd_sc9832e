@@ -537,7 +537,7 @@ static struct notifier_block ion_e_show_mem_notifier = {
 
 static int sprd_ion_probe(struct platform_device *pdev)
 {
-	int i = 0, ret = -1;
+	int i = 0, n, ret = -1;
 	struct ion_platform_heap *ion_heaps = NULL;
 
 	ion_heaps = sprd_ion_parse_dt(pdev);
@@ -553,20 +553,32 @@ static int sprd_ion_probe(struct platform_device *pdev)
 		goto out1;
 	}
 
-	/* create the heaps as specified in the board file */
-	for (i = 1; i <= num_heaps; i++) {
-		struct ion_platform_heap *heap_data = &ion_heaps[i - 1];
+	/*
+	 * Create the carveout heaps of the board file. The system heap
+	 * ("system", type 0, id 0) is created by ion_system_heap.c and kept in
+	 * heaps[0]: a carveout of that name would be an empty heap with the
+	 * same id, tried first and failing every id-0 allocation.
+	 * heaps[1..n] hold the created heaps, without holes.
+	 */
+	for (i = 0, n = 0; i < num_heaps; i++) {
+		struct ion_platform_heap *heap_data = &ion_heaps[i];
+
+		if (heap_data->type == ION_HEAP_TYPE_SYSTEM ||
+		    heap_data->type == ION_HEAP_TYPE_SYSTEM_CONTIG)
+			continue;
 
 		if (!pdev->dev.of_node)
 			heap_data->priv = &pdev->dev;
-		heaps[i] = ion_carveout_heap_create(heap_data);
-		if (IS_ERR_OR_NULL(heaps[i])) {
+		heaps[n + 1] = ion_carveout_heap_create(heap_data);
+		if (IS_ERR_OR_NULL(heaps[n + 1])) {
 			pr_err("%s,heaps is null, i:%d\n", __func__, i);
-			ret = PTR_ERR(heaps[i]);
+			ret = PTR_ERR(heaps[n + 1]);
 			goto out;
 		}
-		ion_device_add_heap(heaps[i]);
+		ion_device_add_heap(heaps[n + 1]);
+		n++;
 	}
+	num_heaps = n;
 #ifdef CONFIG_E_SHOW_MEM
 	register_e_show_mem_notifier(&ion_e_show_mem_notifier);
 #endif
