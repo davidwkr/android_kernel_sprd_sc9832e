@@ -910,7 +910,9 @@ void saudio_pcm_lib_preallocate_free_for_all(struct snd_pcm *pcm)
 		for (substream = pcm->streams[stream].substream; substream;
 		     substream = substream->next) {
 			if (substream->dma_buffer.addr) {
-				iounmap(substream->dma_buffer.area);
+				/* vm_map_ram() mapping: iounmap() finds no vm area */
+				if (substream->dma_buffer.area)
+					shmem_ram_unmap(substream->dma_buffer.area);
 				smem_free(substream->dma_buffer.addr,
 					  substream->dma_buffer.bytes);
 				substream->dma_buffer.addr = (dma_addr_t)NULL;
@@ -934,11 +936,17 @@ int saudio_pcm_lib_preallocate_pages_for_all(struct snd_pcm *pcm,
 		     substream = substream->next) {
 			struct snd_dma_buffer *dmab = &substream->dma_buffer;
 			u32 addr = smem_alloc(size);
+			void *area = NULL;
 
 			if (addr) {
+				area = shmem_ram_vmap_nocache(addr, size);
+				if (!area)
+					smem_free(addr, size);
+			}
+			if (area) {
 				dmab->dev.type = type;
 				dmab->dev.dev = data;
-				dmab->area = shmem_ram_vmap_nocache(addr, size);
+				dmab->area = area;
 				dmab->addr = addr;
 				dmab->bytes = size;
 				memset(dmab->area, 0x5a, size);
