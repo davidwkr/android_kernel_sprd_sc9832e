@@ -394,6 +394,15 @@ unwind: a partial registration unregisters the devices already registered,
 and `kbase_devfreq_init()` calls `kbase_ipa_term()` when cooling
 registration fails.
 
+Reviewed against two 4.14 findings, neither applies here. The 4.4
+`create_gpu_cooling_device()` has no `lwfq/type` gate (a missing
+`gpu-cooling-devices` node returns 0, and the r21p0 caller treats any error as
+fatal, so a real failure is not swallowed). The static callback computes
+`gpu_cores * (gpu_coeff * t_scale * v_scale) / 10000000` with `t_scale` and
+`v_scale` as `unsigned long`, which is 64-bit on arm64, so nothing truncates
+to 32 bits; both dynamic callbacks multiply in `u64`. This is only true for an
+arm64 build; a 32-bit build of this file would overflow as the 4.14 one did.
+
 **Boost hint ioctl.** The stock GPU library issues `0x4004801d`
 (`_IOW(0x80, 29, u32)`). Stock stores the value in the context and
 `kbase_jd_submit()` passes it to `kbase_platform_set_boost()` on every submit,
