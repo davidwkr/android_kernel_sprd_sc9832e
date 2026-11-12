@@ -18,6 +18,7 @@
 #include "sp9832e-watch-firmware.dtsi"
 #include "sc9832e-wcn.dtsi"
 #include "sc2721.dtsi"
+#include "sprd-sound-sharkl.dtsi"
 #include "lcd/lcd_co5300_oled1952_mipi.dtsi"
 #include "lcd/lcd_co5300_oled206_mipi.dtsi"
 #include "lcd/lcd_co5300_oled213_mipi.dtsi"
@@ -816,4 +817,63 @@
 
 &dphy {
 	status = "okay";
+};
+
+/*
+ * Audio, as in the stock DM63 DT: SC2721 analog codec linked to the sharkle
+ * digital codec, VBC card "sprdphone" (the stock audio HAL opens the cards by
+ * name: "sprdphone" and "all-i2s", same names as 4.14 and stock), headset
+ * and BT SCO i2s0. sprd-sound-sharkl.dtsi carries the card, dai-links and the
+ * headset with the stock DM63 values (gpios pmic eic 3/8/12/5/13, adc
+ * thresholds, button ranges and codes are identical to stock), so only the
+ * enables and the DM63 specifics are set here.
+ * Without digital-codec the codec probe fails with -EINVAL ("Parse
+ * 'digital-codec' failed") and no sound card registers.
+ */
+&sprd_audio_codec_ana {
+	status = "okay";
+	digital-codec = <&sprd_audio_codec_dig>;
+};
+
+&sprd_headset {
+	status = "okay";
+};
+
+/*
+ * Speaker boost control gpios: stock sprd,smartamp-boost-gpios is ap gpio
+ * 27 (boost_enable) and 85 (boost_mode). The sl8541e board uses 121 and 85.
+ */
+&sound_vbc_r1p0v3_sprd_codec {
+	status = "okay";
+	sprd,smartamp-boost-names = "boost_enable", "boost_mode";
+	sprd,smartamp-boost-gpios = <&ap_gpio 27 GPIO_ACTIVE_HIGH>,
+				    <&ap_gpio 85 GPIO_ACTIVE_HIGH>;
+};
+
+&sound_sprd_ap_alliis {
+	status = "okay";
+};
+
+&i2s0 {
+	status = "okay";
+};
+
+/*
+ * Stock puts the audio dma buffers in the audio_dma@8d840000 reserved region
+ * (sprd,dma_use_ddr_reserved, memory-region on both pcm platform nodes). The
+ * 4.14 pcm driver switches to the reserved ddr buffer when memory-region is
+ * present. The stock vaudio tuned_26m clock is clk_audio_gate (gate bit 8 of
+ * 0x40410000), the rpll CLK_AUDIO_GATE output in 4.14.
+ */
+&sprd_pcm {
+	memory-region = <&audio_dma_reserved>;
+};
+
+&sprd_pcm_iis {
+	memory-region = <&audio_dma_reserved>;
+};
+
+&vaudio {
+	clocks = <&rpll CLK_AUDIO_GATE>;
+	clock-names = "tuned_26m";
 };
