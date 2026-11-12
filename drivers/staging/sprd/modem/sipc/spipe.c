@@ -53,8 +53,8 @@ static int spipe_open(struct inode *inode, struct file *filp)
 
 	spipe = container_of(inode->i_cdev, struct spipe_device, cdev);
 	if (sbuf_status(spipe->init->dst, spipe->init->channel) != 0) {
-		pr_info("spipe %d-%d not ready to open!\n",
-			spipe->init->dst, spipe->init->channel);
+		pr_info_ratelimited("spipe %d-%d not ready to open!\n",
+				    spipe->init->dst, spipe->init->channel);
 		filp->private_data = NULL;
 		return -ENODEV;
 	}
