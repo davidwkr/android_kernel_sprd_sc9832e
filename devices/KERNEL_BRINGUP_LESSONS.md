@@ -3,8 +3,8 @@
 What it took to run our own kernels (4.4.302, 4.14.336) under the **unchanged stock userspace** (system, vendor,
 secure firmware, bootloader) of the DM63 (and, by design, the DW100U). Written as a checklist for the next kernel
 (5.x or later): every item below is something the stock userspace or firmware silently depends on. Status as of
-2026-11-12: 4.4 (v11) runs daily on a pilot watch; 4.14 (test 8) boots Android with Trusty, the modem and Wi-Fi up,
-audio still being ported.
+2026-11-12: 4.4 (v11) runs daily on a pilot watch; 4.14 (test 8) boots Android with Trusty, the modem and Wi-Fi up;
+the audio, video codec and charging fixes (tests 11 and 12) are built but not yet run.
 
 Rule of thumb: **the stock vendor binaries and the bootloader are the spec.** A newer kernel can be correct by
 upstream standards and still break them. When in doubt, read the stock 4.4.83 kernel (strings, kallsyms,
@@ -71,11 +71,22 @@ disassembly; `tools/sprd_bootimg.py`) and match its behaviour exactly.
 - **WCN (Wi-Fi/BT/GNSS/FM):** the CP2 handshake must match stock (`WCN_STOCK_FW.md`). GNSS needs the A-GPS config in
   the HAL's runtime copy `/data/gnss/config/config.xml` (`NOKIA-EE=TRUE`), which is not a kernel matter.
 - **Video codec (VSP):** the stock H.264 encoder aborts on 4.14 (`H264EncPreInit` failed); still open there.
-- **Audio:** the stock HAL opens the cards by name (`sprdphone`, `all-i2s`). A board DT ported by hand can boot with
-  no sound card at all (4.14: no `digital-codec` link, the SC2721 codec probe failed with -EINVAL): check
-  `/proc/asound/cards` on the first boot. Voice-call audio (`saudio`, SIPC `dst 5`) needs its shared-memory pool.
-- **Battery reporting:** the 4.14 fuel gauge reports `capacity=101` and type `Unknown`, and Android shows AC and USB
-  powered at once; compare `dumpsys battery` with stock.
+- **Nodes the stock DT enables:** a board DT ported by hand inherits `status = "disabled"` from the SoC dtsi. On 4.14
+  the DM63 DT had no audio (no `digital-codec` link: the SC2721 codec probe failed with -EINVAL, no sound card) and
+  no video or JPEG codec (`vsp`, `jpg` and their IOMMUs disabled: the stock H.264 encoder aborted in
+  `H264EncPreInit`). List every `status = "ok"/"okay"` node of the stock DT and check each one in the new DT; on the
+  first boot check `/proc/asound/cards` (stock names `sprdphone`, `all-i2s`) and `ls /dev/sprd_vsp`.
+- **Modem shared memory:** the `sipc-lte` smem pool is a fixed 3.9 MB region laid out by the modem firmware. The 4.14
+  modem dtsi defines 14 seth channels where stock has 8; each takes 12 KB of the pool, and the voice audio buffers
+  (`saudio`) then failed to allocate. Read `/sys/kernel/debug/sipc/smem` and keep the channel set of stock.
+- **Charging policy:** on 4.4 the stock `sprd_battery.c` is both the battery supply Android reads and the charging
+  policy (JEITA temperature zones, charge timeout, recharge voltage, adapter currents). A newer kernel spreads this
+  over the fuel gauge, the charger driver and charger-manager. On 4.14 charger-manager never probed (it required a
+  regulator), so there was no `battery` supply (Android showed AC powered, level 100), no temperature limits and no
+  timeout; only the charger's probe-time CV (the battery's 4480 mV) applied. Making charger-manager safe took five
+  review rounds: the charger driver must not start a charge on its own, stops must be verified and retried, timers
+  must count suspend, probe must force the charge off before anything can defer. Take the zone table, timeouts and
+  recharge voltage from the stock battery node, and test charging attended before any unattended use.
 
 ## 4. Power and thermal
 
@@ -95,7 +106,9 @@ disassembly; `tools/sprd_bootimg.py`) and match its behaviour exactly.
 ## 5. Security work that changed behaviour
 
 Backports and hardening were where most regressions came from: the Mali refusals, stable 4.4.208 (PCM clear),
-4.4.302's musb state fix, the lz4 upgrade. For every security change, list the stock userspace callers and test them
+4.4.302's musb state fix, the lz4 upgrade. Vendor drivers also carry their own bugs worth a sweep on any tree: error
+paths that return with the address limit still at `KERNEL_DS` (WCN GNSS dump and Wi-Fi calibration save, sensor and
+touch drivers), and `vm_map_ram()` mappings freed with `iounmap()` (saudio). For every security change, list the stock userspace callers and test them
 on hardware. Found and fixed along the way:
 - the 4.14 `/proc/sprd_sysdump` stack overflow and its crash triggers;
 - Mali CVEs (`MALI_R21P0.md`, `MALI_R28P0_CVE_44.md`);
@@ -130,5 +143,8 @@ The stock DM63 ROM runs SELinux permissive; release builds of our kernel drop `S
 7. A `sysrq` panic reboots by itself (sysdump off) and pstore keeps the records; a normal reboot comes back.
 8. Keystore works (no `system_server` crash loop); the modem starts (SIPC `dst 5` open); `modem_control` stays
    idle; the modem sees cells (no `NO_NETWORK_FOUND`) and registers with an active SIM.
-   `/proc/asound/cards` lists the stock card names. No `<supply>: disabling` line for a supply 4.4 keeps on.
+   `/proc/asound/cards` lists the stock card names; `/dev/sprd_vsp` exists and a video can be recorded. No
+   `<supply>: disabling` line for a supply 4.4 keeps on. `sipc/smem` has room left after boot.
+10. `/sys/class/power_supply/battery` exists with type Battery and capacity 0..100; `dumpsys battery` shows USB on a
+   PC and AC on a wall charger; attended plug and unplug tests show charging stops and resumes per the stock rules.
 9. A full day of wear and a night unplugged, compared with stock.
