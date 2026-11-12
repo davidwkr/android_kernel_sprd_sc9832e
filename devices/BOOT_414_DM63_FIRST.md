@@ -14,8 +14,9 @@ so it says nothing about the 4.14 reboot.
 
 The premise "4.14 has no Trusty" does not hold.
 
-- `drivers/trusty` is the same driver as in 4.4 apart from the cpuhp and virtio-ring API ports (`trusty-irq.c`,
-  `trusty-virtio.c`, `trusty.c` return types) [S]. The device node is created as `trusty-ipc-%s` from the virtio
+- `drivers/trusty` differs from 4.4 in the cpuhp and virtio-ring API ports (`trusty-irq.c`, `trusty-virtio.c`,
+  `trusty.c` return types) and in `trusty-ipc.c`, which is the sprd scatter-gather version (see the fourth-boot
+  section) [S]. The device node is created as `trusty-ipc-%s` from the virtio
   device name, i.e. `/dev/trusty-ipc-dev0`, as on 4.4 [S].
 - The merged build config (`sprd_sharkle_defconfig` plus the four watch fragments) has `CONFIG_TRUSTY=y`,
   `TRUSTY_LOG=y`, `TRUSTY_VIRTIO=y`, `TRUSTY_VIRTIO_IPC=y`, `VIRTIO=y` [S].
@@ -206,11 +207,114 @@ storage proxy in time, which fits proxies that are down or restarting, and the R
 the eMMC faults will make it worse once they start. The vendor/system rc files are not in the boot image, so the
 SIGHUP source needs the `/vendor/etc/init` files of the stock system image or an `strace -f`/`logcat -b all` from init.
 
+### Fourth 4.14 boot (eMMC clean): Android up, two blockers left
+
+Captures: `dm63-414-163559` (`dmesg-early/final` from 0 s, `logcat-latest`). References: 4.4 boots of the same unit
+(`dm63-boot2-010410`, `dm63-v3wipe-012847`, `dm63-v4-014150`) and the live capture that replaced the 4.14 tail
+(a 4.4 boot: `WCN:` instead of `WCN BASE:`, no `sblock-5-13 not ready` at all). The 4.14 captures show 0 eMMC errors,
+/data mounted through the same `soc:ap-ahb/20600000.sdio/by-name/*` paths as 4.4 (vendor and system in first stage) [D].
+
+#### Trusty client daemons killed by signal 1: not a kernel interface difference
+
+- RPMB node: `mmcblk0rpmb` is a block device (gendisk, `mmcblk0rpmb: mmc0:0001 Q313BB partition 3 4.00 MiB`) in 4.14
+  exactly as in 4.4. `drivers/mmc/core/block.c` has no RPMB char device, the ioctl path (`mmc_blk_ioctl_cmd`,
+  `ioctl_rpmb_card_status_poll`, `mmc_access_rpmb`) is the 4.4 code. The stock `ueventd.sl8541e_1h10.rc` rule is
+  `/dev/block/mmcblk0rpmb 0660 system system`, which matches the 4.14 node, so there is nothing to provide [S].
+- Device nodes and by-name symlinks: same platform name `soc:ap-ahb/20600000.sdio` in the stock fstab/ueventd and in
+  the 4.14 mounts (vendor, system, data mounted in first stage) [D]. `/dev/trusty-ipc-dev0` is `system:system` in both.
+- SELinux is permissive; the denials are the bench shell's, and the audit log is rate limited (`audit_lost` 41 to
+  174), so it carries no information on these daemons [D].
+- No kernel path raises SIGHUP: `send_sig`/`kill_pid`/`force_sig` do not occur in drivers/trusty, drivers/soc/sprd,
+  drivers/misc/sprd*, and none of the sprd tty drivers calls `tty_hangup`. The only kernel SIGHUP sources left are
+  a tty hangup of a controlling terminal and `kernel/exit.c` orphaned-pgrp handling [S]. So the sender is a process.
+- Not every instance is broken. In the same boot the keymaster HAL (pid 327, `hal_keymaster_default`) answered
+  keystore calls (`generate key`, `attest key`, `begin/update/finish` all returned) and `BOOT_COMPLETED` was reached;
+  the earlier boot (`dm63-414-161227`) had `TrustyKeymaster: failed to connect to keymaster (-2)` (ENOENT: port not
+  registered yet) while keystore waited, which is the "keystore not available" case [D]. The extra `keymaster-3-0`
+  instances start every 5 s (init's restart delay) and die 0.04 to 0.15 s after start; `tsupplicant` exits with
+  status 0 about 50 ms after each start on the same cadence; `refnotify` (35.48 s) and `rpmbproxyd` (56.70 s) died
+  once each, and were restarted at once because they had run for more than 5 s [D]. On 4.4 `rpmbproxyd` and
+  `tsupplicant` start once at 22.24 s, `refnotify` at 24.44 s and `storagensproxyd` at 24.77 s, and no death is
+  logged [D]. Trusty `-13` (`opening storage session`) is also seen on 4.4 (DM63_BOOT_ANOMALIES.md, no attestation
+  provisioning on the bench units), so it is not a 4.14 symptom.
+- The init lines of the first seconds are missing: `init: 46 output lines suppressed due to ratelimiting` (/dev/kmsg
+  is rate limited since 4.9). The first `starting service` of each daemon is therefore not in the capture [D].
+- The Trusty IPC driver is not the 4.4 one (the first analysis said it was): 4.14 `trusty-ipc.c` is the sprd
+  scatter-gather version (`tipc_chan_queue_msg_list`, messages split over several tx buffers,
+  `TIPC_DATA_MSG_F_NEXT`, and `tipc_read_iter()` concatenates every queued rx buffer into one read), 4.4 sends one
+  buffer per message. The stock 4.4.83 Image contains no trace of the new code [S]. Single-buffer traffic is the
+  same, which fits keystore working; whether larger or back-to-back messages break a client is not shown [H].
+
+What is needed, because the sender is in userspace and `/vendor/etc/init` (keymaster, rpmbproxyd, tsupplicant,
+refnotify rc: `class`, `user`, `oneshot`, `critical`, `onrestart`, `writepid`, `console`) is not in the boot image
+(and the stock `system.img` in the tool tree is a truncated 21 MB piece with an unreadable filesystem):
+
+1. Add `trace_event=signal:signal_generate` to the kernel command line (tracing is already built in:
+   `CONFIG_EVENT_TRACING=y`, debugfs on). After the boot, `grep 'sig=1 ' /sys/kernel/debug/tracing/trace`: the trace
+   header names the sending task (`<comm>-<pid>`), the event names the target. A kernel sender (tty hangup) shows
+   as the task that closed the tty or as the serial driver's thread.
+2. `printk.devkmsg=on` on the same command line, so init's `starting service` / `killed by signal` lines are not
+   dropped.
+3. `ps -A -o PID,PPID,PGID,SID,TTY,NAME` and `/proc/<pid>/status` (`SigCgt`, `PPid`) of `keymaster-3-0` and
+   `tsupplicant`, plus `logcat -b all` from the first second (the rolling logcat loses the first system_server).
+   A controlling tty or a `PR_SET_PDEATHSIG` parent would show here.
+4. The `/vendor/etc/init/*.rc` of the stock system (a `console` service, a shell script that sends `kill -1`, or a
+   `tsupplicant` that restarts the TEE clients).
+
+#### Modem: the CP is never started on 4.14
+
+What 4.4 does on this unit (`dm63-v3wipe-012847/dmesg-21.txt`, `dm63-boot2-010410/try4`) [D]:
+
+1. `modem_control` and `modemd` start in `boot` next to `rpmbproxyd` and `tsupplicant` (22.23 to 22.24 s).
+2. `modem_control` writes the images to `/proc/cptl/{deltanv,gdsp,ldsp,runnv,fixnv,cpcmdline,modem}` and
+   `/proc/pmic/pm_sys` (22.06 to 24.04 s). The kernel prints `cproc_proc_open: ...`, `cproc_proc_write: write ...`.
+3. The Trusty TA `kernelbootcp` verifies them (`kbc_verify_all_avb2() ret = 0`) and runs `SEC_KBC_START_CP`, which
+   itself clears the CP reset bits in the same registers as the cproc node (pmu 0x48, 0xcc, 0xb0, aon 0x284).
+4. `/proc/<cp>/start` is written, `sprd_cproc_native_arm_start: ... start over`, and 0.06 s later `smsg_ch_open:
+   channel 6-x` (pmsys) and 5-x (LTE) open. `sblock-5-13 not ready` stops.
+
+On 4.14 neither `spipe 6-6` nor `5-x` ever opens, so the start (or the images before it) never happens, or the
+channels never open. The 4.4 runtime parse shows `cp base = 0x89600000, size = 0x3d00000` with seven segment
+children (`ldsp`, `gdsp`, `runnv`, `fixnv`, `deltanv`, `cpcmdline`, `modem`) for `cptl`, while the DTS (4.4 and 4.14)
+has `reg = <0x10000 0x1000>` and no children: U-Boot rewrites the node (`stock uboot.img` strings:
+`create_cproc_subnode`, `sprd,decoup`, `cproc-use-decoup`, `cp-modem`, `sprd,cpdbg-size`; it finds the node with
+`fdt_node_offset_by_prop_value`, so the nested 4.14 layout should be found as well) [S].
+
+Compared and found equal: the `scproc`/`sipc`/`spipe` DT values (ctrl registers, syscon phandles: 0x2b = aon-apb,
+0x39 = pmu-apb; `cp-modem@89600000` with `sprd,cpdbg-size`), `modem=shutdown` handling (`cp_boot_mode`), the
+proc entry set, the mailbox (`mbox:ERR on line 295` is the optional third, sensor, irq; r1p2 driver has the 4.4 V2
+layout) [S].
+
+What differs is visibility and one hazard: every `cproc` message that 4.4 prints at `pr_info` is `pr_debug` in 4.14,
+so the capture cannot show the segments, the opened nodes or the start; and `sprd_cproc_native_arm_start()` waits for
+the core/sys reset bits with `while (1)`, an unbounded loop inside `write()`, which is a way for `modem_control` to
+sit at about 100% CPU in the kernel if the bit does not read back clear (an unchecked `regmap_read()` failure leaves
+`state` unset) [H]. The 4.14 captures also lack the TEE-side `trusty_kernelbootcp` / `[kbc]` lines that 4.4 forwards
+live (only the burst at 3.8 s is there), so the TA side cannot be seen either [D].
+
+Commit `soc: sprd: cproc: log the segments and the start path, bound the reset polls`: the 4.4 `pr_info` lines are
+back (parse summary with the segments, `/proc/<cp>/<node>` creation, `open`, first write of each image, `start`,
+`stop`), a warning when a cproc node has no segments, and the two `while (1)` polls end after 1 s with an error
+(`... core reset did not clear`, returned from `start`).
+
+Next boot must show, in order [H on the cause]:
+
+- `sprd_cproc_parse_dt: cptl: cp base = 0x89600000, size = 0x3d00000, 7 segments` and the segment lines (`ldsp`
+  0x89b80000/0xa10000, `gdsp` 0x89620000/0x4e0000, `modem` 0x8af30000/0xdc0000, ...) and the `/proc/cptl/...` lines.
+  If it says `cp base = 0x10000, size = 0x1000, 0 segments` plus the warning, U-Boot did not fix the node: make the
+  modem nodes flat at the top level like the stock DTS (and probe each `scproc` node, as 4.4 does).
+- `cproc_proc_open: cptl/deltanv` ... `write cptl/modem` ... `start!` and `start over, ret = 0` for `pmic` and
+  `cptl`. If no `cproc_proc_open` appears, `modem_control` stops before the images (open fails or it waits for the
+  TA): look at the `kernelbootcp` connect (a Trusty IPC `-2` or a missing `trusty_kernelbootcp` line).
+- `did not clear` means the reset bit never read back clear (register access, not the loader).
+- then `smsg_ch_open: channel 6-x` / `5-x` and the end of `sblock-5-13 not ready`.
+
 ### Open blockers for a clean boot
 
-1. eMMC Auto-CMD/command timeouts in HS400ES (cause unknown, above).
-2. SIGHUP loop of the Trusty client daemons (userspace sender unknown) and the resulting missing keystore/RPMB.
-3. Modem side not up (`sblock/spipe/saudio not ready`, `dfs_msg` failures, `WCN module have not open`).
+1. eMMC Auto-CMD/command timeouts in HS400ES: not seen in the fourth boot (0 errors).
+2. SIGHUP of the Trusty client daemons: sender unknown, userspace (see the section above for what to collect).
+3. Modem side not up (`sblock/spipe/saudio not ready`, `dfs_msg` failures, `WCN module have not open`): CP start
+   never reached or SIPC not opened; the cproc start path now logs.
 4. Display with the three fixes above is untested; `sprd_dispc_wb_buf_alloc()` still returns -ENOTSUPP.
 5. Reboot: the normal path is untested; the `Hardware spinlock [0] lock failed!` from the battery work can also make
    the restart handler's ADI writes fail silently.
