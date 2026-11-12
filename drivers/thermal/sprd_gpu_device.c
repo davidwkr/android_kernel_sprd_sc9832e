@@ -410,7 +410,7 @@ int create_gpu_cooling_device(struct devfreq *gpudev, u64 *mask)
 			gpudev, &power_model_ops);
 
 		strlcpy(cluster_data[cluster_id].devname,
-			child->name, strlen(child->name));
+			child->name, sizeof(cluster_data[cluster_id].devname));
 		cluster_data[cluster_id].gpudev = devfreq_cooling;
 
 		if (IS_ERR_OR_NULL(devfreq_cooling)) {
