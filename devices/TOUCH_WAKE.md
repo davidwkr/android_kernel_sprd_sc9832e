@@ -51,7 +51,7 @@ Functions: `adf_notifier_callback`, `touch_event_handler`, `cst0xx_reset`, `cst0
   only I2C writes in the cst0xx code are the sleep command above and the raw `cst0xx_rw_iic_drv` ioctl
   (user space). `cst0xx_read_id` only reads. Nothing writes a gesture enable register (0xD0, 0xE5 with another
   value, etc.), so how the controller would emit the 0xAA frame is unknown.
-  The in-tree driver drops frames with byte 1 = 0xAA as before.
+  The in-tree driver reports the `KEY_F4` palm cover as stock does, see `devices/CST0XX_PALM.md`.
 - **Switch**: no sysfs/proc DT2W switch in the cst0xx code. Its sysfs objects are `board_properties`
   (`virtualkeys.cst0xx_ts`) and `chipinfo`; the misc node `cst0xx_rw_iic_drv` is a raw register ioctl.
 - **User space** (read only): K18 `system.bin` and DW100U `system.bin` hold no `cst0xx_ts.kl`, so the device
