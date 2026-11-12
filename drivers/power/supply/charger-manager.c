@@ -666,6 +666,22 @@ static bool is_polling_required(struct charger_manager *cm)
 	return false;
 }
 
+/**
+ * cm_strict - charger-manager alone decides when the charger runs
+ * @cm: the Charger Manager representing the battery.
+ *
+ * True for a psy driven charger (no regulator child) with a jeita table, the
+ * DM63 setup. Only then are the stricter rules used that the charger driver
+ * relies on with sprd,charge-start-by-cm: disable always reaches the charger,
+ * the charger state is reconciled every poll, the time limit is
+ * unconditional, jeita holds a stop. Other boards keep the previous
+ * behaviour.
+ */
+static bool cm_strict(struct charger_manager *cm)
+{
+	return !cm->desc->num_charger_regulators && cm->desc->jeita_tab_size;
+}
+
 static int try_charger_enable_by_psy(struct charger_manager *cm, bool enable)
 {
 	struct charger_desc *desc = cm->desc;
@@ -706,8 +722,13 @@ static int try_charger_enable(struct charger_manager *cm, bool enable)
 {
 	int err = 0;
 
-	/* Ignore if it's redundant command */
-	if (enable == cm->charger_enabled)
+	/*
+	 * Ignore if it's redundant command. A disable is never redundant in
+	 * the strict mode: the cached flag can be wrong (hardware left on at
+	 * boot, a fault that stopped it behind our back) and the charger
+	 * stop is idempotent.
+	 */
+	if (enable == cm->charger_enabled && (enable || !cm_strict(cm)))
 		return 0;
 
 	if (enable) {
@@ -720,7 +741,7 @@ static int try_charger_enable(struct charger_manager *cm, bool enable)
 		 * here: none of them may start a charge while the jeita zone
 		 * forbids it or the zone has not been programmed yet.
 		 */
-		if (cm->jeita_stop)
+		if (cm_strict(cm) && cm->jeita_stop)
 			return -EAGAIN;
 
 		/*
@@ -734,7 +755,7 @@ static int try_charger_enable(struct charger_manager *cm, bool enable)
 		 * Save start time of charging to limit
 		 * maximum possible charging time.
 		 */
-		cm->charging_start_time = ktime_to_ms(ktime_get());
+		cm->charging_start_time = ktime_to_ms(ktime_get_boottime());
 		cm->charging_end_time = 0;
 
 		err = try_charger_enable_by_psy(cm, enable);
@@ -743,8 +764,11 @@ static int try_charger_enable(struct charger_manager *cm, bool enable)
 		 * Save end time of charging to maintain fully charged state
 		 * of battery after full-batt.
 		 */
-		cm->charging_start_time = 0;
-		cm->charging_end_time = ktime_to_ms(ktime_get());
+		if (cm->charger_enabled || !cm->charging_end_time) {
+			cm->charging_start_time = 0;
+			cm->charging_end_time =
+				ktime_to_ms(ktime_get_boottime());
+		}
 
 		err = try_charger_enable_by_psy(cm, enable);
 	}
@@ -871,6 +895,25 @@ static void fullbatt_vchk(struct work_struct *work)
 	}
 }
 
+/*
+ * Non strict boards: the time limit only stops a charge whose battery OCV is
+ * within fullbatt_vchkdrop_uV of fullbatt_uV (the original condition, same
+ * arithmetic).
+ */
+static bool cm_legacy_timeout_applies(struct charger_manager *cm)
+{
+	struct charger_desc *desc = cm->desc;
+	int batt_ocv, diff;
+
+	if (get_batt_ocv(cm, &batt_ocv)) {
+		dev_err(cm->dev, "failed to get battery OCV\n");
+		return false;
+	}
+	diff = desc->fullbatt_uV - batt_ocv;
+
+	return diff < desc->fullbatt_vchkdrop_uV;
+}
+
 /**
  * check_charging_duration - Monitor charging/discharging duration
  * @cm: the Charger Manager representing the battery.
@@ -884,13 +927,15 @@ static void fullbatt_vchk(struct work_struct *work)
  * sprd_battery.c: as soon as the OCV is at or below the recharge level
  * (fullbatt_uV - fullbatt_vchkdrop_uV, stock rechg-vol 4415 mV), and not
  * before. If a battery is still above that level it stays stopped, as the
- * stock FULL state. Without 'fullbatt_vchkdrop_uV' the charge restarts after
- * 'discharging_max_duration_ms'.
+ * stock FULL state. Other boards (not cm_strict()) keep the original rules:
+ * the limit only applies above the recharge level and the charge restarts
+ * after 'discharging_max_duration_ms'.
  */
 static int check_charging_duration(struct charger_manager *cm)
 {
 	struct charger_desc *desc = cm->desc;
-	u64 curr = ktime_to_ms(ktime_get());
+	/* boottime: the charger keeps charging in suspend, like stock */
+	u64 curr = ktime_to_ms(ktime_get_boottime());
 	u64 duration, limit;
 	int batt_ocv, ret = false;
 
@@ -909,8 +954,12 @@ static int check_charging_duration(struct charger_manager *cm)
 
 		duration = curr - cm->charging_start_time;
 
-		/* no battery voltage condition: the limit always applies */
-		if (duration > limit) {
+		/*
+		 * Strict mode: no battery voltage condition, the limit always
+		 * applies. Other boards keep the OCV condition.
+		 */
+		if (duration > limit &&
+		    (cm_strict(cm) || cm_legacy_timeout_applies(cm))) {
 			dev_info(cm->dev, "Charging duration exceed %llums\n",
 				 limit);
 			uevent_notify(cm, "Discharging");
@@ -925,7 +974,7 @@ static int check_charging_duration(struct charger_manager *cm)
 
 		duration = curr - cm->charging_end_time;
 
-		if (desc->fullbatt_vchkdrop_uV) {
+		if (cm_strict(cm) && desc->fullbatt_vchkdrop_uV) {
 			int err = get_batt_ocv(cm, &batt_ocv);
 
 			/* no OCV, no restart; signed, the OCV can be above */
@@ -1179,6 +1228,11 @@ static bool cm_manager_adjust_current(struct charger_manager *cm,
 	int term_volt, target_cur, i, ret = -ENODEV;
 	bool resume;
 
+	/* other boards: another abnormal state skips the zone handling */
+	if (!cm_strict(cm) && cm->charging_status != 0 &&
+	    !(cm->charging_status & CM_CHARGE_TEMP_ABNORMAL))
+		return true;
+
 	if (jeita_status > desc->jeita_tab_size)
 		jeita_status = desc->jeita_tab_size;
 
@@ -1197,7 +1251,8 @@ static bool cm_manager_adjust_current(struct charger_manager *cm,
 	}
 
 	/* the charge is only (re)started if this code stopped it or it is new */
-	resume = initial || (cm->charging_status & CM_CHARGE_TEMP_ABNORMAL);
+	resume = initial || (cm->charging_status & CM_CHARGE_TEMP_ABNORMAL) ||
+		 !cm_strict(cm);
 
 	term_volt = desc->jeita_tab[jeita_status].term_volt;
 	target_cur = desc->jeita_tab[jeita_status].current_ua;
@@ -1243,6 +1298,9 @@ static bool cm_manager_adjust_current(struct charger_manager *cm,
 			continue;
 		}
 	}
+
+	if (ret && !cm_strict(cm))
+		return false;
 
 	if (ret) {
 		/*
@@ -1422,6 +1480,8 @@ static int cm_manager_jeita_current_monitor(struct charger_manager *cm)
 	ret = cm_get_battery_temperature_by_psy(cm, &cur_temp);
 	if (ret) {
 		dev_err(cm->dev, "failed to get battery temperature\n");
+		if (!cm_strict(cm))
+			return ret;
 		/*
 		 * Without a temperature nothing says charging is allowed:
 		 * stop, and evaluate from scratch when it can be read again.
@@ -1455,7 +1515,8 @@ static int cm_manager_jeita_current_monitor(struct charger_manager *cm)
 		temp_down_trigger = 0;
 
 		/* a zone that stops charging (too hot) is entered at once */
-		if (cur_jeita_status == desc->jeita_tab_size ||
+		if ((cm_strict(cm) &&
+		     cur_jeita_status == desc->jeita_tab_size) ||
 		    ++temp_up_trigger > 2) {
 			is_normal = cm_manager_adjust_current(cm,
 							      cur_jeita_status,
@@ -1467,7 +1528,8 @@ static int cm_manager_jeita_current_monitor(struct charger_manager *cm)
 		temp_up_trigger = 0;
 
 		/* a zone that stops charging (too cold) is entered at once */
-		if (cur_jeita_status == 0 || ++temp_down_trigger > 2) {
+		if ((cm_strict(cm) && cur_jeita_status == 0) ||
+		    ++temp_down_trigger > 2) {
 			is_normal = cm_manager_adjust_current(cm,
 							      cur_jeita_status,
 							      false);
@@ -1483,7 +1545,7 @@ static int cm_manager_jeita_current_monitor(struct charger_manager *cm)
 		 * restarted the charger meanwhile), and settings that could
 		 * not be programmed are retried.
 		 */
-		if (!is_normal)
+		if (!is_normal && cm_strict(cm))
 			is_normal = cm_manager_adjust_current(cm,
 							      last_jeita_status,
 							      false);
@@ -1494,6 +1556,56 @@ out:
 		return -EAGAIN;
 
 	return 0;
+}
+
+/**
+ * cm_sync_charger_state - make the cached enable flag follow the hardware
+ * @cm: the Charger Manager representing the battery.
+ *
+ * Strict mode only. The charger can stop on its own (input OVP, a failed
+ * stop it reported) and can come up charging (left on by firmware): with
+ * only the cached flag, a later enable would look redundant and a later
+ * disable too. Charger STATUS is CHARGING only while the hardware charges.
+ *
+ * - flag on, charger not charging, adapter online: the charge was lost.
+ *   Clear the flag; the normal checks of the same poll (jeita, time limit,
+ *   voltage, recharge) then decide whether and when to restart, through
+ *   try_charger_enable(), so none of them is bypassed.
+ * - flag off, charger charging: write the disable again.
+ */
+static void cm_sync_charger_state(struct charger_manager *cm)
+{
+	union power_supply_propval val;
+	struct power_supply *psy;
+	bool hw_charging = false;
+	int i;
+
+	if (!cm_strict(cm))
+		return;
+
+	for (i = 0; cm->desc->psy_charger_stat[i]; i++) {
+		psy = power_supply_get_by_name(cm->desc->psy_charger_stat[i]);
+		if (!psy)
+			return;
+		if (power_supply_get_property(psy, POWER_SUPPLY_PROP_STATUS,
+					      &val)) {
+			power_supply_put(psy);
+			return;
+		}
+		power_supply_put(psy);
+		if (val.intval == POWER_SUPPLY_STATUS_CHARGING)
+			hw_charging = true;
+	}
+
+	if (cm->charger_enabled && !hw_charging && is_ext_pwr_online(cm)) {
+		dev_warn(cm->dev, "charger stopped by itself, re-evaluating\n");
+		cm->charger_enabled = false;
+		cm->charging_start_time = 0;
+		cm->charging_end_time = ktime_to_ms(ktime_get_boottime());
+	} else if (!cm->charger_enabled && hw_charging) {
+		dev_warn(cm->dev, "charger is charging while disabled, stopping\n");
+		try_charger_enable(cm, false);
+	}
 }
 
 /**
@@ -1522,6 +1634,8 @@ static bool _cm_monitor(struct charger_manager *cm)
 			return false;
 		}
 	}
+
+	cm_sync_charger_state(cm);
 
 	temp_alrt = cm_check_thermal_status(cm);
 
@@ -1769,7 +1883,7 @@ static void misc_event_handler(struct charger_manager *cm,
 	 */
 	online = is_ext_pwr_online(cm);
 	plug = online != cm->ext_pwr_online;
-	legacy = !cm->desc->jeita_tab_size;
+	legacy = !cm_strict(cm);
 	cm->ext_pwr_online = online;
 
 	if (plug) {
@@ -3212,7 +3326,7 @@ static int charger_manager_probe(struct platform_device *pdev)
 	cm->desc->thm_adjust_cur = -EINVAL;
 	cm->jeita_zone = -1;
 	/* no charge before the first jeita evaluation */
-	cm->jeita_stop = desc->jeita_tab_size > 0;
+	cm->jeita_stop = cm_strict(cm);
 	cm->jeita_reeval = true;
 
 	cur_time = ktime_to_timespec64(ktime_get_boottime());
