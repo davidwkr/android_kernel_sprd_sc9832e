@@ -133,7 +133,7 @@ MODULE_PARM_DESC(pmic_timeout, "Chip Watchdog margin in seconds (default 15s)");
 extern int in_calibration(void);
 #endif
 
-void sysdump_enable_watchdog(int on);
+int sysdump_enable_watchdog(int on);
 
 static irqreturn_t sprd_wdt_isr(int irq, void *dev_id)
 {
@@ -475,10 +475,13 @@ static const struct file_operations sprd_proc_fops = {
 	.release = single_release,
 };
 
-void sysdump_enable_watchdog(int on)
+int sysdump_enable_watchdog(int on)
 {
-	if (!sprd_wdt_probed)
-		return;
+	if (!sprd_wdt_probed) {
+		pr_warn("sysdump: SoC watchdog not probed, not %s\n",
+			on ? "started" : "stopped");
+		return -ENODEV;
+	}
 
 	if (on) {
 		sprd_wdt.wdt_enabled = 1;
@@ -487,6 +490,7 @@ void sysdump_enable_watchdog(int on)
 		sprd_wdt.wdt_enabled = 0;
 		sprd_wdt_stop();
 	}
+	return 0;
 }
 
 #define sprd_wdt_shutdown NULL

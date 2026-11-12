@@ -40,14 +40,33 @@ console-ramoops and dmesg-ramoops. The off state survived the reboot.
 
 ## Change
 
-`sysdump.c` applies the stock `off` path once from `late_initcall_sync`, after
-the PMIC watchdog and SoC watchdog drivers have probed (`sprd_pmic_wdt_ready()`
-added; `sysdump_enable_watchdog()` is a no-op until `sprd_wdt_sys` has probed),
-unless the command line has `sysdump=on` (then the stock `on` path is applied
-instead; `sysdump=off` is the default). `/proc/sprd_sysdump` on/off is
-unchanged (`sysdump_set_state()` is shared). The panic path is untouched.
+`sysdump.c` applies the stock `off` path once from `late_initcall_sync`
+(`sysdump_set_state()`, shared with `/proc/sprd_sysdump`), unless the command
+line has `sysdump=on` (then the stock `on` path is applied instead;
+`sysdump=off` is the default). The panic path is untouched.
 Lab use: add `sysdump=on` to the kernel command line, or write `on` at runtime.
 A userspace write of `on` at boot (`debug.sysdump.enabled=true`) still wins.
+
+`sysdump=on` (like the stock runtime `on` write) also stops the SoC watchdog
+(`sysdump_enable_watchdog(0)`); `off` starts it again.
+
+Drivers are not assumed to have probed: `late_initcall_sync` runs after the
+device_initcall probes only if they bound, which is checked, not guaranteed.
+
+* PMIC watchdog (`sprd_pmic_wdt_ready()`) not probed: nothing is applied
+  (`sysdump_status`, reboot flag, PMIC dump bit and SoC watchdog stay as they
+  were) and an error line says so.
+* SoC watchdog (`sprd_wdt_sys`) not probed: the PMIC bit, reboot flag and
+  `sysdump_status` are applied, the watchdog start/stop is not; a warning and
+  an error line say so.
+* PMIC register read/write (ADI) failure: `set_sysdump_enable()` returns the
+  error, `sysdump_status`, reboot flag and watchdog are not touched, the failure
+  is logged.
+
+The whole transition runs under one mutex, `sysdump_state_lock`, shared by the
+boot hook and the `/proc` write (sleeping context only; the panic path never
+takes it). The probe-time default (`CONFIG_SPRD_DEBUG`) runs before either and
+is unlocked.
 
 ## Not verified
 

@@ -24,6 +24,7 @@
 #include <linux/miscdevice.h>
 #include <linux/mm.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/proc_fs.h>
 #include <linux/reboot.h>
@@ -129,13 +130,13 @@ static int sprd_sysdump_init;
 
 extern int sysdump_status;
 extern void sprd_set_reboot_mode(const char *cmd);
-extern void set_sysdump_enable(int on);
+extern int set_sysdump_enable(int on);
 extern bool sprd_pmic_wdt_ready(void);
 
 #ifdef CONFIG_SPRD_WATCHDOG_SYS
-extern void sysdump_enable_watchdog(int on);
+extern int sysdump_enable_watchdog(int on);
 #else
-#define sysdump_enable_watchdog(on) do { } while (0)
+#define sysdump_enable_watchdog(on) (0)
 #endif
 
 void sprd_debug_check_crash_key(unsigned int code, int value)
@@ -585,19 +586,39 @@ static int sprd_sysdump_open(struct inode *inode, struct file *file)
 }
 
 
-static void sysdump_set_state(int on)
+/*
+ * Serializes the whole on/off transition (PMIC bit, reboot flag, status,
+ * SoC watchdog) between the boot hook and the /proc write.  Sleeping context
+ * only: the panic path must not take it.
+ */
+static DEFINE_MUTEX(sysdump_state_lock);
+
+/*
+ * Returns 0 when everything was applied; the PMIC bit failing leaves the
+ * state untouched, the SoC watchdog missing (-ENODEV) leaves only the
+ * watchdog part unapplied.
+ */
+static int sysdump_set_state(int on)
 {
-	if (on) {
-		sysdump_status = 1;
-		sprd_set_reboot_mode("dumpenable");
-		set_sysdump_enable(1);
-		sysdump_enable_watchdog(0);
-	} else {
-		sysdump_status = 0;
-		sprd_set_reboot_mode("dumpdisable");
-		set_sysdump_enable(0);
-		sysdump_enable_watchdog(1);
+	int ret, wdt_ret;
+
+	mutex_lock(&sysdump_state_lock);
+	ret = set_sysdump_enable(on);
+	if (ret) {
+		pr_err("sysdump: PMIC dump bit not %s (%d), state left as is\n",
+			on ? "set" : "cleared", ret);
+		goto out;
 	}
+	sprd_set_reboot_mode(on ? "dumpenable" : "dumpdisable");
+	sysdump_status = on ? 1 : 0;
+	wdt_ret = sysdump_enable_watchdog(on ? 0 : 1);
+	if (wdt_ret)
+		pr_warn("sysdump: SoC watchdog not %s (%d), rest of the state applied\n",
+			on ? "stopped" : "started", wdt_ret);
+	ret = wdt_ret;
+out:
+	mutex_unlock(&sysdump_state_lock);
+	return ret;
 }
 
 static ssize_t sprd_sysdump_write(struct file *file, const char __user *buf,
@@ -647,16 +668,26 @@ static int __init sysdump_boot_setup(char *str)
 }
 early_param("sysdump", sysdump_boot_setup);
 
-/* after the PMIC and SoC watchdog drivers have probed (device_initcall) */
+/*
+ * The PMIC and SoC watchdog drivers are expected to have probed by now
+ * (device_initcall); report which part of the state was not applied if not.
+ */
 static int __init sysdump_apply_boot_state(void)
 {
+	const char *state = sysdump_boot_on ? "on" : "off";
+	int ret;
+
 	if (!sprd_pmic_wdt_ready()) {
-		pr_warn("sysdump: PMIC watchdog not ready, boot state left as is\n");
+		pr_err("sysdump: PMIC watchdog not probed, boot state %s not applied (sysdump_status %d, reboot flag, PMIC dump bit and SoC watchdog left as is)\n",
+			state, sysdump_status);
 		return 0;
 	}
 
-	pr_info("sysdump: boot state %s\n", sysdump_boot_on ? "on" : "off");
-	sysdump_set_state(sysdump_boot_on);
+	pr_info("sysdump: boot state %s\n", state);
+	ret = sysdump_set_state(sysdump_boot_on);
+	if (ret)
+		pr_err("sysdump: boot state %s only partly applied (%d), see above; sysdump_status %d\n",
+			state, ret, sysdump_status);
 	return 0;
 }
 late_initcall_sync(sysdump_apply_boot_state);
