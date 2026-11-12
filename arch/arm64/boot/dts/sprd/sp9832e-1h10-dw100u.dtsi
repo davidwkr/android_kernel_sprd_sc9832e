@@ -843,3 +843,27 @@
 	clocks = <&rpll CLK_AUDIO_GATE>;
 	clock-names = "tuned_26m";
 };
+
+/*
+ * Stock DW100U has eight seth channels (7, 8, 9, 18, 19, 20, 24, 25). The
+ * 4.14 modem dtsi adds 26-31; each takes a 12 KB sipx channel from the
+ * sipc-lte smem pool, which then has too little left for the voice audio
+ * buffers (saudio, 6 x 12 KB). On the DM63 they failed to allocate.
+ */
+/ {
+	aliases {
+		/delete-property/ seth8;
+		/delete-property/ seth9;
+		/delete-property/ seth10;
+		/delete-property/ seth11;
+		/delete-property/ seth12;
+		/delete-property/ seth13;
+	};
+};
+
+/delete-node/ &seth_ch26;
+/delete-node/ &seth_ch27;
+/delete-node/ &seth_ch28;
+/delete-node/ &seth_ch29;
+/delete-node/ &seth_ch30;
+/delete-node/ &seth_ch31;
