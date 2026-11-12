@@ -1595,6 +1595,19 @@ static int sprd_platform_compr_pointer(struct snd_compr_stream *cstream,
 	return 0;
 }
 
+#if COMPR_DUMP_DEBUG
+/* KERNEL_DS only around the write: copy_from_user() must keep user limits */
+static void sprd_compr_dump_write(struct file *file, const void *buf,
+				  size_t len)
+{
+	mm_segment_t old_fs = get_fs();
+
+	set_fs(get_ds());
+	vfs_write(file, (const char __user *)buf, len, &file->f_pos);
+	set_fs(old_fs);
+}
+#endif
+
 static int sprd_platform_compr_copy(struct snd_compr_stream *cstream,
 						char __user *buf,
 								size_t count)
@@ -1620,13 +1633,6 @@ static int sprd_platform_compr_copy(struct snd_compr_stream *cstream,
 		srtd->app_pointer,
 		srtd->buffer_size,
 		srtd->received_total);
-
-#if COMPR_DUMP_DEBUG
-	mm_segment_t *old_fs = 0;
-
-	old_fs = get_fs();
-	set_fs(get_ds());
-#endif
 
 	if (srtd->received_stage0 < runtime->fragment_size) {
 		bytes_available
@@ -1663,17 +1669,14 @@ static int sprd_platform_compr_copy(struct snd_compr_stream *cstream,
 			return -EFAULT;
 		srtd->app_pointer += count;
 #if COMPR_DUMP_DEBUG
-		vfs_write(srtd->log_file1,
-						dstn,
-						count,
-						&srtd->log_file1->f_pos);
+		sprd_compr_dump_write(srtd->log_file1, dstn, count);
 #endif
 	} else {
 		copy = srtd->buffer_size - srtd->app_pointer;
 		if (unalign_copy_from_user(dstn, buf, copy))
 			return -EFAULT;
 #if COMPR_DUMP_DEBUG
-		vfs_write(srtd->log_file1, dstn, copy, &srtd->log_file1->f_pos);
+		sprd_compr_dump_write(srtd->log_file1, dstn, copy);
 #endif
 
 		if (unalign_copy_from_user(srtd->buffer,
@@ -1682,16 +1685,11 @@ static int sprd_platform_compr_copy(struct snd_compr_stream *cstream,
 			return -EFAULT;
 		srtd->app_pointer = count - copy;
 #if COMPR_DUMP_DEBUG
-		vfs_write(srtd->log_file1,
-						srtd->buffer,
-						count - copy,
-						&srtd->log_file1->f_pos);
+		sprd_compr_dump_write(srtd->log_file1, srtd->buffer,
+				      count - copy);
 #endif
 	}
 
-#if COMPR_DUMP_DEBUG
-	set_fs(old_fs);
-#endif
 	srtd->received_stage1 += count;
 
 copy_done:
