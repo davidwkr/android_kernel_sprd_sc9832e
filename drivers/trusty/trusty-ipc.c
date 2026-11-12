@@ -37,6 +37,7 @@
 #define TXBUF_TIMEOUT			15000
 
 #define MAX_SRV_NAME_LEN		256
+#define MAX_RX_BACKLOG			128
 #define MAX_DEV_NAME_LEN		32
 
 #define DEFAULT_MSG_BUF_SIZE		PAGE_SIZE
@@ -734,6 +735,7 @@ struct tipc_dn_chan {
 	wait_queue_head_t readq;
 	struct completion reply_comp;
 	struct list_head rx_msg_queue;
+	uint rx_msg_cnt; /* messages on rx_msg_queue */
 };
 
 static int dn_wait_for_reply(struct tipc_dn_chan *dn, int timeout)
@@ -774,18 +776,23 @@ struct tipc_msg_buf *dn_handle_msg(void *data, struct tipc_msg_buf *rxbuf)
 
 	mutex_lock(&dn->lock);
 	if (dn->state == TIPC_CONNECTED) {
-		/* get new buffer */
-		newbuf = tipc_chan_get_rxbuf(dn->chan);
+		/* get new buffer, a reader that does not keep up is capped */
+		if (dn->rx_msg_cnt < MAX_RX_BACKLOG)
+			newbuf = tipc_chan_get_rxbuf(dn->chan);
+		else
+			newbuf = NULL;
 		if (newbuf) {
 			/* queue an old buffer and return a new one */
 			list_add_tail(&rxbuf->node, &dn->rx_msg_queue);
+			dn->rx_msg_cnt++;
 			wake_up_interruptible(&dn->readq);
 		} else {
 			/*
 			 * return an old buffer effectively discarding
 			 * incoming message
 			 */
-			pr_err("%s: discard incoming message\n", __func__);
+			pr_err_ratelimited("%s: discard incoming message\n",
+					   __func__);
 			newbuf = rxbuf;
 		}
 	}
@@ -1053,6 +1060,7 @@ static ssize_t tipc_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 
 	ret = len;
 	list_del(&mb->node);
+	dn->rx_msg_cnt--;
 	tipc_chan_put_rxbuf(dn->chan, mb);
 
 out:
