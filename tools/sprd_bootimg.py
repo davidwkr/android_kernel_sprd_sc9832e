@@ -24,6 +24,10 @@
 # le32) and, when dt_size is non-zero, the dt table plus its size.
 # The recipe is detected at unpack and stored in header.json.
 #
+# dt-bootargs additionally runs fdtget, fdtput and dtc (device-tree-compiler).
+#
+# dt-bootargs OLD NEW: see cmd_dt_bootargs.
+#
 # Only the python3 standard library is used. Input images are treated as
 # untrusted data: they are parsed, never executed. Run with "python3 -I".
 
@@ -31,8 +35,11 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import struct
+import subprocess
 import sys
+import tempfile
 
 MAGIC = b'ANDROID!'
 HDR = struct.Struct('<8s10I16s512s32s1024s')
@@ -637,6 +644,94 @@ def cmd_dt_table(a):
     return 0
 
 
+# --------------------------------------------------------- dt-bootargs ---
+
+def fdt_tool(name):
+    path = shutil.which(name)
+    if not path:
+        raise Error('%s (device-tree-compiler) not found in PATH' % name)
+    return path
+
+
+def run_fdt(argv):
+    r = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True,
+                       env={'PATH': os.environ.get('PATH', '/usr/bin')})
+    if r.returncode:
+        raise Error('%s failed: %s' % (os.path.basename(argv[0]),
+                                       r.stderr.decode('utf-8', 'replace')
+                                       .strip()))
+    return r.stdout
+
+
+def cmd_dt_bootargs(a):
+    """Replace a substring of /chosen/bootargs in every DTB of a SPRD DT
+    table with fdtput on the extracted blobs. The table header, the entry
+    fields (ids, revisions, offsets, slot sizes) and the zero padding stay;
+    a DTB that no longer fits its slot is refused. Each DTB must hold the
+    substring exactly once."""
+    if not a.old:
+        raise Error('empty --replace string')
+    dt = read_file(a.dt)
+    t = dt_entries(dt)
+    if not t:
+        raise Error('%s is not a SPRD DT table' % a.dt)
+    ver, ents = t
+    fdtget, fdtput, dtc = (fdt_tool(x) for x in ('fdtget', 'fdtput', 'dtc'))
+    out = bytearray(dt)
+    done = []
+    with tempfile.TemporaryDirectory(prefix='sprd_bootimg.') as tmp:
+        for i, e in enumerate(ents):
+            off, slot = e[3], e[4]
+            if off < 12 + len(ents) * DT_ENTRY.size or \
+                    off + slot > len(dt):
+                raise Error('DTB %d: bad offset or size' % i)
+            blob = dt[off:off + slot]
+            total, _ = fdt_root_props(blob)
+            if total > slot:
+                raise Error('DTB %d: totalsize over its slot' % i)
+            if any(blob[total:]):
+                raise Error('DTB %d: non-zero data after the blob, cannot '
+                            'keep the padding' % i)
+            src = os.path.join(tmp, 'in%d.dtb' % i)
+            dst = os.path.join(tmp, 'out%d.dtb' % i)
+            with open(src, 'wb') as f:
+                f.write(blob[:total])
+            cur = run_fdt([fdtget, '-t', 's', src, '/chosen', 'bootargs'])
+            cur = cur.decode('utf-8', 'replace').rstrip('\n')
+            n = cur.count(a.old)
+            if n != 1:
+                raise Error('DTB %d: %r found %d times in the bootargs, '
+                            'need exactly once' % (i, a.old, n))
+            new = cur.replace(a.old, a.new)
+            shutil.copyfile(src, dst)
+            run_fdt([fdtput, '-t', 's', dst, '/chosen', 'bootargs', new])
+            nb = read_file(dst)
+            ntotal, _ = fdt_root_props(nb)
+            if ntotal != len(nb) or ntotal > slot:
+                raise Error('DTB %d: edited blob (%d bytes) does not fit '
+                            'its %d byte slot' % (i, len(nb), slot))
+            # only the bootargs property may differ
+            ts = [run_fdt([dtc, '-q', '-I', 'dtb', '-O', 'dts', p])
+                  .decode('utf-8', 'replace').splitlines()
+                  for p in (src, dst)]
+            diff = [(x, y) for x, y in zip(*ts) if x != y]
+            if len(ts[0]) != len(ts[1]) or len(diff) != 1 or \
+                    'bootargs' not in diff[0][0]:
+                raise Error('DTB %d: the edit changed more than bootargs' % i)
+            if run_fdt([fdtget, '-t', 's', dst, '/chosen', 'bootargs']) \
+                    .decode('utf-8', 'replace').rstrip('\n') != new:
+                raise Error('DTB %d: bootargs readback mismatch' % i)
+            out[off:off + slot] = nb.ljust(slot, b'\0')
+            done.append((i, cur, new))
+    assert len(out) == len(dt)
+    write_file(a.out, bytes(out))
+    for i, cur, new in done:
+        print('DTB %d bootargs: %s -> %s' % (i, cur, new))
+    print('dt table %s: %d DTB(s), layout and ids unchanged' %
+          (a.out, len(done)))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0]
                                  if __doc__ else None)
@@ -671,7 +766,18 @@ def main():
     p.add_argument('dtb', help='new DTB')
     p.add_argument('out')
     p.set_defaults(fn=cmd_dt_table)
+    p = sub.add_parser('dt-bootargs',
+                       help='replace a substring of /chosen/bootargs in '
+                            'every DTB of a SPRD DT table')
+    p.add_argument('dt', help='DT table (the dt file of unpack)')
+    p.add_argument('out')
+    p.add_argument('--replace', nargs=2, required=True,
+                   metavar=('OLD', 'NEW'), dest='pair',
+                   help='OLD must occur exactly once in each DTB')
+    p.set_defaults(fn=cmd_dt_bootargs)
     a = ap.parse_args()
+    if getattr(a, 'pair', None):
+        a.old, a.new = a.pair
     try:
         return a.fn(a)
     except (Error, OSError, struct.error, ValueError, UnicodeError,
