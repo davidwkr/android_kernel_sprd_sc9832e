@@ -437,6 +437,29 @@ static struct tipc_chan *vds_lookup_channel(struct tipc_virtio_dev *vds,
 	return chan;
 }
 
+/*
+ * Take one channel out of the address IDR and hand the IDR's reference to the
+ * caller. The channel keeps no local address, so a later tipc_chan_destroy()
+ * does not put that reference again, and the next call finds the next channel
+ * instead of this one.
+ */
+static struct tipc_chan *vds_detach_any_channel(struct tipc_virtio_dev *vds)
+{
+	int id;
+	struct tipc_chan *chan = NULL;
+
+	mutex_lock(&vds->lock);
+	id = idr_for_each(&vds->addr_idr, _match_any, NULL);
+	if (id > 0) {
+		chan = idr_find(&vds->addr_idr, id);
+		idr_remove(&vds->addr_idr, id);
+		chan->local = 0;
+	}
+	mutex_unlock(&vds->lock);
+
+	return chan;
+}
+
 static struct tipc_chan *vds_create_channel(struct tipc_virtio_dev *vds,
 					    const struct tipc_chan_ops *ops,
 					    void *ops_arg)
@@ -1275,8 +1298,12 @@ static void _go_offline(struct tipc_virtio_dev *vds)
 	/* wakeup all waiters */
 	wake_up_interruptible_all(&vds->sendq);
 
-	/* shutdown all channels */
-	while ((chan = vds_lookup_channel(vds, TIPC_ANY_ADDR))) {
+	/*
+	 * shutdown all channels: detach each one from the IDR, a channel whose
+	 * fd is still open stays in it until tipc_release() and would be found
+	 * again here
+	 */
+	while ((chan = vds_detach_any_channel(vds))) {
 		mutex_lock(&chan->lock);
 		chan->state = TIPC_STALE;
 		chan->remote = 0;
