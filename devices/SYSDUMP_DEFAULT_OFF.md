@@ -1,0 +1,55 @@
+# sysdump default-off (4.4)
+
+## Symptom (DM63, our 4.4 v8, hardware)
+
+With `/proc/sprd_sysdump` showing `sysdump_status = 1`, `echo c >
+/proc/sysrq-trigger` leaves the watch at the boot logo after the reboot (no
+USB, needs a forced power-off) and the pstore console record is lost. After
+`echo off > /proc/sprd_sysdump` (init.common.rc does this on
+`debug.sysdump.enabled=false`) the same panic reboots in 20 s and pstore keeps
+console-ramoops and dmesg-ramoops. The off state survived the reboot.
+
+## Kernel evidence
+
+* `sysdump.c` `sprd_sysdump_write()`: `on` -> `sysdump_status = 1`,
+  `sprd_set_reboot_mode("dumpenable")`, `set_sysdump_enable(1)`,
+  `sysdump_enable_watchdog(0)`; `off` does the opposite.
+* `sprd_pmic_wdt.c`: `sprd_set_reboot_mode()` only edits the in-RAM
+  `reboot_mode_flag` (`dumpenable` ORs `HWRST_STATUS_SYSDUMP` 0x200,
+  `dumpdisable` clears it). `set_sysdump_enable()` read-modify-writes the same
+  bit directly in the PMIC register `ANA_REG_GLB_POR_RST_MONITOR` over ADI.
+  `arch_reset()` (and `psci_sys_reset()`, which passes `reboot_mode_flag` to
+  firmware) writes `reboot_mode_flag` to that register on every restart;
+  `sprd_restart_prepare()` ORs the mode of the reboot command into it.
+* `sysdump_enter()` (called from `panic()`) runs regardless of the status: it
+  fills the sysdump info block (magic `SPRD_SYSDUMP_119`, cpu regs, reason),
+  then `machine_restart("panic")`, i.e. `HWRST_STATUS_PANIC` 0x80 is written
+  with or without the 0x200 bit.
+* `sprd_reboot_probe()` sets `sysdump_status = 1` and the 0x200 bit when
+  `CONFIG_SPRD_DEBUG` and `CONFIG_SPRD_SYSDUMP` are both set (dm63_defconfig
+  sets both).
+* The 0x200 bit lives in the PMIC, a power domain that the SoC watchdog reset
+  does not clear, so it is what the next boot stage sees. Bootloader behaviour
+  is inferred (no bootloader source here): panic (0x80) + 0x200 -> dump mode,
+  which waits for a host (the logo hang); panic without 0x200 -> normal boot.
+  `sysdump_status` itself is plain kernel RAM and is not what "survives": after
+  a reboot it is re-derived (probe default, or a later userspace write; the
+  stock init.common.rc only writes on `debug.sysdump.enabled`, and mirrors the
+  result into `persist.sys.sysdump`, which nothing in the boot ramdisk reads
+  back).
+
+## Change
+
+`sysdump.c` applies the stock `off` path once from `late_initcall_sync`, after
+the PMIC watchdog and SoC watchdog drivers have probed (`sprd_pmic_wdt_ready()`
+added; `sysdump_enable_watchdog()` is a no-op until `sprd_wdt_sys` has probed),
+unless the command line has `sysdump=on` (then the stock `on` path is applied
+instead; `sysdump=off` is the default). `/proc/sprd_sysdump` on/off is
+unchanged (`sysdump_set_state()` is shared). The panic path is untouched.
+Lab use: add `sysdump=on` to the kernel command line, or write `on` at runtime.
+A userspace write of `on` at boot (`debug.sysdump.enabled=true`) still wins.
+
+## Not verified
+
+No device test of this change. Expected on hardware: `sysdump_status = 0` right
+after boot, panic reboots by itself and pstore keeps its records.

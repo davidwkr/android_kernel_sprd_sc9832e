@@ -130,6 +130,7 @@ static int sprd_sysdump_init;
 extern int sysdump_status;
 extern void sprd_set_reboot_mode(const char *cmd);
 extern void set_sysdump_enable(int on);
+extern bool sprd_pmic_wdt_ready(void);
 
 #ifdef CONFIG_SPRD_WATCHDOG_SYS
 extern void sysdump_enable_watchdog(int on);
@@ -584,6 +585,21 @@ static int sprd_sysdump_open(struct inode *inode, struct file *file)
 }
 
 
+static void sysdump_set_state(int on)
+{
+	if (on) {
+		sysdump_status = 1;
+		sprd_set_reboot_mode("dumpenable");
+		set_sysdump_enable(1);
+		sysdump_enable_watchdog(0);
+	} else {
+		sysdump_status = 0;
+		sprd_set_reboot_mode("dumpdisable");
+		set_sysdump_enable(0);
+		sysdump_enable_watchdog(1);
+	}
+}
+
 static ssize_t sprd_sysdump_write(struct file *file, const char __user *buf,
 				size_t count, loff_t *data)
 {
@@ -602,22 +618,48 @@ static ssize_t sprd_sysdump_write(struct file *file, const char __user *buf,
 
 		if (!strncmp(sysdump_buf, "on", 2)) {
 			pr_emerg("sprd_sysdump_write: enable user version sysdump!!!\n");
-			sysdump_status = 1;
-			sprd_set_reboot_mode("dumpenable");
-			set_sysdump_enable(1);
-			sysdump_enable_watchdog(0);
+			sysdump_set_state(1);
 		} else if (!strncmp(sysdump_buf, "off", 3)) {
 			pr_emerg("sprd_sysdump_write: disable user version sysdump!!!\n");
-			sysdump_status = 0;
-			sprd_set_reboot_mode("dumpdisable");
-			set_sysdump_enable(0);
-			sysdump_enable_watchdog(1);
+			sysdump_set_state(0);
 		}
 	}
 
 	pr_emerg("sprd_sysdump_write: end!!!\n");
 	return count;
 }
+
+/*
+ * A dump-enabled panic leaves the bootloader in dump mode (no USB, stuck at
+ * the logo) on a watch that has no host attached, so boot with the dump off
+ * unless the command line says sysdump=on.  /proc/sprd_sysdump still
+ * switches it at runtime.
+ */
+static int sysdump_boot_on;
+
+static int __init sysdump_boot_setup(char *str)
+{
+	if (str && !strcmp(str, "on"))
+		sysdump_boot_on = 1;
+	else if (str && !strcmp(str, "off"))
+		sysdump_boot_on = 0;
+	return 0;
+}
+early_param("sysdump", sysdump_boot_setup);
+
+/* after the PMIC and SoC watchdog drivers have probed (device_initcall) */
+static int __init sysdump_apply_boot_state(void)
+{
+	if (!sprd_pmic_wdt_ready()) {
+		pr_warn("sysdump: PMIC watchdog not ready, boot state left as is\n");
+		return 0;
+	}
+
+	pr_info("sysdump: boot state %s\n", sysdump_boot_on ? "on" : "off");
+	sysdump_set_state(sysdump_boot_on);
+	return 0;
+}
+late_initcall_sync(sysdump_apply_boot_state);
 
 
 static struct ctl_table sysdump_sysctl_table[] = {

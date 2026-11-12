@@ -111,6 +111,7 @@ struct sprd_wdt {
 } sprd_wdt;
 
 int wdt_flag = 0;
+static bool sprd_wdt_probed;
 
 int irq_timeout = 9;
 int reset_timeout = 12;
@@ -476,6 +477,9 @@ static const struct file_operations sprd_proc_fops = {
 
 void sysdump_enable_watchdog(int on)
 {
+	if (!sprd_wdt_probed)
+		return;
+
 	if (on) {
 		sprd_wdt.wdt_enabled = 1;
 		sprd_wdt_start();
@@ -624,6 +628,7 @@ static int sprd_wdt_probe(struct platform_device *pdev)
 	register_syscore_ops(&sprd_wdt_syscore_ops);
 
 	dev_info(&pdev->dev, "sprd wdt probe OK!\n");
+	sprd_wdt_probed = true;
 	return 0;
 }
 

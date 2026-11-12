@@ -78,6 +78,7 @@ static unsigned long sprd_wdt_base;
 unsigned int reboot_mode_flag;
 spinlock_t reboot_flag_lock;
 int sysdump_status; /* used by sysdump.c */
+static bool sprd_pmic_wdt_probed;
 
 #define WDG_LOAD_LOW		(sprd_wdt_base + 0x00)
 #define WDG_LOAD_HIGH		(sprd_wdt_base + 0x04)
@@ -148,6 +149,11 @@ void set_sysdump_enable(int on)
 		val &= ~(HWRST_STATUS_SYSDUMP);
 		sprd_adi_raw_write(reboot_device, ANA_RST_STATUS, val);
 	}
+}
+
+bool sprd_pmic_wdt_ready(void)
+{
+	return sprd_pmic_wdt_probed;
 }
 
 static inline void sprd_load_time_vale(unsigned int value)
@@ -250,6 +256,7 @@ static int sprd_reboot_probe(struct platform_device *pdev)
 	dev_info(&pdev->dev, "PMIC Watchdog probe OK!\n");
 	spin_lock_init(&reboot_flag_lock);
 	reboot_mode_flag = 0;
+	sprd_pmic_wdt_probed = true;
 
 #if defined(CONFIG_SPRD_DEBUG) && defined(CONFIG_SPRD_SYSDUMP)
 	pr_emerg("userdebug enable sysdump in default !!!\n");
