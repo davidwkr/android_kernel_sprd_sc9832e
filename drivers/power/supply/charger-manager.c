@@ -361,7 +361,7 @@ static int get_batt_cap(struct charger_manager *cm, int *cap)
 	if (ret)
 		return ret;
 
-	*cap = val.intval;
+	*cap = clamp(val.intval, 0, 100);
 	return 0;
 }
 
@@ -1722,6 +1722,9 @@ static int charger_get_property(struct power_supply *psy,
 		else
 			val->intval = 0;
 		break;
+	case POWER_SUPPLY_PROP_TECHNOLOGY:
+		val->intval = POWER_SUPPLY_TECHNOLOGY_LION;
+		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_AVG:
 		ret = get_batt_uV(cm, &val->intval);
 		break;
@@ -2016,6 +2019,7 @@ static enum power_supply_property default_charger_props[] = {
 	POWER_SUPPLY_PROP_STATUS,
 	POWER_SUPPLY_PROP_HEALTH,
 	POWER_SUPPLY_PROP_PRESENT,
+	POWER_SUPPLY_PROP_TECHNOLOGY,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 	POWER_SUPPLY_PROP_VOLTAGE_AVG,
 	POWER_SUPPLY_PROP_CAPACITY,
@@ -2977,11 +2981,6 @@ static int charger_manager_probe(struct platform_device *pdev)
 	}
 	if (desc->fullbatt_full_capacity == 0) {
 		dev_info(&pdev->dev, "Ignoring full-battery full capacity threshold as it is not supplied\n");
-	}
-
-	if (!desc->charger_regulators || desc->num_charger_regulators < 1) {
-		dev_err(&pdev->dev, "charger_regulators undefined\n");
-		return -EINVAL;
 	}
 
 	if (!desc->psy_charger_stat || !desc->psy_charger_stat[0]) {
