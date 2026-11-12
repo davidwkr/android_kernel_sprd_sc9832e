@@ -64,6 +64,15 @@ pin), so the same fix applies to DW100U, K18 and the other boards; they were not
    interrupt detector then disables a line that is stuck. With the pin high and no source bit a
    rate-limited warning is logged, so a storm shows in dmesg. A low pin without a flag is the
    release interrupt and is not warned about.
+3. The pin is sampled before the flags are read and again after servicing. If it moved
+   meanwhile (a new assertion may have latched after the read), up to 2 extra passes run before
+   arming for release, so a new assertion is not left unserviced until the release. The trigger
+   is always the opposite of the last sampled level; a fixed level is never used.
+4. I2C read and bank-selection errors are propagated, not turned into "no flags". On an error the
+   opposite level is still armed (no storm) and `flag_work` retries the flag read up to 3 times
+   at 50 ms, independent of pin transitions. The error path returns `IRQ_HANDLED` (a retry is
+   pending), not `IRQ_NONE`. The retry is cancelled in suspend (re-queued on resume if tries
+   remain) and in teardown after `free_irq()`.
 
 The interrupt stays enabled from probe, as in stock.
 
