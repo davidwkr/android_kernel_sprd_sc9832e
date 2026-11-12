@@ -86,8 +86,13 @@ static void check_all_vqs(struct work_struct *work)
 	struct trusty_vdev *tvdev;
 
 	list_for_each_entry(tvdev, &tctx->vdev_list, node) {
-		for (i = 0; i < tvdev->vring_num; i++)
-			vring_interrupt(0, tvdev->vrings[i].vq);
+		for (i = 0; i < tvdev->vring_num; i++) {
+			struct virtqueue *vq = READ_ONCE(tvdev->vrings[i].vq);
+
+			/* none after a failed driver probe or a driver remove */
+			if (vq)
+				vring_interrupt(0, vq);
+		}
 	}
 }
 
@@ -275,16 +280,24 @@ static void _del_vqs(struct virtio_device *vdev)
 	uint i;
 	struct trusty_vdev *tvdev = vdev_to_tvdev(vdev);
 	struct trusty_vring *tvr = &tvdev->vrings[0];
+	struct virtqueue *vq, *n;
+
+	for (i = 0; i < tvdev->vring_num; i++) {
+		/* dequeue kick_nop */
+		trusty_dequeue_nop(tvdev->tctx->dev->parent,
+				   &tvdev->vrings[i].kick_nop);
+
+		/* hide the vq from check_all_vqs() */
+		WRITE_ONCE(tvdev->vrings[i].vq, NULL);
+	}
+	/* wait for a pass that still saw them */
+	flush_work(&tvdev->tctx->check_vqs);
+
+	/* delete vqs */
+	list_for_each_entry_safe(vq, n, &vdev->vqs, list)
+		vring_del_virtqueue(vq);
 
 	for (i = 0; i < tvdev->vring_num; i++, tvr++) {
-		/* dequeue kick_nop */
-		trusty_dequeue_nop(tvdev->tctx->dev->parent, &tvr->kick_nop);
-
-		/* delete vq */
-		if (tvr->vq) {
-			vring_del_virtqueue(tvr->vq);
-			tvr->vq = NULL;
-		}
 		/* delete vring */
 		if (tvr->vaddr) {
 			free_pages_exact(tvr->vaddr, tvr->size);
