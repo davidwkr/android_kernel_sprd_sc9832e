@@ -110,7 +110,7 @@ kbase_devfreq_target(struct device *dev, unsigned long *target_freq, u32 flags)
 	 * driver honoured: never ask for more. Round down to an OPP at or
 	 * below the cap.
 	 */
-	if (kbase_platform_max_freq() && freq > kbase_platform_max_freq()) {
+	if (kbase_platform_max_freq() && freq >= kbase_platform_max_freq()) {
 		freq = kbase_platform_max_freq();
 		flags |= DEVFREQ_FLAG_LEAST_UPPER_BOUND;
 	}
