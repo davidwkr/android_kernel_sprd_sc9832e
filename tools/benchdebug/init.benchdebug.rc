@@ -1,18 +1,64 @@
-# BENCHDEBUG images only (devices/BENCH_DEBUG.md): start adbd without /data and
-# without persist.sys.usb.config. Properties, SELinux and the key check are
-# not touched: adbd still runs as shell and only accepts the key in /adb_keys.
+# BENCHDEBUG images only (devices/BENCH_DEBUG.md): bring adbd up without /data
+# and without persist.sys.usb.config. Properties, SELinux and the key check
+# are not touched: adbd still runs as shell and only accepts the key in
+# /adb_keys, which is an ADDITIONAL authorized key (a host already listed in
+# /data/misc/adb/adb_keys stays authorized once /data is mounted).
 #
-# init.usb.rc already created the gadget and the FunctionFS adb function
-# ("on init"); "on boot" sets sys.usb.configfs=1. The configfs rules in
-# init.usb.configfs.rc fire once sys.usb.config=adb, sys.usb.configfs=1 and
-# sys.usb.mode=normal all hold: they start adbd, which writes the FFS
-# descriptors (sys.usb.ffs.ready=1), then the UDC is bound. early-boot comes
-# after load_persist_props_action, so this value also wins over a stored
-# persist.sys.usb.config on this boot. init.sl8541e_1h10.usb.rc is empty in
-# the stock ramdisk.
+# Stage: "on late-init". init.rc runs "trigger early-fs / fs / post-fs / ..."
+# from its own late-init block; those are queued events, so every command of
+# every "on late-init" block (this one included) completes before the first
+# of them, and thus before init.common.rc "on fs" mounts /data. /system and
+# /vendor are early-mounted by first-stage init, so adbd and the vendor
+# default.prop (which carries sys.usb.controller) are already there.
+#
+# A setprop-based start (sys.usb.config=adb) would not do: a property change
+# is queued behind the triggers above, and adbd's own sys.usb.ffs.ready=1 too.
+# So the stock configfs rules are replayed as inline commands. The gadget g1,
+# its ffs.adb function and the functionfs mount on /dev/usb-ffs/adb are
+# already made by init.usb.rc "on init"; this block does what
+# init.usb.configfs.rc does for sys.usb.config=adb once ffs.ready=1, but
+# waits for the FFS endpoints (written by adbd) instead of the property.
+on late-init
+    start adbd
+    wait /dev/usb-ffs/adb/ep1 10
+    write /config/usb_gadget/g1/idVendor 0x18d1
+    write /config/usb_gadget/g1/idProduct 0x4EE7
+    write /config/usb_gadget/g1/bcdDevice 0x0404
+    write /config/usb_gadget/g1/bDeviceClass 0
+    write /config/usb_gadget/g1/configs/b.1/strings/0x409/configuration "adb"
+    rm /config/usb_gadget/g1/configs/b.1/f1
+    rm /config/usb_gadget/g1/configs/b.1/f2
+    rm /config/usb_gadget/g1/configs/b.1/f3
+    rm /config/usb_gadget/g1/configs/b.1/f4
+    rm /config/usb_gadget/g1/configs/b.1/f5
+    rm /config/usb_gadget/g1/configs/b.1/f6
+    rm /config/usb_gadget/g1/configs/b.1/f7
+    rm /config/usb_gadget/g1/configs/b.1/f8
+    rm /config/usb_gadget/g1/configs/b.1/f9
+    rm /config/usb_gadget/g1/configs/b.1/f10
+    rm /config/usb_gadget/g1/configs/b.1/f11
+    symlink /config/usb_gadget/g1/functions/ffs.adb /config/usb_gadget/g1/configs/b.1/f1
+    symlink /config/usb_gadget/g1/functions/gser.gs0 /config/usb_gadget/g1/configs/b.1/f2
+    symlink /config/usb_gadget/g1/functions/gser.gs1 /config/usb_gadget/g1/configs/b.1/f3
+    symlink /config/usb_gadget/g1/functions/gser.gs2 /config/usb_gadget/g1/configs/b.1/f4
+    symlink /config/usb_gadget/g1/functions/gser.gs3 /config/usb_gadget/g1/configs/b.1/f5
+    symlink /config/usb_gadget/g1/functions/gser.gs4 /config/usb_gadget/g1/configs/b.1/f6
+    symlink /config/usb_gadget/g1/functions/gser.gs5 /config/usb_gadget/g1/configs/b.1/f7
+    symlink /config/usb_gadget/g1/functions/gser.gs6 /config/usb_gadget/g1/configs/b.1/f8
+    symlink /config/usb_gadget/g1/functions/gser.gs7 /config/usb_gadget/g1/configs/b.1/f9
+    write /config/usb_gadget/g1/UDC ${sys.usb.controller}
+
+# Second chance, after /data and the persist properties: the vendor
+# persist.sys.usb.config=ptp reaches sys.usb.config in post-fs-data/
+# load_persist_props_action, and "on boot" then sets sys.usb.configfs=1,
+# which would make the ptp rule relink and rebind the gadget (the configfs
+# unlink of a bound function unbinds the UDC) without stopping adbd. Setting
+# sys.usb.config=adb here, after load_persist_props_action and before
+# "on boot", makes the stock adb rules fire instead once sys.usb.configfs=1
+# (start adbd, then on ffs.ready the same relink and UDC bind as above, now
+# through the property path), so adb is the final state on this boot. This
+# also covers a sys.usb.controller that was still unset at late-init.
+# sys.usb.controller itself is not set: the vendor default.prop provides it
+# (musb-hdrc.0.auto, the UDC of the MUSB glue).
 on early-boot
-    # sys.usb.controller is not set by any rc in the ramdisk (stock gets it
-    # from a later partition); the UDC of the MUSB glue is named after its
-    # platform device, as in the fstab path 20200000.usb/musb-hdrc.0.auto
-    setprop sys.usb.controller musb-hdrc.0.auto
     setprop sys.usb.config adb
