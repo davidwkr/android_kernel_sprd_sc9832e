@@ -412,13 +412,48 @@ after the clock driver is up (at most the single deferred-lookup line at probe t
 `dispc_clk_update`, and a screen off/on cycle without the Oops. If `no sprd,sys-ap-ahb regmap` or `read clk_.. failed
 (-517)` is printed at screen on, the dts change did not take effect.
 
+### Boots 7 and 8 (test/414-boot7): Android completes, Trusty and the modem up
+
+Test 7 (`dm63-414b7-184646`, boot 6 base + Trusty review round two + ADF D-PHY fix): `sys.boot_completed=1`.
+`trusty_ipc virtio0: GO_ONLINE received` and `/dev/trusty-ipc-dev0` at 0.81 s, no `system_server` crash loop. The ADF
+clock lines are printed once at probe (`-517`, deferred), and a screen off/on cycle gives `dphy suspend OK` /
+`dphy resume OK` without the Oops. The modem starts: all `cptl` segments written, `cptl start over, ret = 0` at
+10.4 s, `gsm.sim.state=READY`. Wi-Fi up.
+
+Two new problems on test 7:
+
+- **No cell at all** (`RIL_REQUEST_GET_CELL_INFO_LIST error: NO_NETWORK_FOUND`, `regState=0`, radio on). The boot log
+  had `vddrf125: disabling` at 1.47 s: `regulator_late_cleanup()` switched off the LTE RF supply. 4.4 never disables
+  unused regulators (no `disabling` lines in a 4.4 boot), so it stays on from the bootloader; stock does not mark it
+  `sprd,default-on` either. Fix: `vddrf125` `regulator-always-on` (branch `fixes/414-vddrf125`). Test 8
+  (`dm63-414b8-*`): `gsm.network.type=LTE`, the modem camps on an LTE cell (`CellInfoLte mRegistered=YES`); the bench
+  SIM is not active, so registration ends in "Emergency calls only". 4.14 still switches off `vddsim2` and
+  `vddcammot` (unused on DM63).
+- **saudio warnings** at 11 s: `failed to alloc smem from gen pool`, `prealloc smem error`, then four
+  `Trying to vfree() nonexistent vm area` warnings from `saudio_pcm_lib_preallocate_free_for_all()`. The sipc-lte
+  smem pool (debugfs `sipc/smem`) had `total=0x3d0000, used=0x3cb000, free=0x7000`; 14 seth channels took 14 x 12 KB
+  sipx channels, stock DM63 has 8. Fixes (branch `fixes/414-saudio`): drop seth channels 26-31 and aliases
+  seth8-13; free the saudio buffers with `shmem_ram_unmap()` (they are `vm_map_ram()` mappings, `iounmap()` finds no
+  vm area); `shmem_ram_vmap()` returns NULL without keeping a record when `vm_map_ram()` fails.
+
+No sound card on test 8: `sprd_codec_probe: Parse 'digital-codec' failed!`, probe -22, `No soundcards found`. The 4.14
+DM63 dts had no audio nodes. Fix (branch `fixes/414-audio-dt`): include `sprd-sound-sharkl.dtsi`, link the digital
+codec, enable headset, the `sprdphone` and `all-i2s` cards and i2s0 with the stock DM63 values (smartamp boost
+gpios 27/85, pcm `memory-region` to `audio_dma_reserved`, vaudio `tuned_26m` = rpll audio gate).
+
+Battery reporting on 4.14: `sc27xx-fgu` has type `Unknown` and `capacity=101`; `dumpsys battery` shows AC and USB
+powered at once.
+
+Test 8 soak (charging on the cable, screen off/on every 30 min): stable, no new kernel error lines, 42-45 C, about
+1 GB available.
+
+Images: test 9 = test 8 + audio dt; test 10 = test 9 + saudio fixes (built, not yet run).
+
 ### Open blockers for a clean boot
 
-1. eMMC Auto-CMD/command timeouts in HS400ES: not seen in the fourth boot (0 errors).
-2. SIGHUP of the Trusty client daemons: sender unknown, userspace (see the section above for what to collect).
-3. Modem side not up (`sblock/spipe/saudio not ready`, `dfs_msg` failures, `WCN module have not open`): CP start
-   never reached or SIPC not opened; the cproc start path now logs.
-4. Display with the three fixes above and the D-PHY glue fix is untested; `sprd_dispc_wb_buf_alloc()` still returns
-   -ENOTSUPP.
-5. Reboot: the normal path is untested; the `Hardware spinlock [0] lock failed!` from the battery work can also make
-   the restart handler's ADI writes fail silently.
+1. eMMC Auto-CMD/command timeouts in HS400ES: not seen since the DAT0 `card_busy()` fix.
+2. Audio (test 10): sound card probe, playback, and voice audio over saudio are untested.
+3. Registration, data and calls need an active SIM.
+4. H.264 encoder (`H264EncPreInit` failed) still open.
+5. Battery reporting (above); USB plug/unplug status, deep sleep on battery, AOD, palm cover and a sysrq panic
+   reboot are untested on 4.14.
