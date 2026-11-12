@@ -10,7 +10,7 @@ SFD=${SFD:?set SFD to the directory with the stock boot images}
 OUT=${OUT:-$HOME/.cache}
 mkdir -p $OUT/tmp-build
 if [ "${BENCH_DEBUG:-0}" = 1 ]; then
-  python3 -I tools/sprd_adbkey_check.py "${ADB_PUBKEY:-}" || { echo "BENCH_DEBUG=1 needs ADB_PUBKEY=<...>/adbkey.pub"; exit 1; }
+  python3 -I "$SRC/tools/sprd_adbkey_check.py" "${ADB_PUBKEY:-}" || { echo "BENCH_DEBUG=1 needs ADB_PUBKEY=<...>/adbkey.pub"; exit 1; }
 fi
 cd $SRC
 echo "source $(git log --oneline -1)"
