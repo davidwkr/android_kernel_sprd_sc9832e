@@ -91,9 +91,10 @@ kbase_devfreq_target(struct device *dev, unsigned long *target_freq, u32 flags)
 	 * The OPP table goes up to 680 MHz, but the board limit is
 	 * "sprd,dfs-range-max" (600 MHz on the watches), which the stock
 	 * driver honoured: never ask for more. Round down to an OPP at or
-	 * below the cap.
+	 * below the cap; a request equal to the cap is floored too, as the
+	 * ceiling lookup would pick one above it if the cap OPP is disabled.
 	 */
-	if (kbase_platform_max_freq() && freq > kbase_platform_max_freq()) {
+	if (kbase_platform_max_freq() && freq >= kbase_platform_max_freq()) {
 		freq = kbase_platform_max_freq();
 		flags |= DEVFREQ_FLAG_LEAST_UPPER_BOUND;
 	}
@@ -107,6 +108,21 @@ kbase_devfreq_target(struct device *dev, unsigned long *target_freq, u32 flags)
 	rcu_read_lock();
 #endif
 	opp = devfreq_recommended_opp(dev, &freq, flags);
+#ifdef MALI_PLATFORM_SHARKLE
+	/*
+	 * devfreq_recommended_opp() falls back from the floor to the ceiling
+	 * when no available OPP exists at or below the cap, so check the
+	 * result: if it is above the cap, look strictly below it, or fail.
+	 */
+	if (!IS_ERR_OR_NULL(opp) && kbase_platform_max_freq() &&
+			freq > kbase_platform_max_freq()) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
+		dev_pm_opp_put(opp);
+#endif
+		freq = kbase_platform_max_freq();
+		opp = dev_pm_opp_find_freq_floor(dev, &freq);
+	}
+#endif
 	if (IS_ERR_OR_NULL(opp)) {
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
 		rcu_read_unlock();

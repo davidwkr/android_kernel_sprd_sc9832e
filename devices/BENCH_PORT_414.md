@@ -18,8 +18,16 @@ watches (DM63, DW100U silver). Nothing here was run on a device; the result is a
 4.14 `drivers/gpu/arm/midgard_r21p0/backend/gpu/mali_kbase_devfreq.c` had the same `kbase_devfreq_target()`:
 `freq = *target_freq;` followed straight by `devfreq_recommended_opp(dev, &freq, flags)`, with no use of
 `gpu_dfs_ctx.freq_range_max` (sharkle platform file). `kbase_platform_max_freq()` is added and the request is clamped
-to it. Only `8585d3aa2d18` is ported. The follow-up for the floor/ceiling fallback edge case is being made on
-`fixes/mali-thermal-boost-44` by another worker and is **not** in this branch; port it when it lands.
+to it. `8585d3aa2d18` is ported, plus `305bad276f41` from `fixes/mali-thermal-boost-44` (hand-resolved: the 4.14
+OPP core returns a referenced OPP, so the first one is `dev_pm_opp_put()` before the floor retry): an OPP above
+`sprd,dfs-range-max` is never kept; the lookup is retried as a strict floor and fails if none exists. Strengthened
+beyond the 4.4 commit: the floor lookup is forced when the request is `>=` the cap (a request equal to the cap with
+normal flags could round up above it when the cap OPP is unavailable).
+
+4.4 (`fixes/mali-thermal-boost-44`, worktree in use by another build, not touched): change `freq >
+kbase_platform_max_freq()` to `freq >= kbase_platform_max_freq()` in the first cap check of
+`drivers/gpu/arm/midgard_r21p0/backend/gpu/mali_kbase_devfreq.c` (comment: request equal to the cap is floored too).
+The post-lookup check already exists there.
 
 ## 3. SC7A22
 
@@ -62,3 +70,13 @@ The default build uses `sp9832e-1h10-{dm63,dw100u-silver}-adf.dtb` (stock `logle
 (`merge_config.sh -m`, `olddefconfig`), `O=` in a temporary directory, `Image` and the dm63 / dw100u-silver adf DTBs:
 exit 0. Four warnings, none in a touched file (host `modpost.c`, `dtc` `dtbo_merge_check`, `dtc.c`, and
 `dpu_lite_r1p0.c` misleading indentation, all in untouched code). The build directory was deleted; no image was packed.
+
+## 4. Review fixes
+
+- SC7A22 screen notifier: the registration, callback and both unregistration guards in `sc7a22.c` now use
+  `CONFIG_SPRD_PANEL_NOTIFIER` instead of `CONFIG_DRM_SPRD`. `sprd_adf.c` calls the same `sprd_panel_notify()` chain
+  (ON/OFF) that the DRM driver does, so with the ADF config the key is no longer suppressed. Merged stock81 + ADF
+  config: `SPRD_PANEL_NOTIFIER=y`, `ADF_SPRD=y`, `DRM_SPRD` unset, `SENSORS_SC7A22=y`.
+- GPU cap edge case: see section 2.
+- Build (stock81 merged config, temp `O=`, deleted): `Image` rc 0, no warnings in `sc7a22.c` or
+  `mali_kbase_devfreq.c`.

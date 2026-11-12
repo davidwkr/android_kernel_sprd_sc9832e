@@ -212,9 +212,9 @@ The stock misc device is named `sc7a22` with an ioctl that returns 0 (`sc7a22_un
   `<linux/sprd_panel_notifier.h>` (`drivers/gpu/drm/sprd/sprd_panel_notifier.c`):
   `sprd_panel_notifier_register()` / `_unregister()`, events `SPRD_PANEL_EVENT_ON` and
   `SPRD_PANEL_EVENT_OFF`, and `sprd_panel_screen_is_on()` for the last state (true before the
-  first event). The driver registers on it when `CONFIG_DRM_SPRD` is enabled
-  (`SENSORS_SC7A22` has `depends on DRM_SPRD || !DRM_SPRD`, so it cannot be built in with a
-  modular sprd DRM). Without `CONFIG_DRM_SPRD` the screen is taken as on and the raise-to-wake
+  first event). The driver registers on it when `CONFIG_SPRD_PANEL_NOTIFIER` is set (selected by
+  `DRM_SPRD` and by `ADF_SPRD`, which sends the same events from its DPMS on / off, so the key
+  works with either display stack). Without it the screen is taken as on and the raise-to-wake
   key is never sent.
 - Where the events come from: `sprd_dsi_encoder_enable()` / `_disable()`, after `dsi_lock` is
   released (process context, the chain may sleep). Every blank, unblank, DPMS and system

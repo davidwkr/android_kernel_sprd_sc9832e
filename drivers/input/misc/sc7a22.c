@@ -666,12 +666,13 @@ out:
 	mutex_unlock(&data->irq_lock);
 }
 
-#if IS_ENABLED(CONFIG_DRM_SPRD)
+#if IS_ENABLED(CONFIG_SPRD_PANEL_NOTIFIER)
 /*
  * Screen state. The stock kernel used the ADF blank notifier (DPMS on / off);
- * the 4.14 equivalent is the sprd DRM panel notifier, sent when the DSI
- * encoder is enabled / disabled. Without the sprd DRM driver the screen is
- * assumed on and the raise-to-wake key is never sent. See
+ * the 4.14 equivalent is the sprd panel notifier, sent by the sprd DRM driver
+ * (DSI encoder enable / disable) and by the ADF one (DPMS on / off). Without
+ * either display driver the screen is assumed on and the raise-to-wake key
+ * is never sent. See
  * devices/SC7A22_INTERFACE.md.
  */
 static int sc7a22_panel_notify(struct notifier_block *nb,
@@ -1158,7 +1159,7 @@ static void sc7a22_cleanup(struct sc7a22_data *data)
 				   &sc7a22_attribute_group);
 	if (data->misc_registered)
 		misc_deregister(&data->miscdev);
-#if IS_ENABLED(CONFIG_DRM_SPRD)
+#if IS_ENABLED(CONFIG_SPRD_PANEL_NOTIFIER)
 	if (data->panel_registered)
 		sprd_panel_notifier_unregister(&data->panel_nb);
 #endif
@@ -1264,7 +1265,7 @@ static int sc7a22_probe(struct i2c_client *client,
 	mutex_init(&data->irq_lock);
 	atomic_set(&data->enabled, 0);
 	INIT_DELAYED_WORK(&data->work, sc7a22_work);
-#if IS_ENABLED(CONFIG_DRM_SPRD)
+#if IS_ENABLED(CONFIG_SPRD_PANEL_NOTIFIER)
 	data->panel_nb.notifier_call = sc7a22_panel_notify;
 	data->panel_nb.priority = 1000;
 #endif
@@ -1313,7 +1314,7 @@ static int sc7a22_probe(struct i2c_client *client,
 		goto err_cleanup;
 	data->misc_registered = true;
 
-#if IS_ENABLED(CONFIG_DRM_SPRD)
+#if IS_ENABLED(CONFIG_SPRD_PANEL_NOTIFIER)
 	/* the callback gets the current screen state during registration */
 	if (!sprd_panel_notifier_register(&data->panel_nb))
 		data->panel_registered = true;
