@@ -8,14 +8,17 @@ Two aids, in different images:
 
 | Aid | Normal test image | `*_BENCHDEBUG.img` |
 |---|---|---|
-| `loglevel=7` in the DT bootargs (instead of `loglevel=1`) | yes | yes |
-| Crash log kept in RAM (4.14 only: `-ramoops` DTB, `watch_414_ramoops.fragment`; the stock 4.4 has it already) | yes | yes |
+| `loglevel=7` in the DT bootargs (instead of `loglevel=1`) | only with `LOGLEVEL7=1` | only with `LOGLEVEL7=1` |
+| Crash log kept in RAM (4.14 only: `watch_414_ramoops.fragment`, on by default; the stock 4.4 has it already) | yes | yes |
 | `/adb_keys` and `init.benchdebug.rc` in the ramdisk: early authenticated adb | no | yes |
 
 ## 1. loglevel=7
 
 The stock DT has `loglevel=1`, which keeps almost every message off the consoles (UART, pstore). The test images
-carry `loglevel=7`; the rest of the bootargs and the DT are unchanged. On the 4.4 images the stock DT is edited
+carried `loglevel=7` until the DM63 overheated on it: every kernel message goes synchronously to the 115200-baud serial
+console and kept all CPUs busy. The build scripts now keep the stock `loglevel=1` and set `loglevel=7` only with `LOGLEVEL7=1`
+(`build_candidates_44.sh`; on 4.14 `build_414_stock81.sh` then uses the `-ramoops` DTBs, otherwise the normal ADF DTBs with
+the pstore fragment). Use it for a short attended boot only. When set, the rest of the bootargs and the DT are unchanged. On the 4.4 images the stock DT is edited
 by `tools/sprd_bootimg.py dt-bootargs` (a proper FDT edit with `fdtput`, refused unless the string occurs exactly
 once, layout, ids and padding kept); on 4.14 the `-ramoops` DTBs set it (`devices/RAMOOPS_414.md`). The
 bootloader may still override the bootargs: check `/proc/cmdline` of a booting kernel.

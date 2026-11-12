@@ -11,7 +11,14 @@ fields (board id `0x2668`, rev 1), on a copy of the stock DM63 boot image; in it
 (`tools/sprd_ramdisk.py remove-module`). Build script: `devices/build_414_stock81.sh`.
 
 
-**Current test images (2026-11-11):** the same build on the `-ramoops` DTB (`loglevel=7`, crash log:
+**Build default (since the DM63 bench overheating):** `devices/build_414_stock81.sh` now builds on the normal
+`sp9832e-1h10-dm63-adf.dtb` with the stock `loglevel=1` and keeps `watch_414_ramoops.fragment` (pstore/ramoops on; the
+stock DT's ramoops region is used, so oops/panic records still work, the console record only holds what the console
+loglevel lets through). The images are named `dm63_414_adf_candidate*.img`. `LOGLEVEL7=1` selects the `-ramoops`
+DTB (`loglevel=7`, bigger console zone, `devices/RAMOOPS_414.md`) for a short attended debug boot only: loglevel=7 writes every message synchronously to the
+115200-baud serial console and contributed to the DM63 overheating. The images below are the earlier `loglevel=7` ones.
+
+**Earlier test images (2026-11-11):** the same build on the `-ramoops` DTB (`loglevel=7`, crash log:
 `devices/RAMOOPS_414.md`) and `watch_414_ramoops.fragment`, built by `devices/build_414_stock81.sh`
 from the merge of `debug/ramoops-414` into `kernel-4.14` (`TOOLS` = a tree with `tools/ramdisk-benchdebug`):
 
