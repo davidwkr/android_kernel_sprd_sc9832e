@@ -745,6 +745,21 @@ static int irq_err_handle(struct sprd_sdhc_host *host, u32 intmask)
 	if ((host->cmd->opcode != MMC_SEND_TUNING_BLOCK) &&
 		(host->cmd->opcode != MMC_SEND_TUNING_BLOCK_HS200)) {
 		dev_info(dev, "CMD%d int 0x%x\n", host->cmd->opcode, intmask);
+		/*
+		 * ACMD_ERR: bit 0 not executed, 1 timeout, 2 CRC, 3 end bit,
+		 * 4 index, 7 not issued.
+		 */
+		dev_info(dev,
+			 "CMD%d arg 0x%08x blocks %u sbc %d sbc arg 0x%08x auto 0x%x acmd_err 0x%04x flags 0x%x clk %u timing %u dll sts0 0x%08x sts1 0x%08x\n",
+			 host->cmd->opcode, host->cmd->arg,
+			 host->cmd->data ? host->cmd->data->blocks : 0,
+			 !!host->mrq->sbc,
+			 host->mrq->sbc ? host->mrq->sbc->arg : 0,
+			 host->auto_cmd_mode,
+			 sprd_sdhc_readw(host, SPRD_SDHC_REG_16_ACMD_ERR),
+			 host->flags, host->ios.clock, host->ios.timing,
+			 sprd_sdhc_readl(host, SPRD_SDHC_REG_32_DLL_STS0),
+			 sprd_sdhc_readl(host, SPRD_SDHC_REG_32_DLL_STS1));
 		dump_sdio_reg(host);
 	}
 
