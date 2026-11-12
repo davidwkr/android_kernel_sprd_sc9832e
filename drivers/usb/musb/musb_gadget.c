@@ -2150,7 +2150,13 @@ void musb_g_disconnect(struct musb *musb)
 	case OTG_STATE_B_PERIPHERAL:
 	case OTG_STATE_B_IDLE:
 		musb->xceiv->otg->state = OTG_STATE_B_IDLE;
-		usb_gadget_set_state(&musb->g, USB_STATE_NOTATTACHED);
+		/*
+		 * Keep REMOVED: the SPRD glue sets it on VBUS loss and the usb
+		 * charger only reports an unplug for REMOVED; overwriting it
+		 * before the gadget state work runs loses the unplug for good.
+		 */
+		if (musb->g.state != USB_STATE_REMOVED)
+			usb_gadget_set_state(&musb->g, USB_STATE_NOTATTACHED);
 		break;
 	case OTG_STATE_B_SRP_INIT:
 		break;
