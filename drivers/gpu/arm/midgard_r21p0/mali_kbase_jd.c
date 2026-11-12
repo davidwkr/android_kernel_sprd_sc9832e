@@ -1112,8 +1112,13 @@ int kbase_jd_submit(struct kbase_context *kctx,
 
 #ifdef CONFIG_MALI_BOOST
 	/* Like stock, hand the context's boost hint to the platform on every submit */
-	if (kctx->sprd_boost)
-		kbase_platform_set_boost(kbdev, kctx->sprd_boost);
+	{
+		/* the ioctl can change the hint concurrently, read it once */
+		u32 sprd_boost = READ_ONCE(kctx->sprd_boost);
+
+		if (sprd_boost)
+			kbase_platform_set_boost(kbdev, sprd_boost);
+	}
 #endif
 
 	KBASE_TIMELINE_ATOMS_IN_FLIGHT(kctx, atomic_add_return(nr_atoms,

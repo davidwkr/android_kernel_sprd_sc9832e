@@ -83,6 +83,10 @@ static u64 get_core_dyn_power(int cluster_id,
 	int voltage_base = cluster_data[cluster_id].core_coeff.voltage_base;
 	int dyn_base = cluster_data[cluster_id].core_coeff.dynperghz;
 
+	/* an unset coefficient or base in the DT contributes no power */
+	if (!dyn_base || !voltage_base)
+		return 0;
+
 	power = (u64)dyn_base * freq_mhz * voltage_mv * voltage_mv;
 	do_div(power, voltage_base * voltage_base);
 	do_div(power, 10000);
@@ -96,6 +100,9 @@ static u64 get_cluster_dyn_power(int cluster_id,
 	u64 power = 0;
 	int voltage_base = cluster_data[cluster_id].cluster_coeff.voltage_base;
 	int dyn_base = cluster_data[cluster_id].cluster_coeff.dynperghz;
+
+	if (!dyn_base || !voltage_base)
+		return 0;
 
 	power = (u64)dyn_base * freq_mhz * voltage_mv * voltage_mv;
 	do_div(power, voltage_base * voltage_base);
@@ -130,9 +137,8 @@ static u64 get_temperature_scale(int cluster_id, unsigned long temp)
  * Vscale = 33.31V^3 - 73.25V^2 + 54.44V - 12.81
  * return Vscale * 1000
  */
-static u64 get_voltage_scale(int cluster_id, unsigned long u_volt)
+static u64 get_voltage_scale(int cluster_id, unsigned long m_volt)
 {
-	unsigned long m_volt = u_volt / 1000;
 	u64 v_scale = 0;
 	struct scale_coeff *coeff = &cluster_data[cluster_id].voltage_scale;
 
@@ -146,8 +152,8 @@ static u64 get_voltage_scale(int cluster_id, unsigned long u_volt)
 	return v_scale;
 }
 
-/* voltage in uV and temperature in mC */
-static unsigned long get_static_power(unsigned long u_volt)
+/* voltage in mV (as passed by devfreq_cooling) and temperature in mC */
+static unsigned long get_static_power(unsigned long m_volt)
 {
 	struct thermal_zone_device *thmzone;
 	unsigned long t_scale, v_scale;
@@ -180,7 +186,7 @@ static unsigned long get_static_power(unsigned long u_volt)
 	/* get Tscale * 1000 */
 	t_scale = get_temperature_scale(gpu_cluster, temperature / 1000);
 	/* get Vscale * 1000 */
-	v_scale = get_voltage_scale(gpu_cluster, u_volt);
+	v_scale = get_voltage_scale(gpu_cluster, m_volt);
 
 	power = gpu_cores * (gpu_coeff * t_scale * v_scale) / 10000000;
 
@@ -240,6 +246,9 @@ static unsigned long get_dynamic_power(unsigned long freq,
 {
 	u64 power;
 	int gpu_cluster = GPU_CLUSTER;
+
+	/* devfreq_cooling passes the frequency in Hz and the voltage in mV */
+	freq /= 1000000;
 
 	power = get_core_dyn_power(gpu_cluster, freq, voltage);
 	power += get_cluster_dyn_power(gpu_cluster, freq, voltage);
@@ -355,6 +364,18 @@ static int sprd_get_power_model_coeff(struct device_node *np,
 	return 0;
 }
 
+static void unregister_cooling_devices(void)
+{
+	int i;
+
+	for (i = 0; i < cluster_count; i++)
+		devfreq_cooling_unregister(cluster_data[i].gpudev);
+
+	kfree(cluster_data);
+	cluster_data = NULL;
+	cluster_count = 0;
+}
+
 int create_gpu_cooling_device(struct devfreq *gpudev, u64 *mask)
 {
 	struct device_node *np, *child;
@@ -388,6 +409,8 @@ int create_gpu_cooling_device(struct devfreq *gpudev, u64 *mask)
 
 		if (!of_device_is_compatible(child, "sprd,mali-power-model")) {
 			pr_err("power_model incompatible\n");
+			ret = -EINVAL;
+			of_node_put(child);
 			goto free_cluster;
 		}
 
@@ -396,8 +419,9 @@ int create_gpu_cooling_device(struct devfreq *gpudev, u64 *mask)
 			continue;
 
 		cluster_id = of_alias_get_id(child, "gpu-cooling");
-		if (cluster_id == -ENODEV) {
+		if (cluster_id < 0 || cluster_id >= cluster_count) {
 			pr_err("fail to get cooling devices id\n");
+			of_node_put(child);
 			goto free_cluster;
 		}
 
@@ -405,6 +429,7 @@ int create_gpu_cooling_device(struct devfreq *gpudev, u64 *mask)
 			&cluster_data[cluster_id], cluster_id);
 		if (ret) {
 			pr_err("fail to get power model coeff !\n");
+			of_node_put(child);
 			goto free_cluster;
 		}
 
@@ -413,22 +438,23 @@ int create_gpu_cooling_device(struct devfreq *gpudev, u64 *mask)
 
 		strlcpy(cluster_data[cluster_id].devname,
 			child->name, sizeof(cluster_data[cluster_id].devname));
-		cluster_data[cluster_id].gpudev = devfreq_cooling;
 
 		if (IS_ERR_OR_NULL(devfreq_cooling)) {
-			ret = PTR_ERR(devfreq_cooling);
+			ret = devfreq_cooling ? PTR_ERR(devfreq_cooling) : -ENODEV;
 			pr_err("Failed to register cool-dev (%d)\n", ret);
-				goto free_cluster;
-		} else
-			ret = 0;
+			of_node_put(child);
+			goto free_cluster;
+		}
+
+		cluster_data[cluster_id].gpudev = devfreq_cooling;
+		ret = 0;
 	}
 
 	return ret;
 
 free_cluster:
-	kfree(cluster_data);
-	cluster_data = NULL;
-	cluster_count = 0;
+	/* unregister the devices registered before the failure */
+	unregister_cooling_devices();
 ERR_RET:
 	return ret;
 }
@@ -436,26 +462,7 @@ EXPORT_SYMBOL_GPL(create_gpu_cooling_device);
 
 int destroy_gpu_cooling_device(void)
 {
-	struct device_node *np, *child;
-
-	np = of_find_node_by_name(NULL, "gpu-cooling-devices");
-	if (!np) {
-		pr_err("unable to find thermal zones\n");
-		return -ENODEV;
-	}
-
-	for_each_child_of_node(np, child) {
-		struct thermal_cooling_device *cdev;
-
-		cdev = cluster_data_get_dev_by_name(child->name);
-		if (IS_ERR(cdev))
-			continue;
-		devfreq_cooling_unregister(cdev);
-	}
-
-	kfree(cluster_data);
-	cluster_data = NULL;
-	cluster_count = 0;
+	unregister_cooling_devices();
 
 	return 0;
 }

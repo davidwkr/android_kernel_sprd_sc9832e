@@ -377,6 +377,23 @@ manager calls into it. Trip temperatures are unchanged. Check on a device:
 `gpu-thmzone` should show it bound. Revert the commit to return to stock
 behaviour.
 
+Why the power model stays: neither DT zone has a `governor` property (4.4's
+`of-thermal` does not read one) and the merged config sets
+`THERMAL_DEFAULT_GOV_POWER_ALLOCATOR=y` for every zone, so `gpu-thmzone` runs
+power_allocator. That governor ignores cooling devices without power ops
+(`-ENODEV` when none is an actor), so a plain state-based devfreq cooling
+device would never throttle, and switching the zone to step_wise would mean
+changing the default for the other zones. The power callbacks were fixed
+instead: `devfreq_cooling` passes frequency in Hz and voltage in mV, so the
+dynamic callback now converts Hz to MHz (it used Hz as MHz) and the static
+callback takes mV (it divided by 1000 again, expecting uV). A zero dynamic
+coefficient or voltage base (DM63 has `sprd,dynamic-cluster = <0 0 0>`) now
+yields no power instead of dividing by zero. The constants themselves are
+unchanged vendor values and unverified on hardware. Failure paths also
+unwind: a partial registration unregisters the devices already registered,
+and `kbase_devfreq_init()` calls `kbase_ipa_term()` when cooling
+registration fails.
+
 **Boost hint ioctl.** The stock GPU library issues `0x4004801d`
 (`_IOW(0x80, 29, u32)`). Stock stores the value in the context and
 `kbase_jd_submit()` passes it to `kbase_platform_set_boost()` on every submit,
@@ -384,7 +401,8 @@ which keeps the highest pending level in `gpu_boost_level`;
 `kbase_platform_modify_target_freq()` consumes it. Ours (`CONFIG_MALI_BOOST`,
 all watches): the ioctl accepts 0/5/7/9/10 and returns `-EINVAL` otherwise
 (stock accepted any value); the level is stored per context
-(`kctx->sprd_boost`) and applied at submit as in stock. 10 means the highest
+(`kctx->sprd_boost`, accessed with `WRITE_ONCE`/a single `READ_ONCE` in
+submit) and applied at submit as in stock. 10 means the highest
 list entry, 9/7/5 the `sprd,dfs-scene-extreme/medium/low` entries.
 `kbase_devfreq_target()` takes the pending level once (it is cleared) and
 uses its frequency as a floor for that request, then applies the

@@ -909,7 +909,7 @@ static int kbase_api_sprd_boost(struct kbase_context *kctx, __u32 *level)
 	if (!kbase_platform_boost_level_valid(*level))
 		return -EINVAL;
 
-	kctx->sprd_boost = *level;
+	WRITE_ONCE(kctx->sprd_boost, *level);
 	return 0;
 }
 #endif

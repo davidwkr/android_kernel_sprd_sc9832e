@@ -410,7 +410,7 @@ int kbase_devfreq_init(struct kbase_device *kbdev)
 	err = kbase_ipa_init(kbdev);
 	if (err) {
 		dev_err(kbdev->dev, "IPA initialization failed\n");
-		goto cooling_failed;
+		goto ipa_failed;
 	}
 
 #ifdef CONFIG_SPRD_GPU_COOLING_DEVICE
@@ -445,6 +445,8 @@ int kbase_devfreq_init(struct kbase_device *kbdev)
 
 #ifdef CONFIG_DEVFREQ_THERMAL
 cooling_failed:
+	kbase_ipa_term(kbdev);
+ipa_failed:
 	devfreq_unregister_opp_notifier(kbdev->dev, kbdev->devfreq);
 #endif /* CONFIG_DEVFREQ_THERMAL */
 opp_notifier_failed:
