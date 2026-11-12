@@ -1552,6 +1552,12 @@ static int cm_manager_jeita_current_monitor(struct charger_manager *cm)
 		goto out;
 	}
 
+	/*
+	 * Known stock-compatible behaviour, kept on purpose: a change to a
+	 * charging zone takes three samples (stock SPRDBAT_TEMP_TRIGGER_TIMES),
+	 * and the charger raises requests below 300 mA to its 300 mA floor.
+	 * On the DM63 the adapter cap (450/430 mA) bounds the current anyway.
+	 */
 	if (cur_jeita_status > last_jeita_status) {
 		temp_down_trigger = 0;
 
@@ -2356,7 +2362,14 @@ static bool cm_setup_timer(void)
 		CM_MIN_VALID(wakeup_ms, fbchk_ms);
 
 		/* Skip if polling is not required for this CM */
-		if (!is_polling_required(cm) && !cm->emergency_stop)
+		/*
+		 * Strict mode: a standing emergency stop only needs the
+		 * temperature watched while an adapter is online; unplugged
+		 * (cold watch) there is nothing to restart, no wakeups.
+		 */
+		if (!is_polling_required(cm) &&
+		    !(cm->emergency_stop &&
+		      (!cm_strict(cm) || is_ext_pwr_online(cm))))
 			continue;
 		timer_req++;
 		if (cm->desc->polling_interval_ms == 0)
@@ -3504,6 +3517,30 @@ static int cm_suspend_noirq(struct device *dev)
 static int cm_suspend_prepare(struct device *dev)
 {
 	struct charger_manager *cm = dev_get_drvdata(dev);
+	int ret;
+
+	/*
+	 * Strict mode with no wake timer source: nothing would watch the
+	 * temperature, time limit or charger during suspend while the
+	 * hardware keeps charging, so stop the charge first. It is evaluated
+	 * from scratch (jeita zone, programming, enable) on resume. If the
+	 * stop is not verified (write failed or the charger still reports
+	 * charging) suspend is refused: a non-zero prepare aborts the suspend
+	 * and, as no complete callback follows, nothing was changed here yet
+	 * (cm_suspended, the alarm) that would need undoing. Monitoring
+	 * goes on and retries the stop each poll.
+	 */
+	if (cm_strict(cm) && !alarmtimer_get_rtcdev() &&
+	    (cm->charger_enabled || is_ext_pwr_online(cm))) {
+		dev_warn(cm->dev, "no wake timer, stopping charge for suspend\n");
+		cm->jeita_stop = true;
+		cm->jeita_reeval = true;
+		ret = try_charger_enable(cm, false);
+		if (ret) {
+			dev_err(cm->dev, "stop not verified, refusing suspend\n");
+			return -EBUSY;
+		}
+	}
 
 	if (!cm_suspended)
 		cm_suspended = true;
@@ -3530,14 +3567,6 @@ static int cm_suspend_prepare(struct device *dev)
 	 * hardware keeps charging, so stop the charge first. It is evaluated
 	 * from scratch (jeita zone, programming, enable) on resume.
 	 */
-	if (cm_strict(cm) && !alarmtimer_get_rtcdev() &&
-	    (cm->charger_enabled || is_ext_pwr_online(cm))) {
-		dev_warn(cm->dev, "no wake timer, stopping charge for suspend\n");
-		cm->jeita_stop = true;
-		cm->jeita_reeval = true;
-		try_charger_enable(cm, false);
-	}
-
 	if (cm_timer_set) {
 		cancel_work_sync(&setup_polling);
 		cancel_delayed_work_sync(&cm_monitor_work);
