@@ -1181,8 +1181,9 @@ static void sprd_sdhc_enable_dpll(struct sprd_sdhc_host *host)
 	sprd_sdhc_writel(host, tmp, SPRD_SDHC_REG_32_DLL_CFG);
 	mdelay(1);
 
-	while ((sprd_sdhc_readl(host, SPRD_SDHC_REG_32_DLL_STS0) &
-		SPRD_SDHC_DLL_LOCKED) != SPRD_SDHC_DLL_LOCKED) {
+	tmp = sprd_sdhc_readl(host, SPRD_SDHC_REG_32_DLL_STS0);
+	while (((tmp & SPRD_SDHC_DLL_LOCKED) != SPRD_SDHC_DLL_LOCKED) ||
+		((tmp & SPRD_SDHC_DLL_ERROR) == SPRD_SDHC_DLL_ERROR)) {
 		dev_warn(dev, "dpll locked faile!\n");
 		dev_info(dev, "DLL_STS0 : 0x%x, DLL_CFG : 0x%x\n",
 			 sprd_sdhc_readl(host, SPRD_SDHC_REG_32_DLL_STS0),
@@ -1191,9 +1192,10 @@ static void sprd_sdhc_enable_dpll(struct sprd_sdhc_host *host)
 			 sprd_sdhc_readl(host, SPRD_SDHC_REG_32_DLL_DLY),
 			 sprd_sdhc_readl(host, SPRD_SDHC_REG_32_DLL_STS1));
 		mdelay(1);
+		tmp = sprd_sdhc_readl(host, SPRD_SDHC_REG_32_DLL_STS0);
 	}
 
-	dev_info(dev, "dpll locked done\n");
+	dev_info(dev, "dpll locked done, DLL_STS0 0x%x\n", tmp);
 }
 
 static void sprd_sdhc_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
