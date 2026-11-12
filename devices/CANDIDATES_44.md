@@ -5,13 +5,20 @@ built by `devices/build_candidates_44.sh` into `~/.cache/{dm63,dw100u-silver}-ca
 
 ## Current images (2026-11-11)
 
-Built from `devices/k18-mali-candidate` commit `b5b4c48bc299`, which is `security-backports` (`3973e1f88cf1`)
-plus the Mali r21p0 candidate work.
+Built from `devices/k18-mali-candidate` commit `9d1f71587d5d` (kernel content unchanged from the previous
+table; the Mali refusal logging and the sprdwcn `strncpy` bound are in). The DT now has `loglevel=7` instead of
+`loglevel=1`; the `_BENCHDEBUG` images also carry early authenticated adb (`BENCH_DEBUG.md`: **bench watches
+only, reflash the normal image before a watch leaves the bench**).
 
 | Watch | Image | sha256 |
 |---|---|---|
-| DM63 | `dm63_mali_candidate.img` | `0b275c73b5aa32536b6ffc897349a9510af818a1195673460b225c233306dd6b` |
-| DW100U silver | `dw100u-silver_mali_candidate.img` | `5fcc9e8a1cdfc0f2762fe855da4540be4cdc6670cd9daaedd40eed5047d9cb4e` |
+| DM63 | `dm63_mali_candidate.img` | `cf86bfe6fd26ddd269294d92caef26d8aa46969ec6375f9960dcdd105198f755` |
+| DM63 | `dm63_mali_candidate_BENCHDEBUG.img` | `ef3447a1bdb64398aef3a8ef57fa95ac0639fb6cde42a4f388e223fe11c0615f` |
+| DW100U silver | `dw100u-silver_mali_candidate.img` | `24974227ff9605ca472364a8b886b0b43cb29c6aed2d3b738320608f6602ee1f` |
+| DW100U silver | `dw100u-silver_mali_candidate_BENCHDEBUG.img` | `14670fd3c930cd519c0df0eb157921a557a1e11e4e55a1ce00750803877a9675` |
+
+Build: `SFD=<stock images dir> devices/build_candidates_44.sh`; the BENCHDEBUG images need `BENCH_DEBUG=1` and
+`ADB_PUBKEY=<path>/adbkey.pub` too.
 
 ## What they contain
 
@@ -25,7 +32,9 @@ plus the Mali r21p0 candidate work.
   `MEM_COMMIT` refused on JIT regions, JIT failure-path rollback (`fixes/mali-r21p0-jit-44`); Mali refusal logging (`dmesg | grep 'mali: refused'` on first boot) and the sprdwcn `strncpy` bound.
 - On a copy of each stock boot image: the ramdisk modules `mali.ko`, `sprdwl_ng.ko`, `sprdbt_tty.ko` and
   `sprd_fm.ko` replaced by this build's (vermagic and `module_layout` CRC checked by `tools/sprd_ramdisk.py`),
-  `init.watch_tweaks.rc` added (`devices/common/`). The stock DT and the rest of the ramdisk are unchanged.
+  `init.watch_tweaks.rc` added (`devices/common/`). The stock DT has only `loglevel=1` changed to `loglevel=7`
+  (`tools/sprd_bootimg.py dt-bootargs`); the rest of the ramdisk is unchanged (BENCHDEBUG: plus `/adb_keys` and
+  `init.benchdebug.rc`).
 - AVB footer kept with a stale `boot` hash: unlocked (orange) devices only.
 
 ## First boot checks
