@@ -1177,6 +1177,7 @@ out:
 
 static void sprd_sdhc_enable_dpll(struct sprd_sdhc_host *host)
 {
+	int tries = 0;
 	u32 tmp = 0;
 	struct device *dev = &host->pdev->dev;
 
@@ -1199,6 +1200,12 @@ static void sprd_sdhc_enable_dpll(struct sprd_sdhc_host *host)
 	tmp = sprd_sdhc_readl(host, SPRD_SDHC_REG_32_DLL_STS0);
 	while (((tmp & SPRD_SDHC_DLL_LOCKED) != SPRD_SDHC_DLL_LOCKED) ||
 		((tmp & SPRD_SDHC_DLL_ERROR) == SPRD_SDHC_DLL_ERROR)) {
+		/* never hang the boot: give up after ~100 ms, as before if locked */
+		if (++tries > 100) {
+			dev_err(dev, "DLL not clean after %d ms, DLL_STS0 0x%x\n",
+				tries, tmp);
+			break;
+		}
 		dev_warn(dev, "dpll locked faile!\n");
 		dev_info(dev, "DLL_STS0 : 0x%x, DLL_CFG : 0x%x\n",
 			 sprd_sdhc_readl(host, SPRD_SDHC_REG_32_DLL_STS0),
