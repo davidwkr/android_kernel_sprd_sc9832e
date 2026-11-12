@@ -486,6 +486,13 @@
  * keeps both on.
  */
 &vddemmccore {
+	/*
+	 * The MMC core asks for a 2.9-3.0 V window; the 4.4 driver picked the
+	 * middle (2.95 V), this driver the lowest step (2.9 V). Pin 2.95 V as
+	 * on 4.4, where this eMMC runs HS400ES without errors.
+	 */
+	regulator-min-microvolt = <2950000>;
+	regulator-max-microvolt = <2950000>;
 	regulator-always-on;
 };
 
