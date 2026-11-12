@@ -487,12 +487,14 @@
  */
 &vddemmccore {
 	/*
-	 * The MMC core asks for a 2.9-3.0 V window; the 4.4 driver picked the
-	 * middle (2.95 V), this driver the lowest step (2.9 V). Pin 2.95 V as
-	 * on 4.4, where this eMMC runs HS400ES without errors.
+	 * voltage-ranges <3000 3000> makes the MMC core request the 3.0-3.1 V
+	 * window (OCR bit 18, "Vdd 18" in the ios log). A pin at 2.95 V made
+	 * that request fail with -EPERM ("could not set regulator OCR (-1)"),
+	 * so allow the window; the LDO takes the lowest step in it, 3.0 V,
+	 * the 4.4 default-microvolt of this supply.
 	 */
 	regulator-min-microvolt = <2950000>;
-	regulator-max-microvolt = <2950000>;
+	regulator-max-microvolt = <3100000>;
 	regulator-always-on;
 };
 
