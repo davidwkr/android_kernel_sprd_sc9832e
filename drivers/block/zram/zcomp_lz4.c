@@ -45,7 +45,11 @@ static void zcomp_lz4_destroy(void *private)
 static int zcomp_lz4_compress(const unsigned char *src, unsigned char *dst,
 		size_t *dst_len, void *private)
 {
-	int out_len = LZ4_compress_default(src, dst, PAGE_SIZE, PAGE_SIZE,
+	/*
+	 * zstrm->buffer is two pages: let an incompressible page expand
+	 * into it so zram stores it as-is instead of failing the write.
+	 */
+	int out_len = LZ4_compress_default(src, dst, PAGE_SIZE, 2 * PAGE_SIZE,
 					   private);
 
 	if (!out_len)
