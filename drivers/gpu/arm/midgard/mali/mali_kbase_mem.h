@@ -446,6 +446,13 @@ static inline struct kbase_mem_phy_alloc *kbase_alloc_create(
 	alloc->nents = 0;
 	alloc->pages = (void *)(alloc + 1);
 	INIT_LIST_HEAD(&alloc->mappings);
+	/*
+	 * Every allocation type gets a valid (empty) eviction-list node:
+	 * kbase_mem_free_region() removes the node unconditionally, and
+	 * only native allocations used to initialise it, so freeing an
+	 * imported, alias or other region dereferenced a zeroed list_head.
+	 */
+	INIT_LIST_HEAD(&alloc->evict_node);
 	alloc->type = type;
 
 	if (type == KBASE_MEM_TYPE_IMPORTED_USER_BUF)
