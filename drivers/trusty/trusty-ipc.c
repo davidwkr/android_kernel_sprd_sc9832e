@@ -41,6 +41,11 @@
 #define MAX_DEV_NAME_LEN		32
 
 #define DEFAULT_MSG_BUF_SIZE		PAGE_SIZE
+/* a buffer holds a connect request, tipc_msg_hdr.len is 16 bit */
+#define MIN_MSG_BUF_SIZE		(sizeof(struct tipc_msg_hdr) + \
+					 sizeof(struct tipc_ctrl_msg) + \
+					 sizeof(struct tipc_conn_req_body))
+#define MAX_MSG_BUF_SIZE		(sizeof(struct tipc_msg_hdr) + U16_MAX)
 #define DEFAULT_MSG_BUF_ALIGN		PAGE_SIZE
 
 #define TIPC_CTRL_ADDR			53
@@ -128,6 +133,8 @@ struct tipc_virtio_dev {
 	wait_queue_head_t sendq;
 	struct idr addr_idr;
 	enum tipc_device_state state;
+	struct mutex rx_lock; /* serializes rxvq handling against remove */
+	bool rx_dead; /* rxvq is going away, protected by rx_lock */
 	bool rx_seen; /* first rx completion logged */
 	struct tipc_cdev_node cdev_node;
 	char   cdev_name[MAX_DEV_NAME_LEN];
@@ -153,6 +160,24 @@ struct tipc_chan {
 	u32 max_msg_cnt;
 	char srv_name[MAX_SRV_NAME_LEN];
 };
+
+#define LOG_NAME_LEN			48
+
+/*
+ * Copy a service name for logging: the caller supplies it, so keep printable
+ * ASCII only and bound the length.
+ */
+static void tipc_log_name(char *dst, const char *src)
+{
+	size_t i;
+
+	for (i = 0; i < LOG_NAME_LEN - 1 && src[i]; i++) {
+		unsigned char c = src[i];
+
+		dst[i] = (c >= 0x20 && c < 0x7f) ? c : '?';
+	}
+	dst[i] = '\0';
+}
 
 static struct class *tipc_class;
 static unsigned int tipc_major;
@@ -309,8 +334,13 @@ static void vds_put_txbuf(struct tipc_virtio_dev *vds, struct tipc_msg_buf *mb)
 		return;
 
 	mutex_lock(&vds->lock);
-	_put_txbuf_locked(vds, mb);
-	wake_up_interruptible(&vds->sendq);
+	if (vds->state == VDS_DEAD) {
+		/* the free list is gone, nobody would ever take it */
+		_free_msg_buf(mb);
+	} else {
+		_put_txbuf_locked(vds, mb);
+		wake_up_interruptible(&vds->sendq);
+	}
 	mutex_unlock(&vds->lock);
 }
 
@@ -366,23 +396,21 @@ static int vds_queue_txbuf(struct tipc_virtio_dev *vds,
 {
 	int err;
 	struct scatterlist sg;
-	bool need_notify = false;
 
 	if (!vds)
 		return -EINVAL;
 
+	/* notify under the lock: remove frees the txvq once the state is DEAD */
 	mutex_lock(&vds->lock);
 	if (vds->state == VDS_ONLINE) {
 		sg_init_one(&sg, mb->buf_va, mb->wpos);
 		err = virtqueue_add_outbuf(vds->txvq, &sg, 1, mb, GFP_KERNEL);
-		need_notify = virtqueue_kick_prepare(vds->txvq);
+		if (virtqueue_kick_prepare(vds->txvq))
+			virtqueue_notify(vds->txvq);
 	} else {
 		err = -ENODEV;
 	}
 	mutex_unlock(&vds->lock);
-
-	if (need_notify)
-		virtqueue_notify(vds->txvq);
 
 	return err;
 }
@@ -439,6 +467,29 @@ static struct tipc_chan *vds_lookup_channel(struct tipc_virtio_dev *vds,
 	}
 	if (chan)
 		kref_get(&chan->refcount);
+	mutex_unlock(&vds->lock);
+
+	return chan;
+}
+
+/*
+ * Take one channel out of the address IDR and hand the IDR's reference to the
+ * caller. The channel keeps no local address, so a later tipc_chan_destroy()
+ * does not put that reference again, and the next call finds the next channel
+ * instead of this one.
+ */
+static struct tipc_chan *vds_detach_any_channel(struct tipc_virtio_dev *vds)
+{
+	int id;
+	struct tipc_chan *chan = NULL;
+
+	mutex_lock(&vds->lock);
+	id = idr_for_each(&vds->addr_idr, _match_any, NULL);
+	if (id > 0) {
+		chan = idr_find(&vds->addr_idr, id);
+		idr_remove(&vds->addr_idr, id);
+		chan->local = 0;
+	}
 	mutex_unlock(&vds->lock);
 
 	return chan;
@@ -584,6 +635,7 @@ int tipc_chan_connect(struct tipc_chan *chan, const char *name)
 	struct tipc_ctrl_msg *msg;
 	struct tipc_conn_req_body *body;
 	struct tipc_msg_buf *txbuf;
+	char logname[LOG_NAME_LEN];
 
 	txbuf = vds_get_txbuf(chan->vds, TXBUF_TIMEOUT);
 	if (IS_ERR(txbuf))
@@ -606,9 +658,9 @@ int tipc_chan_connect(struct tipc_chan *chan, const char *name)
 		/* save service name we are connecting to */
 		strcpy(chan->srv_name, body->name);
 
-		dev_info_ratelimited(&chan->vds->vdev->dev,
-				     "connect '%s' from local 0x%x\n",
-				     body->name, chan->local);
+		tipc_log_name(logname, body->name);
+		pr_info_ratelimited("%s: connect '%s' from local 0x%x\n",
+				    __func__, logname, chan->local);
 		fill_msg_hdr(txbuf, chan->local, TIPC_CTRL_ADDR);
 		err = vds_queue_txbuf(chan->vds, txbuf);
 		if (err) {
@@ -912,12 +964,13 @@ static int dn_connect_ioctl(struct tipc_dn_chan *dn, char __user *usr_name)
 {
 	int err;
 	char name[MAX_SRV_NAME_LEN];
+	char logname[LOG_NAME_LEN];
 
 	/* copy in service name from user space */
 	err = strncpy_from_user(name, usr_name, sizeof(name));
 	if (err < 0) {
-		pr_err("%s: copy_from_user (%p) failed (%d)\n",
-		       __func__, usr_name, err);
+		pr_err_ratelimited("%s: copy_from_user (%p) failed (%d)\n",
+				   __func__, usr_name, err);
 		return err;
 	}
 	name[sizeof(name)-1] = '\0';
@@ -925,14 +978,19 @@ static int dn_connect_ioctl(struct tipc_dn_chan *dn, char __user *usr_name)
 	/* send connect request */
 	err = tipc_chan_connect(dn->chan, name);
 	if (err) {
-		pr_info("%s: connect '%s' failed: %d\n", __func__, name, err);
+		tipc_log_name(logname, name);
+		pr_info_ratelimited("%s: connect '%s' failed: %d\n",
+				    __func__, logname, err);
 		return err;
 	}
 
 	/* and wait for reply */
 	err = dn_wait_for_reply(dn, REPLY_TIMEOUT);
-	if (err)
-		pr_info("%s: connect '%s' reply: %d\n", __func__, name, err);
+	if (err) {
+		tipc_log_name(logname, name);
+		pr_info_ratelimited("%s: connect '%s' reply: %d\n",
+				    __func__, logname, err);
+	}
 	return err;
 }
 
@@ -1033,11 +1091,13 @@ static ssize_t tipc_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 		goto out;
 	}
 
-	if (copy_to_iter(mb_get_data(mb, len), len, iter) != len) {
+	/* take the data without moving the cursor until it is copied out */
+	if (copy_to_iter((u8 *)mb->buf_va + mb->rpos, len, iter) != len) {
 		ret = -EFAULT;
 		goto out;
 	}
 
+	mb_get_data(mb, len);
 	ret = len;
 	list_del(&mb->node);
 	tipc_chan_put_rxbuf(dn->chan, mb);
@@ -1269,6 +1329,11 @@ static void destroy_cdev_node(struct tipc_virtio_dev *vds,
 static void _go_online(struct tipc_virtio_dev *vds)
 {
 	mutex_lock(&vds->lock);
+	if (vds->state == VDS_DEAD) {
+		/* a late GO_ONLINE must not create the node of a removed device */
+		mutex_unlock(&vds->lock);
+		return;
+	}
 	if (vds->state == VDS_OFFLINE)
 		vds->state = VDS_ONLINE;
 	mutex_unlock(&vds->lock);
@@ -1294,8 +1359,12 @@ static void _go_offline(struct tipc_virtio_dev *vds)
 	/* wakeup all waiters */
 	wake_up_interruptible_all(&vds->sendq);
 
-	/* shutdown all channels */
-	while ((chan = vds_lookup_channel(vds, TIPC_ANY_ADDR))) {
+	/*
+	 * shutdown all channels: detach each one from the IDR, a channel whose
+	 * fd is still open stays in it until tipc_release() and would be found
+	 * again here
+	 */
+	while ((chan = vds_detach_any_channel(vds))) {
 		mutex_lock(&chan->lock);
 		chan->state = TIPC_STALE;
 		chan->remote = 0;
@@ -1322,9 +1391,9 @@ static void _handle_conn_rsp(struct tipc_virtio_dev *vds,
 	}
 
 	if (rsp->status)
-		dev_info(&vds->vdev->dev,
-			 "connect response: addr 0x%x refused, status %d\n",
-			 rsp->target, rsp->status);
+		dev_info_ratelimited(&vds->vdev->dev,
+				     "connect response: addr 0x%x refused, status %d\n",
+				     rsp->target, rsp->status);
 	else
 		dev_info_ratelimited(&vds->vdev->dev,
 				     "connect response: addr 0x%x ok, remote 0x%x\n",
@@ -1494,6 +1563,12 @@ static void _rxvq_cb(struct virtqueue *rxvq)
 	unsigned int msg_cnt = 0;
 	struct tipc_virtio_dev *vds = rxvq->vdev->priv;
 
+	mutex_lock(&vds->rx_lock);
+	if (vds->rx_dead) {
+		mutex_unlock(&vds->rx_lock);
+		return;
+	}
+
 	while ((mb = virtqueue_get_buf(rxvq, &len)) != NULL) {
 		if (!vds->rx_seen) {
 			vds->rx_seen = true;
@@ -1508,6 +1583,7 @@ static void _rxvq_cb(struct virtqueue *rxvq)
 	/* tell the other size that we added rx buffers */
 	if (msg_cnt)
 		virtqueue_kick(rxvq);
+	mutex_unlock(&vds->rx_lock);
 }
 
 static void _txvq_cb(struct virtqueue *txvq)
@@ -1521,6 +1597,11 @@ static void _txvq_cb(struct virtqueue *txvq)
 
 	/* detach all buffers */
 	mutex_lock(&vds->lock);
+	if (vds->state == VDS_DEAD) {
+		/* remove is cleaning the txvq up */
+		mutex_unlock(&vds->lock);
+		return;
+	}
 	while ((mb = virtqueue_get_buf(txvq, &len)) != NULL)
 		need_wakeup |= _put_txbuf_locked(vds, mb);
 	mutex_unlock(&vds->lock);
@@ -1550,6 +1631,7 @@ static int tipc_virtio_probe(struct virtio_device *vdev)
 	vds->vdev = vdev;
 
 	mutex_init(&vds->lock);
+	mutex_init(&vds->rx_lock);
 	kref_init(&vds->refcount);
 	init_waitqueue_head(&vds->sendq);
 	INIT_LIST_HEAD(&vds->free_buf_list);
@@ -1562,6 +1644,17 @@ static int tipc_virtio_probe(struct virtio_device *vdev)
 
 	/* get configuration if present */
 	vdev->config->get(vdev, 0, &config, sizeof(config));
+
+	/* the size comes from the secure side, check what it is used for */
+	if (config.msg_buf_max_size < MIN_MSG_BUF_SIZE ||
+	    config.msg_buf_max_size > MAX_MSG_BUF_SIZE) {
+		dev_err(&vdev->dev,
+			"%s: invalid msg_buf_max_size %u (%zu..%zu)\n",
+			__func__, config.msg_buf_max_size,
+			(size_t)MIN_MSG_BUF_SIZE, (size_t)MAX_MSG_BUF_SIZE);
+		err = -EINVAL;
+		goto err_find_vqs;
+	}
 
 	/* copy dev name */
 	strncpy(vds->cdev_name, config.dev_name, sizeof(vds->cdev_name));
@@ -1613,6 +1706,7 @@ static int tipc_virtio_probe(struct virtio_device *vdev)
 
 err_free_rx_buffers:
 	_cleanup_vq(vds->rxvq);
+	vdev->config->del_vqs(vdev);
 err_find_vqs:
 	kref_put(&vds->refcount, _free_vds);
 	return err;
@@ -1622,22 +1716,39 @@ static void tipc_virtio_remove(struct virtio_device *vdev)
 {
 	struct tipc_virtio_dev *vds = vdev->priv;
 
+	/*
+	 * Stop rxvq handling first: a running callback is done once rx_lock is
+	 * ours, later ones return, so no GO_ONLINE can bring the device back
+	 * while it is being removed.
+	 */
+	mutex_lock(&vds->rx_lock);
+	vds->rx_dead = true;
+	mutex_unlock(&vds->rx_lock);
+
 	_go_offline(vds);
 
+	/* from here on tx buffers are not queued, taken or put back */
 	mutex_lock(&vds->lock);
 	vds->state = VDS_DEAD;
-	vds->vdev = NULL;
 	mutex_unlock(&vds->lock);
 
 	vdev->config->reset(vdev);
 
 	idr_destroy(&vds->addr_idr);
 
+	/* the txvq callback and queue operations take the lock and see DEAD */
+	mutex_lock(&vds->lock);
 	_cleanup_vq(vds->rxvq);
 	_cleanup_vq(vds->txvq);
 	_free_msg_buf_list(&vds->free_buf_list);
+	mutex_unlock(&vds->lock);
 
-	vdev->config->del_vqs(vds->vdev);
+	/* vds->vdev was cleared here before, the original vdev is what del_vqs needs */
+	vdev->config->del_vqs(vdev);
+
+	mutex_lock(&vds->lock);
+	vds->vdev = NULL;
+	mutex_unlock(&vds->lock);
 
 	kref_put(&vds->refcount, _free_vds);
 }
