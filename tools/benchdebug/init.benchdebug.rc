@@ -62,3 +62,13 @@ on late-init
 # (musb-hdrc.0.auto, the UDC of the MUSB glue).
 on early-boot
     setprop sys.usb.config adb
+
+# The stock "on property:persist.sys.usb.config=*" (init.usb.rc) runs in the
+# initial property-trigger scan, which 8.1 init queues behind the events that
+# late-init queued, so it fires after early-boot and copies the stored value
+# (ptp on these watches) back into sys.usb.config, dropping adb. This file is
+# imported at the end of /init.rc, after init.usb.rc, so this action with the
+# same trigger runs after the stock one and leaves adb as the final state
+# (also when the stored value changes later: bench images always keep adb).
+on property:persist.sys.usb.config=*
+    setprop sys.usb.config adb
