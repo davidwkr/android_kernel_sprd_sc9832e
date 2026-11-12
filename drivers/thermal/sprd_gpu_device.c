@@ -61,6 +61,7 @@ struct cluster_power_coefficients {
 };
 
 static struct cluster_power_coefficients *cluster_data;
+static int cluster_count;
 static u64 *gpu_mask;
 
 /* return (leak * 10)  */
@@ -223,10 +224,12 @@ cluster_data_get_dev_by_name(const char *name)
 {
 	int i = 0;
 
-	while (&cluster_data[i] != NULL) {
+	if (!cluster_data)
+		return NULL;
+
+	for (i = 0; i < cluster_count; i++) {
 		if (!strncmp(name, cluster_data[i].devname, strlen(name)))
 			return cluster_data[i].gpudev;
-		i++;
 	}
 
 	return NULL;
@@ -356,7 +359,6 @@ int create_gpu_cooling_device(struct devfreq *gpudev, u64 *mask)
 {
 	struct device_node *np, *child;
 	struct thermal_cooling_device *devfreq_cooling;
-	int cluster_count;
 	int ret = 0;
 
 	if (gpudev == NULL || mask == NULL) {
@@ -426,6 +428,7 @@ int create_gpu_cooling_device(struct devfreq *gpudev, u64 *mask)
 free_cluster:
 	kfree(cluster_data);
 	cluster_data = NULL;
+	cluster_count = 0;
 ERR_RET:
 	return ret;
 }
@@ -452,6 +455,7 @@ int destroy_gpu_cooling_device(void)
 
 	kfree(cluster_data);
 	cluster_data = NULL;
+	cluster_count = 0;
 
 	return 0;
 }
