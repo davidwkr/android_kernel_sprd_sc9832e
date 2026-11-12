@@ -88,7 +88,9 @@ struct sprd_restruct_config *sprd_adf_restruct_post_config(struct adf_post
 	struct sprd_adf_post_custom_data *data;
 	struct adf_buffer *bufs;
 	struct sprd_adf_hwlayer *dst;
-	struct sprd_adf_hwlayer_custom_data *cust_src;
+	struct sprd_adf_hwlayer_custom_data layer;
+	struct sprd_adf_hwlayer_custom_data *cust_src = &layer;
+	size_t stride;
 	size_t n_bufs;
 	size_t i, j;
 	size_t kzalloc_size;
@@ -101,7 +103,8 @@ struct sprd_restruct_config *sprd_adf_restruct_post_config(struct adf_post
 	}
 
 	custom_data_size = (size_t) post->custom_data_size;
-	if (custom_data_size < FLIP_CUSTOM_DATA_MIN_SIZE) {
+	stride = sprd_adf_hwlayer_stride(custom_data_size, post->n_bufs);
+	if (!stride) {
 		pr_warn("data size is ilegal data_size = %zd;\n",
 			       custom_data_size);
 		goto error_out;
@@ -129,7 +132,13 @@ struct sprd_restruct_config *sprd_adf_restruct_post_config(struct adf_post
 
 	for (i = 0; i < post->n_bufs; i++) {
 		dst = &config->hwlayers[i];
-		cust_src = &data->hwlayers[i];
+		/*
+		 * Stock hwcomposers post 48-byte records: the fields they
+		 * lack (height, header sizes, y2r_coef) stay zero, as in the
+		 * stock kernel, which never stored them.
+		 */
+		memset(&layer, 0, sizeof(layer));
+		memcpy(&layer, (const u8 *)data->hwlayers + i * stride, stride);
 
 		/*
 		 * No scaler: the dispc fetches dst_w x dst_h pixels from the
@@ -182,7 +191,7 @@ struct sprd_restruct_config *sprd_adf_restruct_post_config(struct adf_post
 		}
 
 		if (display_mode == SPRD_DOUBLE_DISPC_MASTER_AND_SLAVE) {
-			dst->dst_h = (data->hwlayers[i].dst_h >> 1);
+			dst->dst_h = (cust_src->dst_h >> 1);
 			(dst + post->n_bufs)->dst_y =
 			    cust_src->dst_y + (cust_src->dst_h >> 1);
 			(dst + post->n_bufs)->dst_h = (cust_src->dst_h >> 1);
