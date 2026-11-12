@@ -101,6 +101,18 @@ kbase_devfreq_target(struct device *dev, unsigned long *target_freq, u32 flags)
 
 	rcu_read_lock();
 	opp = devfreq_recommended_opp(dev, &freq, flags);
+#ifdef MALI_PLATFORM_SHARKLE
+	/*
+	 * devfreq_recommended_opp() falls back from the floor to the ceiling
+	 * when no OPP exists at or below the cap, so check the result: if it
+	 * is above the cap, look strictly below it, or fail.
+	 */
+	if (!IS_ERR_OR_NULL(opp) && kbase_platform_max_freq() &&
+			freq > kbase_platform_max_freq()) {
+		freq = kbase_platform_max_freq();
+		opp = dev_pm_opp_find_freq_floor(dev, &freq);
+	}
+#endif
 	voltage = dev_pm_opp_get_voltage(opp);
 	rcu_read_unlock();
 	if (IS_ERR_OR_NULL(opp)) {
