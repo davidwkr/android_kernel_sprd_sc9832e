@@ -3,7 +3,8 @@
 What it took to run our own kernels (4.4.302, 4.14.336) under the **unchanged stock userspace** (system, vendor,
 secure firmware, bootloader) of the DM63 (and, by design, the DW100U). Written as a checklist for the next kernel
 (5.x or later): every item below is something the stock userspace or firmware silently depends on. Status as of
-2026-11-12: 4.4 (v11) runs daily on a pilot watch; 4.14 boots the kernel but not yet Android.
+2026-11-12: 4.4 (v11) runs daily on a pilot watch; 4.14 (test 8) boots Android with Trusty, the modem and Wi-Fi up,
+audio still being ported.
 
 Rule of thumb: **the stock vendor binaries and the bootloader are the spec.** A newer kernel can be correct by
 upstream standards and still break them. When in doubt, read the stock 4.4.83 kernel (strings, kallsyms,
@@ -35,6 +36,7 @@ disassembly; `tools/sprd_bootimg.py`) and match its behaviour exactly.
 | Watch hot (75 °C), load 10 | SC7A22 accelerometer IRQ storm (~1900/s): stock arms the level trigger opposite to the pin and re-arms per event | Copy interrupt semantics from stock, per board revision (`SC7A22_IRQ.md`) |
 | Stuck at the logo after any panic | Vendor `systemDebuggerd` turns sysdump on (PMIC bit 0x200); the bootloader then waits in dump mode | Ship `persist.sys.sysdump=off` (`setprop debug.sysdump.enabled false`); kernel default off as a safety net (`SYSDUMP_DEFAULT_OFF.md`) |
 | Stuck at the logo after a normal reboot (4.14) | The 4.14 restart handler read-modify-wrote the PMIC status and kept 0x200 | Write the reboot mode exactly as 4.4 `arch_reset` does |
+| Oops at the first screen off (4.14) | The ADF glue looked up its regmaps by `sprd,sys-ap-ahb`/`sprd,sys-aon-apb`, which the 4.14 dtsi did not give those syscons; clocks also registered after the ADF probe | Keep the stock DT compatibles that vendor glue looks up; look clocks up at use time when providers can come later |
 
 ## 3. Interfaces the stock userspace and firmware depend on
 
@@ -46,7 +48,8 @@ disassembly; `tools/sprd_bootimg.py`) and match its behaviour exactly.
 - **Trusty TEE:** keymaster, gatekeeper, RPMB/storage proxies and the modem image verifier (`kernelbootcp`) all
   use `/dev/trusty-ipc-dev0`. The stock TEE expects the **4.4 virtio IPC wire behaviour** (independent single-buffer
   RX entries). The 4.14 sg variant never got the link online, so no device node, no keystore, a `system_server`
-  crash loop, and no modem start. Init then misreports these exits as "killed by signal 1".
+  crash loop, and no modem start. Init then misreports these exits as "killed by signal 1". With the 4.4 wire
+  behaviour 4.14 gets `GO_ONLINE` at 0.8 s and the modem starts (4.14 boots 7 and 8).
 - **Modem (cproc):** the vendor `modem_control` writes the images to `/proc/cptl/*` and `/proc/<cp>/start`. U-Boot
   fills the `cptl` memory layout (7 segments at 0x89600000). Start depends on Trusty verification. Keep the cproc
   logging at info level, otherwise the start path is invisible.
@@ -68,6 +71,11 @@ disassembly; `tools/sprd_bootimg.py`) and match its behaviour exactly.
 - **WCN (Wi-Fi/BT/GNSS/FM):** the CP2 handshake must match stock (`WCN_STOCK_FW.md`). GNSS needs the A-GPS config in
   the HAL's runtime copy `/data/gnss/config/config.xml` (`NOKIA-EE=TRUE`), which is not a kernel matter.
 - **Video codec (VSP):** the stock H.264 encoder aborts on 4.14 (`H264EncPreInit` failed); still open there.
+- **Audio:** the stock HAL opens the cards by name (`sprdphone`, `all-i2s`). A board DT ported by hand can boot with
+  no sound card at all (4.14: no `digital-codec` link, the SC2721 codec probe failed with -EINVAL): check
+  `/proc/asound/cards` on the first boot. Voice-call audio (`saudio`, SIPC `dst 5`) needs its shared-memory pool.
+- **Battery reporting:** the 4.14 fuel gauge reports `capacity=101` and type `Unknown`, and Android shows AC and USB
+  powered at once; compare `dumpsys battery` with stock.
 
 ## 4. Power and thermal
 
@@ -78,8 +86,11 @@ disassembly; `tools/sprd_bootimg.py`) and match its behaviour exactly.
   power-allocator governor. A newer kernel needs the DT cooling node and trips too.
 - **zram:** a newer lz4 API capped zram output at one page and gave swap write errors. zram needs a two-page
   output buffer.
-- **Regulators:** a newer kernel switches off unused regulators that stock kept on (`sprd,default-on`); mark the
-  supplies stock keeps on `regulator-always-on` (eMMC core, vdd18, vddrf18, vddldomem...).
+- **Regulators:** a newer kernel switches off unused regulators in `regulator_late_cleanup()`; 4.4 never does, so
+  anything the bootloader left on stays on there. Marking the stock `sprd,default-on` supplies always-on (eMMC core,
+  vdd18, vddrf18, vddldomem...) is not enough: **`vddrf125` is not default-on in stock, but the modem's LTE RF needs
+  it**. With it off, 4.14 started the modem and read the SIM but never saw a cell (`NO_NETWORK_FOUND`). Compare the
+  `<name>: disabling` lines of the new kernel's boot log against what the modem, WCN and sensors use.
 
 ## 5. Security work that changed behaviour
 
@@ -118,5 +129,6 @@ The stock DM63 ROM runs SELinux permissive; release builds of our kernel drop `S
 6. eMMC write and verify, then reboot with no filesystem errors.
 7. A `sysrq` panic reboots by itself (sysdump off) and pstore keeps the records; a normal reboot comes back.
 8. Keystore works (no `system_server` crash loop); the modem starts (SIPC `dst 5` open); `modem_control` stays
-   idle.
+   idle; the modem sees cells (no `NO_NETWORK_FOUND`) and registers with an active SIM.
+   `/proc/asound/cards` lists the stock card names. No `<supply>: disabling` line for a supply 4.4 keeps on.
 9. A full day of wear and a night unplugged, compared with stock.
