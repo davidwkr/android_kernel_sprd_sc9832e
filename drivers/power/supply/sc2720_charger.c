@@ -911,6 +911,20 @@ static int sc2720_charger_get_online(struct sc2720_charger_info *info,
 
 static int sc2720_charger_get_status(struct sc2720_charger_info *info)
 {
+	unsigned int val;
+
+	/*
+	 * charger-manager owned: report the hardware, not the cached flag,
+	 * so a stop that did not happen or a charge that ended on its own
+	 * (OVP) is visible. An unreadable register counts as charging.
+	 */
+	if (info->start_by_cm) {
+		if (regmap_read(info->regmap, info->base + SC2720_CHG_CFG0,
+				&val) || !(val & SC2720_CHG_PD))
+			return POWER_SUPPLY_STATUS_CHARGING;
+		return POWER_SUPPLY_STATUS_NOT_CHARGING;
+	}
+
 	if (info->charging == true)
 		return POWER_SUPPLY_STATUS_CHARGING;
 	else
@@ -1533,12 +1547,6 @@ static int sc2720_charger_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, info);
 
-	info->usb_phy = devm_usb_get_phy_by_phandle(&pdev->dev, "phys", 0);
-	if (IS_ERR(info->usb_phy)) {
-		dev_err(&pdev->dev, "failed to find USB phy\n");
-		return PTR_ERR(info->usb_phy);
-	}
-
 	ret = of_property_read_u32(np, "reg", &info->base);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to get register address\n");
@@ -1557,7 +1565,7 @@ static int sc2720_charger_probe(struct platform_device *pdev)
 	 * the state the software flag says (off) before the supply exists, so
 	 * nothing charges until charger-manager has checked the temperature.
 	 * Failing here fails the probe: no charger is safer than an unknown
-	 * one.
+	 * one. This is done before anything that can defer or fail.
 	 */
 	if (info->start_by_cm) {
 		ret = sc2720_charger_stop_charge(info);
@@ -1566,6 +1574,16 @@ static int sc2720_charger_probe(struct platform_device *pdev)
 			return ret;
 		}
 		info->charging = false;
+	}
+
+	/*
+	 * Only now the dependencies that can defer: the USB phy may not be
+	 * there yet, the charge stays off meanwhile.
+	 */
+	info->usb_phy = devm_usb_get_phy_by_phandle(&pdev->dev, "phys", 0);
+	if (IS_ERR(info->usb_phy)) {
+		dev_err(&pdev->dev, "failed to find USB phy\n");
+		return PTR_ERR(info->usb_phy);
 	}
 
 	charger_cfg.drv_data = info;
