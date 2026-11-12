@@ -59,6 +59,13 @@ config MALI_DEVFREQ
 	  governor, the frequency of Mali will be dynamically selected from the
 	  available OPPs.
 
+config MALI_BOOST
+	bool "SPRD GPU boost hint (sharkle)"
+	depends on MALI_DEVFREQ && MALI_PLATFORM_NAME = "sharkle"
+	help
+	  Accept the SPRD boost-hint ioctl the stock GPU library issues and
+	  raise the devfreq target accordingly (never above sprd,dfs-range-max).
+
 config MALI_DMA_FENCE
 	bool "DMA_BUF fence support for Mali"
 	depends on MALI_MIDGARD

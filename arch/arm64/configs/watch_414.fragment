@@ -66,6 +66,10 @@ CONFIG_USB_CONFIGFS_OBEX=y
 CONFIG_MALI_MIDGARD=y
 CONFIG_MALI_PLATFORM_NAME="sharkle"
 CONFIG_MALI_DEVFREQ=y
+# SPRD GPU boost hint: the stock libGLES_mali.so issues ioctl 0x4004801d, which the
+# sharkle platform code turns into a devfreq floor (the sprd,dfs-range-max cap
+# still wins; see devices/MALI_R21P0.md).
+CONFIG_MALI_BOOST=y
 
 # SC2342 Wi-Fi, BT and FM clients (stock module names for the ramdisk insmod lines)
 CONFIG_SPRDWL_NG=m

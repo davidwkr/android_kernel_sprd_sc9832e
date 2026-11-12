@@ -1223,12 +1223,70 @@ bool kbase_mali_is_powered(void)
 }
 
 #ifdef CONFIG_MALI_BOOST
+/* Serialises gpu_boost_level between submitters and the devfreq target */
+static DEFINE_SPINLOCK(gpu_boost_lock);
+
+/* The levels the platform code handles; 0 is "no boost" */
+bool kbase_platform_boost_level_valid(u32 boost_level)
+{
+	switch (boost_level)
+	{
+	case 0:
+	case 5:
+	case 7:
+	case 9:
+	case 10:
+		return true;
+	default:
+		return false;
+	}
+}
+
 void kbase_platform_set_boost(struct kbase_device *kbdev, int boost_level)
 {
+	spin_lock(&gpu_boost_lock);
 	if (gpu_boost_level < boost_level)
 	{
 		gpu_boost_level = boost_level;
 		KBASE_DEBUG_PRINT(3, "kbase_platform_set_boost gpu_boost_level =%d\n", gpu_boost_level);
 	}
+	spin_unlock(&gpu_boost_lock);
+}
+
+/*
+ * Frequency (Hz) the pending boost hint asks for, or 0 if there is none.
+ * Consumes the hint, as stock's kbase_platform_modify_target_freq() does.
+ * The devfreq target uses it as a floor and applies the range-max cap itself.
+ */
+unsigned long kbase_platform_take_boost_freq(void)
+{
+	const struct gpu_freq_info *info = NULL;
+	int level;
+
+	spin_lock(&gpu_boost_lock);
+	level = gpu_boost_level;
+	gpu_boost_level = 0;
+	spin_unlock(&gpu_boost_lock);
+
+	if (!gpu_dfs_ctx.freq_list_len)
+		return 0;
+
+	switch (level)
+	{
+	case 10:
+		info = &gpu_dfs_ctx.freq_list[gpu_dfs_ctx.freq_list_len-1];
+		break;
+	case 9:
+		info = gpu_dfs_ctx.freq_9;
+		break;
+	case 7:
+		info = gpu_dfs_ctx.freq_7;
+		break;
+	case 5:
+		info = gpu_dfs_ctx.freq_5;
+		break;
+	}
+
+	return info ? (unsigned long)info->freq * FREQ_KHZ : 0;
 }
 #endif
