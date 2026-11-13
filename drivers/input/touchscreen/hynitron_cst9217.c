@@ -62,6 +62,7 @@
 #define HYN_CMD_NORMAL		0xd109
 #define HYN_CMD_SLEEP		0xd105
 #define HYN_GESTURE_ID		0xf1	/* report byte 4 */
+#define HYN_PALM_ID		0x80	/* report byte 4 */
 #define HYN_SYNC_BYTE		0xab
 #define HYN_STAT_DOWN		0x06
 
@@ -203,6 +204,15 @@ static void hyn_process_report(struct hyn_ts *ts)
 			input_report_key(input, KEY_WAKEUP, 0);
 			input_sync(input);
 		}
+		goto ack;
+	}
+
+	/* palm cover: the stock driver reports it as KEY_F4 */
+	if (buf[4] == HYN_PALM_ID) {
+		input_report_key(input, KEY_F4, 1);
+		input_sync(input);
+		input_report_key(input, KEY_F4, 0);
+		input_sync(input);
 		goto ack;
 	}
 
@@ -650,6 +660,7 @@ static int hyn_register_input(struct hyn_ts *ts)
 	input->id.bustype = BUS_I2C;
 	input_set_drvdata(input, ts);
 	input_set_capability(input, EV_KEY, KEY_WAKEUP);
+	input_set_capability(input, EV_KEY, KEY_F4);
 
 	input_set_abs_params(input, ABS_MT_POSITION_X, 0, ts->max_x, 0, 0);
 	input_set_abs_params(input, ABS_MT_POSITION_Y, 0, ts->max_y, 0, 0);
