@@ -118,6 +118,14 @@ static unsigned int s_fetch_pitch;
  */
 static bool s_fetch_has_buf;
 
+/* The fetch buffer is unmapped at ISP stop: forget the checked config. */
+void isp_k_fetch_reset(void)
+{
+	s_fetch_has_buf = false;
+	s_fetch_room = 0;
+	s_fetch_pitch = 0;
+}
+
 /*
  * A frame of @height lines @pitch apart must fit in @room. Each line spans
  * at most one pitch, so this never rejects a frame that fits, whatever the
