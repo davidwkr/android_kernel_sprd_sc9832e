@@ -31,6 +31,8 @@ int isp_statis_queue_init(struct isp_statis_buf_queue *queue);
 int isp_statis_queue_read(struct isp_statis_buf_queue *queue,
 	struct isp_statis_buf *buf);
 void isp_statis_frm_queue_init(struct isp_statis_frm_queue *queue);
+void isp_statis_kmap_put(struct isp_pipe_dev *dev);
+
 int sprd_isp_cfg_statis_buf(struct isp_pipe_dev *dev,
 	struct dcam_statis_module *dcam_module,
 	struct isp_statis_buf_input *parm);

@@ -796,6 +796,10 @@ struct isp_statis_module {
 	struct isp_statis_buf_queue hist2_statis_queue; /*for irq read*/
 	struct camera_frame afm_frame_info;
 	struct isp_statis_buf img_statis_buf;
+	/* the driver's own kernel mapping of img_statis_buf, used by the ISR */
+	void *statis_kvaddr;
+	size_t statis_ksize;
+	struct dma_buf *statis_dmabuf;
 };
 
 
