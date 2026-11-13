@@ -368,6 +368,9 @@ u32 sprd_iommuex_cll_map(sprd_iommu_hdl  p_iommu_hdl,
 		      entry_index++) {
 			phy_addr = sg_to_phys(sg) +
 				(entry_index << MMU_MAPING_PAGESIZE_SHIFFT);
+			/* sharkle: page table entries are relative to DRAM */
+			if (p_iommu_priv->chip == SPRD_IOMMUEX_SHARKLE)
+				phy_addr -= 0x80000000;
 
 			phy_addr = phy_addr >> MMU_MAPING_PAGESIZE_SHIFFT;
 			/*isp_iommu the hightest bit 1 indicates valid addr*/
@@ -564,11 +567,16 @@ u32 sprd_iommuex_cll_enable(sprd_iommu_hdl p_iommu_hdl)
 		pgt_addr_phy = virt_to_phys(
 					(void *)p_iommu_priv->ppn_base_addr);
 
+	if (p_iommu_priv->chip == SPRD_IOMMUEX_SHARKLE)
+		pgt_addr_phy -= 0x80000000;
+
 	mmu_ex_first_vpn(p_iommu_priv->mmu_reg_addr, iommu_id,
 		p_iommu_priv->vpn_base_addr);
 	mmu_ex_first_ppn(p_iommu_priv->mmu_reg_addr, iommu_id, pgt_addr_phy);
 
 	fault_page = p_iommu_priv->default_addr;
+	if (p_iommu_priv->chip == SPRD_IOMMUEX_SHARKLE)
+		fault_page -= 0x80000000;
 	mmu_ex_default_ppn(p_iommu_priv->mmu_reg_addr, iommu_id, fault_page);
 
 	if (iommu_id != IOMMU_EX_ISP) {
