@@ -1121,7 +1121,10 @@ static int sc7a22_input_key_init(struct sc7a22_data *data)
 	if (!input)
 		return -ENOMEM;
 
-	__set_bit(EV_ABS, input->evbit);
+	/*
+	 * No EV_ABS: the key device never reports absolute axes, and the 4.14
+	 * input core refuses an EV_ABS device without absinfo (-EINVAL).
+	 */
 	__set_bit(EV_KEY, input->evbit);
 	__set_bit(KEY_F6, input->keybit);
 	__set_bit(KEY_F10, input->keybit);
