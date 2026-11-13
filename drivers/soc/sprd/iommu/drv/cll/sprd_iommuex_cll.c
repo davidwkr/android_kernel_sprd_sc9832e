@@ -282,7 +282,8 @@ u32 sprd_iommuex_cll_map(sprd_iommu_hdl  p_iommu_hdl,
 	} else
 		mmu_ex_update(p_iommu_priv->mmu_reg_addr, iommu_id, iommu_type);
 	/*for sharkle dcam_if r4p0*/
-	mmu_ex_frc_copy(p_iommu_priv->master_reg_addr, iommu_id, iommu_type);
+	mmu_ex_frc_copy(p_iommu_priv->master_reg_addr,
+		p_iommu_priv->mmu_reg_addr, iommu_id, iommu_type);
 
 	p_iommu_priv->map_cnt++;
 
@@ -484,7 +485,8 @@ u32 sprd_iommuex_cll_enable(sprd_iommu_hdl p_iommu_hdl)
 		iommu_id);
 exit:
 	/*for sharkle dcam_if r4p0*/
-	mmu_ex_frc_copy(p_iommu_priv->master_reg_addr, iommu_id, iommu_type);
+	mmu_ex_frc_copy(p_iommu_priv->master_reg_addr,
+		p_iommu_priv->mmu_reg_addr, iommu_id, iommu_type);
 
 	return SPRD_NO_ERR;
 }
@@ -534,7 +536,8 @@ u32 sprd_iommuex_cll_disable(sprd_iommu_hdl  p_iommu_hdl)
 
 	mmu_ex_enable(p_iommu_priv->mmu_reg_addr, iommu_id, 0);
 
-	mmu_ex_frc_copy(p_iommu_priv->master_reg_addr, iommu_id, iommu_type);
+	mmu_ex_frc_copy(p_iommu_priv->master_reg_addr,
+		p_iommu_priv->mmu_reg_addr, iommu_id, iommu_type);
 
 	return SPRD_NO_ERR;
 }

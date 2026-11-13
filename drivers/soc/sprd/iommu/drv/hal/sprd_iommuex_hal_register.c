@@ -268,17 +268,25 @@ u32 mmu_ex_read_page_entry(ulong page_table_addr, u32 entry_index)
 	return phy_addr;
 }
 
-void mmu_ex_frc_copy(ulong ctrl_base_addr, u32 iommu_id, u32 iommu_type)
+void mmu_ex_frc_copy(ulong master_base_addr, ulong mmu_base_addr,
+		     u32 iommu_id, u32 iommu_type)
 {
 	ulong reg_addr;
 
 	if (iommu_id == IOMMU_EX_DCAM) {
+		/*
+		 * sharkle: the force-copy register is 0xf0 below the mmu
+		 * registers (0x60802010), as in the stock kernel. The master
+		 * register in the DT is a 4-byte mapping at 0x60800040, so an
+		 * offset from it lands outside the mapping and the DCAM IOMMU
+		 * configuration is never latched (DCAM then writes untranslated).
+		 */
 		if (iommu_type == SPRD_IOMMUEX_SHARKLE)
-			reg_addr = ctrl_base_addr + 0x2010;
+			reg_addr = mmu_base_addr - 0xf0;
 		else if (iommu_type == SPRD_IOMMUEX_PIKE2)
-			reg_addr = ctrl_base_addr + 0x4;
+			reg_addr = master_base_addr + 0x4;
 		else if (iommu_type == SPRD_IOMMUEX_SHARKL3)
-			reg_addr = ctrl_base_addr + 0x3010;
+			reg_addr = master_base_addr + 0x3010;
 		else
 			return;
 
