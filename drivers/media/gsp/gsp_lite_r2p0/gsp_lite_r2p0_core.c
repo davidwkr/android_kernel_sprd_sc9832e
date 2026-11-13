@@ -1938,14 +1938,12 @@ int gsp_lite_r2p0_core_verify_cfg(struct gsp_kcfg *kcfg)
 {
 	struct gsp_lite_r2p0_cfg *cfg = (struct gsp_lite_r2p0_cfg *)kcfg->cfg;
 	int icnt;
-	const char *stage = "?";
 
 	for (icnt = 0; icnt < LITE_R2P0_IMGL_NUM; icnt++) {
 		struct gsp_lite_r2p0_img_layer *l = &cfg->limg[icnt];
 
 		if (!l->common.enable)
 			continue;
-		stage = "img";
 		if (!gsp_lite_r2p0_planes_ok(&l->common,
 				gsp_lite_r2p0_img_kind(l->params.img_format),
 				l->params.clip_rect.st_y +
@@ -1958,7 +1956,6 @@ int gsp_lite_r2p0_core_verify_cfg(struct gsp_kcfg *kcfg)
 
 		if (!l->common.enable)
 			continue;
-		stage = "osd";
 		if (!gsp_lite_r2p0_planes_ok(&l->common,
 				gsp_lite_r2p0_osd_kind(l->params.osd_format),
 				l->params.clip_rect.st_y +
@@ -1966,7 +1963,6 @@ int gsp_lite_r2p0_core_verify_cfg(struct gsp_kcfg *kcfg)
 			goto err;
 	}
 
-	stage = "des";
 	if (gsp_lite_r2p0_verify_des(cfg))
 		goto err;
 
@@ -1997,29 +1993,6 @@ err:
 					l->common.mem_data.uv_offset,
 					l->common.mem_data.v_offset);
 			}
-			for (icnt = 0; icnt < LITE_R2P0_OSDL_NUM; icnt++) {
-				struct gsp_lite_r2p0_osd_layer *l =
-							&cfg->losd[icnt];
-
-				if (!l->common.enable)
-					continue;
-				pr_info("GSPDBG: osd%d fmt %u pitch %u clip st %u,%u size %ux%u buf_size 0x%zx\n",
-					icnt, l->params.osd_format,
-					l->params.pitch,
-					l->params.clip_rect.st_x,
-					l->params.clip_rect.st_y,
-					l->params.clip_rect.rect_w,
-					l->params.clip_rect.rect_h,
-					gsp_layer_to_buf(&l->common)->size);
-			}
-			pr_info("GSPDBG: failed at %s, scale out %ux%u wa2 %ux%u at %u,%u\n",
-				stage,
-				cfg->misc.scale_para.scale_rect_out.rect_w,
-				cfg->misc.scale_para.scale_rect_out.rect_h,
-				cfg->misc.workarea2_src_rect.rect_w,
-				cfg->misc.workarea2_src_rect.rect_h,
-				cfg->misc.workarea2_des_pos.pt_x,
-				cfg->misc.workarea2_des_pos.pt_y);
 			pr_info("GSPDBG: des fmt %u pitch %u height %u rot %u buf_size 0x%zx wa1 %ux%u+%u,%u scale_en %u\n",
 				dp->img_format, dp->pitch, dp->height,
 				dp->rot_angle,
