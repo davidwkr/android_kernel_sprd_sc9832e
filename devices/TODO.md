@@ -5,6 +5,17 @@ on v13 with its own Magisk ramdisk (original boot backed up, see "DW100U" below)
 
 ## Urgent
 
+- **DM63 camera root cause (strong lead, 2026-11-13 night):** the corrupting data is RAW10 sensor pixels (every 5th byte
+  the packed LSBs), and identified victim pages sit at PA = DCAM IOVA + 0x80000000 inside the bin-buffer window
+  (iova 0x400b7000..0x40292000 -> PA 0xC00B7000..0xC0292000; victims 0xC0147f80 (v17), 0xC0190000 (v18a)). So the DCAM
+  writes with its IOMMU in bypass / untranslated, which also explains the noisy preview. Ruled out: our camera
+  commits (v18a), zram/mm (stress test), camera ioctl ABI (v19), ION carveout/arm64 no-map (region is not no-map; code
+  unchanged), dma-buf/sync/IOMMU code changes (byte-identical to the import). The import is a 4.4.147-era SPRD tree,
+  not the stock 4.4.83 source, so its `sprd,iommuexle-dcam` handling may differ from stock. Reports in
+  `~/.cache/qa-out/cam-*.md`. In progress: RE of the stock DCAM IOMMU enable path, diagnostic build `test/v20-iommudbg`
+  (logs DCAM IOMMU registers/PTEs). Test images built, not flashed: v20-wb (`test/v20-wb`, display writeback off,
+  sha256 `f9527a9e...`), v20-mali (Mali memory hardening reverted).
+
 - **Camera on 4.4 (DM63).** v11 oopses in `isp_hist_done` when the camera opens; v13 and v14 corrupt memory and
   reboot; v16 shows noise and freezes. Stock 4.4.83 works.
   - Cause 1, confirmed: our `c82b428a5b90` (MAP_KERNEL returns kaddr 0). The HAL passes that address to the ISP.
