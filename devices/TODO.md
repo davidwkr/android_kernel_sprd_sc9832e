@@ -171,7 +171,7 @@ Results on hardware. "Pass" means seen working on the watch; "fail" lists what w
 | v17 | v16 - `f046da13e52a` (camera bounds) | noise, then reboot: kswapd oops in `zs_compact` on a pointer holding camera-like data (DMA/stale write into freed memory) |
 | v18a | v17 + camera driver tree as imported (ION/display changes kept) | noise, freeze, reboot: "Bad page map", page table at 0xc0190000 holds camera-like data; so not our camera driver commits |
 | memory stress (v18a, no camera) | 1040 MB random data in tmpfs, swap full | pass: no corruption; rules out zram/zsmalloc/mm |
-| v19 | v17 + `fixes/cam-abi-legacy-44` (SET_SHRINK/PDAF/EBD legacy translation) | built, not flashed: `~/.cache/v19-out/dm63-candidate/dm63_mali_candidate_BENCHDEBUG.img` (sha256 `09a5d182...`); fix reviewed (gpt-6.1-sol: no findings) |
+| v19 | v17 + `fixes/cam-abi-legacy-44` (SET_SHRINK/PDAF/EBD legacy translation) | noise, reboot. ~50 ms after the preview carveout buffer (ION heap 2, 0xbf274000) is allocated, Open Camera RenderThread and cameraserver C2-0-CallbkProc take "level 3 address size fault" at 0xe830c1xx (bad PTE output address), then `__list_del_entry` oops and panic. ABI fix not the cause. Next: carveout heap 2 user mapping / overlay buffer path, display IOMMU hardening (`35cc3a7093f2`); pstore in `qa-out/dm63-v19-cam-pstore` |
 
 ### DM63, 4.14 (bench)
 
