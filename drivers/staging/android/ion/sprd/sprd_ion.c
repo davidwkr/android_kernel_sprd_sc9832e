@@ -735,12 +735,21 @@ static long sprd_ion_ioctl(struct ion_client *client, unsigned int cmd,
 			return PTR_ERR(kaddr);
 		}
 		/*
-		 * Do not hand the kernel virtual address to user space: it
-		 * cannot be used from there, the mapping is dropped by the
-		 * ion_free() below, and the value would only defeat KASLR and
-		 * disclose heap layout. Callers rely on the return value.
+		 * The stock camera HAL (cameraserver) passes this address back
+		 * to the ISP driver as the statistics buffer. The mapping stays
+		 * while the caller's own handle holds it (ion_import_dma_buf()
+		 * returns that handle, so the ion_free() below does not drop
+		 * it). Hand it to system uids only; apps get 0, the address
+		 * would only disclose kernel layout to them.
 		 */
 		data.kaddr = 0;
+		if (from_kuid(&init_user_ns, current_euid()) % 100000 < 10000) {
+#if defined(CONFIG_64BIT)
+			data.kaddr = (uint64_t)kaddr;
+#else
+			data.kaddr = (uint32_t)kaddr;
+#endif
+		}
 		data.size = buffer->size;
 
 		ion_free(client, handle);
