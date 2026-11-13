@@ -117,6 +117,21 @@ static void panel_suspend(struct panel_device *pd)
 
 	disp_notifier_call_chain(DISP_EVENT_DISPC_STOP, NULL);
 
+	/*
+	 * Only dpms_flags == 2 (DOZE_SUSPEND) on a panel with aod-in and
+	 * aod-out takes the AOD branch, the panel stays powered. Everything
+	 * else, including the zero-initialised flags, is a full suspend.
+	 */
+	if (panel->dpms_flags == 2 && panel->cmd_codes[CMD_CODE_AOD_IN] &&
+	    panel->cmd_codes[CMD_CODE_AOD_OUT] && pd->ops &&
+	    pd->ops->aod_in && pd->ops->aod_out) {
+		pd->ops->aod_in(pd);
+		panel->in_aod = true;
+
+		pr_info("panel enter aod OK\n");
+		return;
+	}
+
 	if (pd->ops && pd->ops->sleep_in)
 		pd->ops->sleep_in(pd);
 
@@ -134,6 +149,28 @@ static void panel_resume(struct panel_device *pd)
 
 	if (panel == NULL)
 		return;
+
+	/*
+	 * Only a panel left in AOD by panel_suspend() skips the power sequence
+	 * and init, everything else is a full resume.
+	 */
+	if (panel->in_aod) {
+		panel->in_aod = false;
+		pd->ops->aod_out(pd);
+
+		pr_info("panel exit aod OK\n");
+
+		/* panel_suspend() sent DISPC_STOP */
+		disp_notifier_call_chain(DISP_EVENT_DISPC_RUN, NULL);
+
+		if (panel->esd_check_en) {
+			pr_info("schedule ESD work queue!\n");
+			schedule_delayed_work(&pd->esd_work, msecs_to_jiffies
+					      (panel->esd_timeout));
+			pd->esd_work_start = true;
+		}
+		return;
+	}
 
 	ret = regulator_enable(panel->supply);
 	if (ret < 0)
@@ -594,6 +631,18 @@ static struct panel_info *of_parse_panel(struct device_node *panel_node)
 		panel->cmd_codes[CMD_CODE_SLEEP_IN] = pcmds;
 	else
 		pr_err("sleep-in cmd not found\n");
+
+	rc = of_parse_cmds(panel_node, &pcmds, "aod-in");
+	if (!rc)
+		panel->cmd_codes[CMD_CODE_AOD_IN] = pcmds;
+	else
+		pr_info("aod-in cmd not found\n");
+
+	rc = of_parse_cmds(panel_node, &pcmds, "aod-out");
+	if (!rc)
+		panel->cmd_codes[CMD_CODE_AOD_OUT] = pcmds;
+	else
+		pr_info("aod-out cmd not found\n");
 
 	for (i = 0; i < CMD_CODE_MAX - CMD_CODE_RESERVED0; i++) {
 		char name[32] = {};
