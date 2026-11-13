@@ -24,6 +24,10 @@ on v13 with its own Magisk ramdisk (original boot backed up, see "DW100U" below)
 
 - Palm cover: fixed on `fixes/dw100u-palm-44` `893f5e6a746b` (KEY_F4 on `buf[4] == 0x80` while awake, as stock);
   reviewed; passes on the watch (`dw100u-silver_v13palm_magisk.img`, sha256 `7a9959cc...`). Merge into the candidate.
+- AOD does not work: our ADF handles only DPMS ON/OFF, so DOZE turns the panel off and flips fail with
+  "dispc is not initialized". Stock maps DOZE_SUSPEND to panel `aod-in` (idle mode) with dispc/DSI suspended and
+  `aod-out` on the way back. Port in progress on `fixes/dw100u-aod-44`.
+- Pedometer: to fix (not investigated yet; dig later).
 - Brightness: `oled_set_brightness ... lcd brightness setting failed` (4 times). Check that brightness changes work.
 - `Hardware spinlock [0] lock failed!` (3 times). Watch.
 - Lights HAL cannot open `blue_bl/on_off` and `keyboard-backlight/brightness` (the LEDs exist). Compare with stock.
