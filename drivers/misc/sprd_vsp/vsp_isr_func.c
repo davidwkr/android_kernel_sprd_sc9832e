@@ -41,9 +41,6 @@ static int handle_vsp_interrupt_sharkle(int *status,
 	u32 int_status;
 
 	int_status = readl_relaxed(vsp_glb_reg_base + VSP_INT_STS_OFF);
-	pr_info_ratelimited("vsp isr sts 0x%x raw 0x%x mask 0x%x\n", int_status,
-			    readl_relaxed(vsp_glb_reg_base + VSP_INT_RAW_OFF),
-			    readl_relaxed(vsp_glb_reg_base + VSP_INT_MASK_OFF));
 	int_status &= VSP_SHARKLE_INT_BITS;
 	if (!int_status) {
 		pr_info_ratelimited("%s vsp IRQ_NONE\n", __func__);
