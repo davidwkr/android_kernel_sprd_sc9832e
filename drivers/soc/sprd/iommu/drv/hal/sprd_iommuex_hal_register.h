@@ -85,6 +85,7 @@ void mmu_ex_reg_authority(ulong ctrl_base_addr, u32 iommu_id, ulong reg_ctrl);
 void mmu_ex_write_pate_totable(ulong pgt_base_addr,
 	u32 entry_index, u32 ppn_addr);
 u32 mmu_ex_read_page_entry(ulong page_table_addr, u32 entry_index);
-void mmu_ex_frc_copy(ulong ctrl_base_addr, u32 iommu_id, u32 iommu_type);
+void mmu_ex_frc_copy(ulong master_base_addr, ulong mmu_base_addr,
+		     u32 iommu_id, u32 iommu_type);
 
 #endif  /* _SPRD_IOMMUEX_HAL_REG_H_ */
