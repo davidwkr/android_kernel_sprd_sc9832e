@@ -23,6 +23,61 @@
 #include <linux/uaccess.h>
 #include "vsp_common.h"
 
+/*
+ * SHARKLE: the stock 4.4 handler. Read the masked status, clear only the
+ * bits handled, report only those, keep the interrupt mask as the library
+ * set it. The newer handler below reads the raw status, reports the whole
+ * word and masks and clears every source on each interrupt; with it the
+ * stock H.264 encoder timed out on every frame although the done interrupt
+ * fired.
+ */
+#define VSP_SHARKLE_INT_BITS	0x3c37	/* 0-2, 4-5 done/err, 10-13 iommu */
+
+static int handle_vsp_interrupt_sharkle(int *status,
+					void __iomem *sprd_vsp_base,
+					void __iomem *vsp_glb_reg_base)
+{
+	int i;
+	u32 int_status;
+
+	int_status = readl_relaxed(vsp_glb_reg_base + VSP_INT_STS_OFF);
+	pr_info_ratelimited("vsp isr sts 0x%x raw 0x%x mask 0x%x\n", int_status,
+			    readl_relaxed(vsp_glb_reg_base + VSP_INT_RAW_OFF),
+			    readl_relaxed(vsp_glb_reg_base + VSP_INT_MASK_OFF));
+	int_status &= VSP_SHARKLE_INT_BITS;
+	if (!int_status) {
+		pr_info("%s vsp IRQ_NONE\n", __func__);
+		return IRQ_NONE;
+	}
+
+	for (i = 0; i < 14; i++)
+		if (int_status & BIT(i))
+			writel_relaxed(BIT(i), vsp_glb_reg_base + VSP_INT_CLR_OFF);
+
+	if (int_status & BIT(0))
+		pr_err("vsp_bsm_overflow");
+	if (int_status & BIT(4))
+		pr_err("vsp_vld_err");
+	if (int_status & BIT(5))
+		pr_err("vsp_timeout");
+	if (int_status & 0x3c00) {
+		/* 4.4 used BUG_ON for 0x2800: warn instead of crashing */
+		pr_err("vsp iommu error int_status 0x%x\n", int_status);
+		for (i = 0x140; i <= 0x19c; i += 4)
+			pr_info("addr 0x%x is 0x%x\n", i,
+				readl_relaxed(vsp_glb_reg_base + i));
+		WARN_ON(1);
+	}
+
+	/* clear the VSP accelerator interrupt at the ARM side */
+	if (readl_relaxed(sprd_vsp_base + ARM_INT_STS_OFF) & BIT(2))
+		writel_relaxed(BIT(2), sprd_vsp_base + ARM_INT_CLR_OFF);
+
+	*status = int_status;
+
+	return IRQ_HANDLED;
+}
+
 int handle_vsp_interrupt(struct vsp_dev_t *vsp_hw_dev, int *status,
 			void __iomem *sprd_vsp_base,
 			void __iomem *vsp_glb_reg_base)
@@ -30,6 +85,10 @@ int handle_vsp_interrupt(struct vsp_dev_t *vsp_hw_dev, int *status,
 	int i;
 	int int_status;
 	int mmu_status;
+
+	if (vsp_hw_dev->version == SHARKLE)
+		return handle_vsp_interrupt_sharkle(status, sprd_vsp_base,
+						    vsp_glb_reg_base);
 
 	int_status = readl_relaxed(vsp_glb_reg_base + VSP_INT_RAW_OFF);
 
