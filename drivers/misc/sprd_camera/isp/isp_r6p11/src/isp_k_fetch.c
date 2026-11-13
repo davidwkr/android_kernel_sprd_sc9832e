@@ -111,6 +111,12 @@ static void isp_fetch_overwrite_info(
  */
 static unsigned long s_fetch_room;
 static unsigned int s_fetch_pitch;
+/*
+ * The stock HAL programs RAW_BLOCK without a fetch buffer (TRANSADDR with
+ * fd 0 fails) and does not use the fetch then; stock accepted that. Only
+ * refuse to start a fetch that has no checked buffer behind it.
+ */
+static bool s_fetch_has_buf;
 
 /*
  * A frame of @height lines @pitch apart must fit in @room. Each line spans
@@ -154,7 +160,8 @@ static int isp_k_fetch_raw_block(struct isp_io_param *param,
 		pr_err("fail to copy from user, ret = %d\n", ret);
 		return -EPERM;
 	}
-	if (!fetch_info.bypass) {
+	s_fetch_has_buf = false;
+	if (!fetch_info.bypass && isp_k_param->fetch_pfinfo.size[0]) {
 		unsigned long room = 0;
 
 		if (isp_k_param->fetch_pfinfo.size[0] >
@@ -168,6 +175,7 @@ static int isp_k_fetch_raw_block(struct isp_io_param *param,
 			return ret;
 		s_fetch_room = room;
 		s_fetch_pitch = fetch_info.pitch.chn0;
+		s_fetch_has_buf = true;
 	}
 	fetch_info.addr.chn0 = isp_k_param->fetch_raw_phys_addr;
 	s_isp_fetch_info.addr.chn0 = isp_k_param->fetch_raw_phys_addr;
@@ -236,6 +244,11 @@ static int isp_k_fetch_start(struct isp_io_param *param, enum isp_id idx)
 		return -EPERM;
 	}
 
+	if (start && !s_fetch_has_buf) {
+		pr_err_ratelimited("fail to start fetch without a fetch buffer\n");
+		return -EINVAL;
+	}
+
 	ISP_REG_WR(idx, ISP_FETCH_START, start);
 
 	return ret;
@@ -256,10 +269,14 @@ static int isp_k_fetch_slice_size(struct isp_io_param *param,
 	}
 
 	/* against the buffer RAW_BLOCK programmed, if it is still mapped */
-	ret = isp_fetch_check_extent(s_fetch_pitch, slice_size.height & 0xFFFF,
-			isp_k_param->fetch_pfinfo.size[0] ? s_fetch_room : 0);
-	if (ret)
-		return ret;
+	if (s_fetch_has_buf) {
+		ret = isp_fetch_check_extent(s_fetch_pitch,
+				slice_size.height & 0xFFFF,
+				isp_k_param->fetch_pfinfo.size[0] ?
+				s_fetch_room : 0);
+		if (ret)
+			return ret;
+	}
 
 	size = ((slice_size.height & 0xFFFF) << 16)
 		| (slice_size.width & 0xFFFF);
