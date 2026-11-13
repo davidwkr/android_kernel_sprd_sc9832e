@@ -30,7 +30,7 @@ every DCAM/ISP ioctl match except `sprd_img_parm` (968 vs 1008), `sprd_img_read_
 | Ioctl / struct | Stock | Ours | Result |
 |---|---|---|---|
 | `sprd_img_parm` (SET_FRM_ID_BASE, SET_CROP, SET_OUTPUT_SIZE, SET_FRAME_ADDR, PATH_FRM_DECI, SET_PATH_SKIP_NUM) | 968 | 1008 | differs, translated |
-| `sprd_img_parm` via SET_SHRINK, PDAF_CONTROL, EBD_CONTROL (cmd sizes 4/20/12, handlers read the struct) | 968 | 1008 | MISMATCH, NOT translated |
+| `sprd_img_parm` via SET_SHRINK, PDAF_CONTROL, EBD_CONTROL (cmd sizes 4/20/12, handlers read the struct) | 968 | 1008 | MISMATCH; fixed on `fixes/cam-abi-legacy-44` `630cb38b9283` (compat translation), untested |
 | `sprd_img_read_op` (read()) | 192 | 196 | differs, translated |
 | `sprd_img_frm_info` (GET_FRM_BUFFER) | 136 + 16 rsvd | 156 | zoom_ratio@108 added, translated |
 | `sprd_img_path_capability` (GET_PATH_CAP) | 180 | 184 | support_4in1@8 added, translated |
@@ -95,9 +95,12 @@ Open items (still to check):
 
 - Palm cover: fixed on `fixes/dw100u-palm-44` `893f5e6a746b` (KEY_F4 on `buf[4] == 0x80` while awake, as stock);
   reviewed; passes on the watch (`dw100u-silver_v13palm_magisk.img`, sha256 `7a9959cc...`). Merge into the candidate.
-- AOD does not work: our ADF handles only DPMS ON/OFF, so DOZE turns the panel off and flips fail with
-  "dispc is not initialized". Stock maps DOZE_SUSPEND to panel `aod-in` (idle mode) with dispc/DSI suspended and
-  `aod-out` on the way back. Port in progress on `fixes/dw100u-aod-44`.
+- AOD: fixed on `fixes/dw100u-aod-44` `fbb6ea7d6fb2` (on top of the palm fix): DPMS STANDBY/SUSPEND as stock,
+  DOZE_SUSPEND sends the panel's DT `aod-in` (idle mode) with dispc/DSI suspended, `aod-out` + DISPC_RUN on exit;
+  panels without aod-in/out (DM63 DT) keep the full power-off. Reviewed (gpt-6.1-sol). On the watch
+  (`dw100u-silver_v13palmaod_magisk.img`, sha256 `c549711c...`): AOD face visible, "panel exit aod OK" on wake.
+  Still to confirm: screen and touch normal after wake, AOD over a long period, battery drain in AOD. Flips in
+  DOZE_SUSPEND log "dispc is not initialized" (stock drops them too; consider rate-limiting the message).
 - Pedometer: to fix (not investigated yet; dig later).
 - Brightness: `oled_set_brightness ... lcd brightness setting failed` (4 times). Check that brightness changes work.
 - `Hardware spinlock [0] lock failed!` (3 times). Watch.
@@ -166,7 +169,9 @@ Results on hardware. "Pass" means seen working on the watch; "fail" lists what w
 | v15 | v14 - `c82b428a5b90` (MAP_KERNEL kaddr) | black preview, no crash; fetch config rejected (fd 0) |
 | v16 | v15 + fetch compat | noise, then freeze (pstore empty after the forced power off) |
 | v17 | v16 - `f046da13e52a` (camera bounds) | noise, then reboot: kswapd oops in `zs_compact` on a pointer holding camera-like data (DMA/stale write into freed memory) |
-| v18a | v17 + camera driver tree as imported (ION/display changes kept) | building |
+| v18a | v17 + camera driver tree as imported (ION/display changes kept) | noise, freeze, reboot: "Bad page map", page table at 0xc0190000 holds camera-like data; so not our camera driver commits |
+| memory stress (v18a, no camera) | 1040 MB random data in tmpfs, swap full | pass: no corruption; rules out zram/zsmalloc/mm |
+| v19 | v17 + `fixes/cam-abi-legacy-44` (SET_SHRINK/PDAF/EBD legacy translation) | built, not flashed |
 
 ### DM63, 4.14 (bench)
 
