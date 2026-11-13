@@ -853,6 +853,7 @@ static int sprd_isp_stop_nolock(void *isp_handle, int is_post_stop)
 
 	pfiommu_free_addr(&isp_k_param->fetch_pfinfo);
 	memset(&isp_k_param->fetch_pfinfo, 0, sizeof(struct pfiommu_info));
+	isp_k_fetch_reset();
 
 	isp_offline_buf_iommu_unmap(&module->off_desc, ISP_OFF_BUF_BIN);
 	isp_offline_buf_iommu_unmap(&module->off_desc, ISP_OFF_BUF_FULL);
