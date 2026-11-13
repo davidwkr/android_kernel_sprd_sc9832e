@@ -12,7 +12,8 @@
  * on resume.
  *
  * Screen state comes from the sprd panel notifier (the 4.4 stock driver used
- * the ADF blank notifier; without CONFIG_DRM_SPRD the screen is assumed on).
+ * the ADF blank notifier; without CONFIG_SPRD_PANEL_NOTIFIER, which the ADF
+ * and DRM display drivers select, the screen is assumed on).
  * With the screen on the
  * controller reports touches. With the screen off it is put to sleep with
  * the stock sleep command (0xd105) and a hardware reset plus the stock
@@ -370,7 +371,7 @@ static void hyn_apply_state(struct hyn_ts *ts)
 	}
 }
 
-#if IS_ENABLED(CONFIG_DRM_SPRD)
+#if IS_ENABLED(CONFIG_SPRD_PANEL_NOTIFIER)
 /*
  * Called with no driver lock held, also once from sprd_panel_notifier_register()
  * with the current state.
@@ -759,7 +760,7 @@ static int hyn_probe(struct i2c_client *client, const struct i2c_device_id *id)
 		return ret;
 	}
 
-#if IS_ENABLED(CONFIG_DRM_SPRD)
+#if IS_ENABLED(CONFIG_SPRD_PANEL_NOTIFIER)
 	/*
 	 * Last step of probe: the callback runs once during registration with
 	 * the current screen state, so the irq, the input device and the
