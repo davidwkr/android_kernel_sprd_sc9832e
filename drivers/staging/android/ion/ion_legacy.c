@@ -37,6 +37,27 @@
 #include "ion.h"
 #include "ion_legacy.h"
 
+/* Diagnostic: what a legacy cache sync request really reaches. */
+static void ion_syncdbg(struct dma_buf *dmabuf, const char *what)
+{
+	static atomic_t n = ATOMIC_INIT(0);
+	struct ion_buffer *b;
+	struct list_head *pos;
+	int natt = 0;
+
+	if (atomic_inc_return(&n) > 40 || !ion_dma_buf_is_ion(dmabuf))
+		return;
+	b = dmabuf->priv;
+	mutex_lock(&b->lock);
+	list_for_each(pos, &b->attachments)
+		natt++;
+	mutex_unlock(&b->lock);
+	pr_info("SYNCDBG: %s buf %p size 0x%zx flags 0x%lx cached %d attachments %d%s\n",
+		what, b, b->size, b->flags, !!(b->flags & ION_FLAG_CACHED),
+		natt, natt ? "" : " (NO ATTACHMENT: sync is a no-op)");
+}
+
+
 #ifdef CONFIG_SPRD_ION_RESTRICT_PHYS
 #include <linux/capability.h>
 #include <linux/cred.h>
@@ -356,6 +377,7 @@ static int legacy_sync(int fd)
 	if (IS_ERR(dmabuf))
 		return PTR_ERR(dmabuf);
 
+	ion_syncdbg(dmabuf, "msync");
 	dma_buf_begin_cpu_access(dmabuf, DMA_BIDIRECTIONAL);
 	dma_buf_end_cpu_access(dmabuf, DMA_BIDIRECTIONAL);
 	dma_buf_put(dmabuf);
@@ -393,6 +415,7 @@ static int legacy_custom_msync(void __user *arg_user)
 	if (IS_ERR(dmabuf))
 		return PTR_ERR(dmabuf);
 
+	ion_syncdbg(dmabuf, "msync");
 	dma_buf_begin_cpu_access(dmabuf, DMA_BIDIRECTIONAL);
 	dma_buf_end_cpu_access(dmabuf, DMA_BIDIRECTIONAL);
 	dma_buf_put(dmabuf);
@@ -414,6 +437,7 @@ static int legacy_custom_invalidate(void __user *arg_user)
 	if (IS_ERR(dmabuf))
 		return PTR_ERR(dmabuf);
 
+	ion_syncdbg(dmabuf, "invalidate");
 	dma_buf_begin_cpu_access(dmabuf, DMA_FROM_DEVICE);
 	dma_buf_end_cpu_access(dmabuf, DMA_FROM_DEVICE);
 	dma_buf_put(dmabuf);
@@ -633,6 +657,7 @@ static int legacy_custom_msync_compat(void __user *arg_user)
 	if (IS_ERR(dmabuf))
 		return PTR_ERR(dmabuf);
 
+	ion_syncdbg(dmabuf, "msync");
 	dma_buf_begin_cpu_access(dmabuf, DMA_BIDIRECTIONAL);
 	dma_buf_end_cpu_access(dmabuf, DMA_BIDIRECTIONAL);
 	dma_buf_put(dmabuf);

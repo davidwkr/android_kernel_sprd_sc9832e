@@ -64,6 +64,7 @@ u32 sprd_iommuex_cll_set_bypass(sprd_iommu_hdl  p_iommu_hdl, bool vaor_bp_en);
 u32 sprd_iommuex_cll_virt_to_phy(sprd_iommu_hdl p_iommu_hdl,
 			u64 virt_addr, u64 *dest_addr);
 u32 sprd_iommuex_reg_authority(sprd_iommu_hdl  p_iommu_hdl, u8 authority);
+void sprd_iommuex_cll_dump(sprd_iommu_hdl p_iommu_hdl, unsigned long iova);
 void sprd_iommuex_flush_pgt(ulong ppn_base, u32 start_entry, u32 end_entry);
 
 #endif  /* _SPRD_IOMMU_CLL_H_ */

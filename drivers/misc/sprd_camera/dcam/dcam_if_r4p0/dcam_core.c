@@ -2959,6 +2959,10 @@ static int sprd_camera_stream_on(struct camera_file *camerafile)
 			sprd_img_start_flash(NULL, dev);
 	}
 
+	pr_info("IOMMUDBG: stream-on, buffers mapped\n");
+	sprd_iommu_dump_state(&s_dcam_pdev->dev,
+		dev->frame ? dev->frame->uaddr_vir : 0);
+
 	ret = sprd_isp_start(dev->isp_dev_handle, dev->frame);
 	if (unlikely(ret)) {
 		pr_err("fail to start isp path\n");

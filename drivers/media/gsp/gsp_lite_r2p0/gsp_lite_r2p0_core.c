@@ -1951,6 +1951,41 @@ int gsp_lite_r2p0_core_verify_cfg(struct gsp_kcfg *kcfg)
 	return 0;
 
 err:
+	{
+		static atomic_t dbg_gsp = ATOMIC_INIT(0);
+
+		if (atomic_inc_return(&dbg_gsp) <= 6) {
+			struct gsp_lite_r2p0_des_layer_params *dp =
+							&cfg->ld1.params;
+
+			for (icnt = 0; icnt < LITE_R2P0_IMGL_NUM; icnt++) {
+				struct gsp_lite_r2p0_img_layer *l =
+							&cfg->limg[icnt];
+
+				if (!l->common.enable)
+					continue;
+				pr_info("GSPDBG: img%d fmt %u pitch %u clip st %u,%u size %ux%u buf_size 0x%zx uv_off 0x%x v_off 0x%x\n",
+					icnt, l->params.img_format,
+					l->params.pitch,
+					l->params.clip_rect.st_x,
+					l->params.clip_rect.st_y,
+					l->params.clip_rect.rect_w,
+					l->params.clip_rect.rect_h,
+					gsp_layer_to_buf(&l->common)->size,
+					l->common.mem_data.uv_offset,
+					l->common.mem_data.v_offset);
+			}
+			pr_info("GSPDBG: des fmt %u pitch %u height %u rot %u buf_size 0x%zx wa1 %ux%u+%u,%u scale_en %u\n",
+				dp->img_format, dp->pitch, dp->height,
+				dp->rot_angle,
+				gsp_layer_to_buf(&cfg->ld1.common)->size,
+				cfg->misc.workarea1_src_rect.rect_w,
+				cfg->misc.workarea1_src_rect.rect_h,
+				cfg->misc.workarea1_src_rect.st_x,
+				cfg->misc.workarea1_src_rect.st_y,
+				cfg->misc.scale_para.scale_en);
+		}
+	}
 	GSP_ERR("kcfg[%d] cfg does not fit its buffers\n",
 		gsp_kcfg_to_tag(kcfg));
 	return -EINVAL;

@@ -212,6 +212,80 @@ void sprd_iommuex_flush_pgt(ulong ppn_base, u32 start_entry, u32 end_entry)
 #endif
 }
 
+/*
+ * Diagnostic only: dump IOMMU register window, page table location and the
+ * PTE for one iova. No locks, no writes. Process context.
+ * PTE decode (sharkle/sharklj1): pte = (PA - 0x80000000) >> 12,
+ * so PA = (pte << 12) + 0x80000000; 0xffffffff means unmapped (non-ISP).
+ */
+void sprd_iommuex_cll_dump(sprd_iommu_hdl p_iommu_hdl, unsigned long iova)
+{
+	struct sprd_iommu_widget *p_iommu_data = (struct sprd_iommu_widget *)p_iommu_hdl;
+	struct sprd_iommuex_priv *priv = NULL;
+	u32 off;
+	u64 idx, pte_off;
+	u32 pte;
+	u64 pa;
+	bool sub80 = false;
+
+	if (!p_iommu_data || !p_iommu_data->p_priv) {
+		pr_info("IOMMUDBG: no priv\n");
+		return;
+	}
+	priv = (struct sprd_iommuex_priv *)p_iommu_data->p_priv;
+
+	pr_info("IOMMUDBG: id=%d type=%d chip=%d map_cnt(priv)=%u en=%d\n",
+		priv->iommu_id, priv->iommu_type, priv->chip, priv->map_cnt,
+		priv->mmu_reg_addr ?
+		mmu_ex_check_en(priv->mmu_reg_addr, priv->iommu_id) : -1);
+	pr_info("IOMMUDBG: master_reg_va=0x%lx mmu_reg_va=0x%lx\n",
+		priv->master_reg_addr, priv->mmu_reg_addr);
+
+	if (priv->master_reg_addr)
+		pr_info("IOMMUDBG: master[0x0]=0x%08x\n",
+			reg_read_dword(priv->master_reg_addr));
+
+	if (priv->mmu_reg_addr) {
+		for (off = 0; off < 0x60; off += 0x10)
+			pr_info("IOMMUDBG: mmu_reg[0x%02x]= %08x %08x %08x %08x\n",
+				off,
+				reg_read_dword(priv->mmu_reg_addr + off),
+				reg_read_dword(priv->mmu_reg_addr + off + 4),
+				reg_read_dword(priv->mmu_reg_addr + off + 8),
+				reg_read_dword(priv->mmu_reg_addr + off + 12));
+	}
+
+	pr_info("IOMMUDBG: pgt ppn_base_va=0x%lx pagt_base_ddr(va)=0x%lx pagt_base_phy_ddr=0x%lx pagt_ddr_size=0x%x pgt_size=0x%x\n",
+		priv->ppn_base_addr, priv->pagt_base_ddr,
+		priv->pagt_base_phy_ddr, priv->pagt_ddr_size, priv->pgt_size);
+	if (priv->ppn_base_addr && !priv->pagt_base_phy_ddr)
+		pr_info("IOMMUDBG: pgt kmalloc'd, virt_to_phys=0x%llx (reg expects this -0x80000000)\n",
+			(u64)virt_to_phys((void *)priv->ppn_base_addr));
+	pr_info("IOMMUDBG: iova pool base=0x%lx size=0x%x default(fault)=0x%lx\n",
+		priv->vpn_base_addr, priv->vpn_range, priv->default_addr);
+
+	if (!priv->ppn_base_addr || iova < priv->vpn_base_addr) {
+		pr_info("IOMMUDBG: iova 0x%lx not checkable (pgt va 0x%lx)\n",
+			iova, priv->ppn_base_addr);
+		return;
+	}
+	idx = (u64)VIR_TO_ENTRY_IDX(iova, priv->vpn_base_addr);
+	pte_off = idx * 4;
+	if (pte_off + 4 > priv->pgt_size ||
+	    (priv->pagt_base_phy_ddr && pte_off + 4 > priv->pagt_ddr_size)) {
+		pr_info("IOMMUDBG: iova 0x%lx idx %llu out of pgt range\n",
+			iova, idx);
+		return;
+	}
+	pte = mmu_ex_read_page_entry(priv->ppn_base_addr, (u32)idx);
+	/* 4.14 does not subtract 0x80000000: decode both ways below */
+	sub80 = (priv->iommu_type == SPRD_IOMMUEX_SHARKLE);
+	pa = ((u64)pte << MMU_MAPING_PAGESIZE_SHIFFT) + (sub80 ? 0x80000000ULL : 0);
+	pr_info("IOMMUDBG: iova 0x%lx idx %llu pte=0x%08x -> pa(pte<<12 +0x80000000)=0x%llx pa(pte<<12)=0x%llx%s\n",
+		iova, idx, pte, pa, (u64)pte << MMU_MAPING_PAGESIZE_SHIFFT,
+		pte == 0xffffffff ? " (UNMAPPED)" : "");
+}
+
 u32 sprd_iommuex_cll_map(sprd_iommu_hdl  p_iommu_hdl,
 				struct sprd_iommu_map_param *p_map_param)
 {
@@ -244,6 +318,46 @@ u32 sprd_iommuex_cll_map(sprd_iommu_hdl  p_iommu_hdl,
 					      p_iommu_priv->vpn_base_addr);
 	total_page_entrys = vir_base_entry;
 
+	if (iommu_id == IOMMU_EX_DCAM || iommu_id == IOMMU_EX_ISP) {
+		static atomic_t dbg_maps = ATOMIC_INIT(0);
+		int dn = atomic_inc_return(&dbg_maps);
+
+		if (dn <= 60) {
+			struct scatterlist *dsg;
+			int di;
+			u64 tot_len = 0, tot_dma_len = 0;
+			unsigned int mism = 0;
+
+			for_each_sg(p_map_param->p_sg_table->sgl, dsg,
+				    p_map_param->p_sg_table->nents, di) {
+				tot_len += dsg->length;
+				tot_dma_len += sg_dma_len(dsg);
+				if ((u64)sg_dma_address(dsg) !=
+				    (u64)sg_phys(dsg))
+					mism++;
+			}
+			pr_info("IOMMUDBG: map#%d %s iova 0x%lx req_size 0x%x nents %u (orig %u) sum(sg->length) 0x%llx sum(sg_dma_len) 0x%llx dma!=phys entries %u chip %d type %u\n",
+				dn, iommu_id == IOMMU_EX_DCAM ? "DCAM" : "ISP",
+				(unsigned long)p_map_param->start_virt_addr,
+				(u32)p_map_param->total_map_size,
+				p_map_param->p_sg_table->nents,
+				p_map_param->p_sg_table->orig_nents,
+				tot_len, tot_dma_len, mism,
+				p_iommu_priv->chip, iommu_type);
+			for_each_sg(p_map_param->p_sg_table->sgl, dsg,
+				    p_map_param->p_sg_table->nents, di) {
+				if (di >= 4)
+					break;
+				pr_info("IOMMUDBG:  map#%d sg[%d] off 0x%x len 0x%x dma_len 0x%x sg_phys 0x%llx sg_dma_address 0x%llx used(sg_to_phys) 0x%llx\n",
+					dn, di, dsg->offset, dsg->length,
+					sg_dma_len(dsg),
+					(u64)sg_phys(dsg),
+					(u64)sg_dma_address(dsg),
+					(u64)sg_to_phys(dsg));
+			}
+		}
+	}
+
 	for_each_sg(p_map_param->p_sg_table->sgl, sg,
 		     p_map_param->p_sg_table->nents, sg_index) {
 
@@ -264,6 +378,19 @@ u32 sprd_iommuex_cll_map(sprd_iommu_hdl  p_iommu_hdl,
 				total_page_entrys + entry_index, phy_addr);
 		}
 		total_page_entrys += entry_index;
+	}
+
+	if (iommu_id == IOMMU_EX_DCAM || iommu_id == IOMMU_EX_ISP) {
+		static atomic_t dbg_pte = ATOMIC_INIT(0);
+
+		if (atomic_inc_return(&dbg_pte) <= 60)
+			pr_info("IOMMUDBG: map pte[first]=0x%08x pte[last]=0x%08x entries %u (raw, pa = pte<<12 [+0x80000000 if vendor sub applied])\n",
+				mmu_ex_read_page_entry(p_iommu_priv->ppn_base_addr,
+					vir_base_entry),
+				total_page_entrys > vir_base_entry ?
+				mmu_ex_read_page_entry(p_iommu_priv->ppn_base_addr,
+					total_page_entrys - 1) : 0,
+				total_page_entrys - vir_base_entry);
 	}
 
 	if (p_iommu_priv->pagt_base_phy_ddr == 0)

@@ -1132,6 +1132,29 @@ int sprd_iommu_resume(struct device *dev)
 	return ret;
 }
 
+/* Diagnostic: dump iommu regs/page table state for dev's iommu. */
+void sprd_iommuex_cll_dump(void *hdl, unsigned long iova);
+void sprd_iommu_dump_state(struct device *dev, unsigned long iova)
+{
+	struct sprd_iommu_dev *iommu_dev;
+
+	if (!dev || !dev->of_node)
+		return;
+	iommu_dev = sprd_iommu_get_subnode(dev);
+	if (!iommu_dev || !iommu_dev->init_data) {
+		pr_info("IOMMUDBG: no iommu dev\n");
+		return;
+	}
+	pr_info("IOMMUDBG: name=%s id=%d org_id=%d iommuex_rev=%u map_count=%u status_count=%u iova_arg=0x%lx\n",
+		iommu_dev->init_data->name ? iommu_dev->init_data->name : "?",
+		iommu_dev->id, iommu_dev->org_id,
+		iommu_dev->init_data->iommuex_rev, iommu_dev->map_count,
+		iommu_dev->status_count, iova);
+	if (iommu_dev->init_data->iommuex_rev && iommu_dev->private)
+		sprd_iommuex_cll_dump(iommu_dev->private, iova);
+}
+EXPORT_SYMBOL(sprd_iommu_dump_state);
+
 int sprd_iommu_restore(struct device *dev)
 {
 	struct sprd_iommu_dev *iommu_dev = NULL;

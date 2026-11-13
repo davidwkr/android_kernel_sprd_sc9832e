@@ -675,6 +675,22 @@ static int dcam_full_path_set_next_frm(enum dcam_id idx,
 
 	DCAM_TRACE_INT("full addr 0x%x\n", addr);
 	DCAM_REG_WR(idx, DCAM0_FULL_BASE_WADDR, addr);
+	{
+		static atomic_t dbg_frm = ATOMIC_INIT(0);
+
+		if (atomic_inc_return(&dbg_frm) <= 5)
+			pr_info("FRMDBG: full path frame %d: DCAM%d wr addr 0x%x readback 0x%x isp_iova 0x%x dcam_iova 0x%x crop_start 0x%x crop_size 0x%x full_cfg 0x%x\n",
+				atomic_read(&dbg_frm), idx, addr,
+				(unsigned int)DCAM_REG_RD(idx,
+					DCAM0_FULL_BASE_WADDR),
+				frame->yaddr_vir, frame->uaddr_vir,
+				(unsigned int)DCAM_REG_RD(idx,
+					DCAM0_FULL_CROP_START),
+				(unsigned int)DCAM_REG_RD(idx,
+					DCAM0_FULL_CROP_SIZE),
+				(unsigned int)DCAM_REG_RD(idx,
+					DCAM0_FULL_CFG));
+	}
 
 	dcam_print_time("debug shaking: write dcam address (full)",
 		DCAM_TIME_NULL);
@@ -708,6 +724,28 @@ static int dcam_bin_path_set_next_frm(enum dcam_id idx,
 
 	DCAM_TRACE_INT("binning addr 0x%x\n", addr);
 	DCAM_REG_WR(idx, DCAM0_BIN_BASE_WADDR0, addr);
+	{
+		static atomic_t dbg_frm = ATOMIC_INIT(0);
+
+		if (atomic_inc_return(&dbg_frm) <= 5)
+			pr_info("FRMDBG: bin path frame %d: DCAM%d wr addr 0x%x readback 0x%x isp_iova 0x%x dcam_iova 0x%x fid %u crop_start 0x%x crop_size 0x%x bin_cfg 0x%x core_ctrl 0x%x endian 0x%x dt_vc 0x%x\n",
+				atomic_read(&dbg_frm), idx, addr,
+				(unsigned int)DCAM_REG_RD(idx,
+					DCAM0_BIN_BASE_WADDR0),
+				frame->yaddr_vir, frame->uaddr_vir, frame->fid,
+				(unsigned int)DCAM_REG_RD(idx,
+					DCAM0_BIN_CROP_START),
+				(unsigned int)DCAM_REG_RD(idx,
+					DCAM0_BIN_CROP_SIZE),
+				(unsigned int)DCAM_REG_RD(idx,
+					DCAM0_CAM_BIN_CFG),
+				(unsigned int)DCAM_REG_RD(idx,
+					DCAM0_BIN_CORE_CTRL),
+				(unsigned int)DCAM_REG_RD(idx,
+					DCAM0_PATH_ENDIAN),
+				(unsigned int)DCAM_REG_RD(idx,
+					DCAM0_IMAGE_DT_VC_CONTROL));
+	}
 	dcam_print_time("debug shaking: write dcam address (binning)",
 		DCAM_TIME_NULL);
 
@@ -1770,6 +1808,15 @@ void sprd_dcam_disable_int(enum dcam_id idx)
 		0, DCAM_INIT_MASK_REG);
 }
 
+static unsigned long s_iommudbg_iova;
+
+static void dcam_iommudbg_work_fn(struct work_struct *work)
+{
+	pr_info("IOMMUDBG: +100ms after bin start\n");
+	sprd_iommu_dump_state(&s_dcam_pdev->dev, s_iommudbg_iova);
+}
+static DECLARE_DELAYED_WORK(s_iommudbg_work, dcam_iommudbg_work_fn);
+
 static int sprd_dcam_reset(enum dcam_id idx,
 	void *unmap_func, void *param)
 {
@@ -1847,6 +1894,8 @@ static int sprd_dcam_reset(enum dcam_id idx,
 		DCAM_AXI_STS_REG);
 
 	sprd_iommu_restore(&s_dcam_pdev->dev);
+	pr_info("IOMMUDBG: after reset restore\n");
+	sprd_iommu_dump_state(&s_dcam_pdev->dev, s_iommudbg_iova);
 
 	pr_info("DCAM%d: reset end\n", idx);
 
@@ -3570,6 +3619,11 @@ static int dcam_bin_path_start(enum dcam_id idx,
 	path->sof_cnt = 0;
 	path->done_cnt = 0;
 	sprd_dcam_glb_reg_owr(idx, DCAM0_CFG, BIT_1, DCAM_CFG_REG);
+
+	pr_info("IOMMUDBG: after bin path start\n");
+	s_iommudbg_iova = frame->uaddr_vir;
+	sprd_iommu_dump_state(&s_dcam_pdev->dev, s_iommudbg_iova);
+	schedule_delayed_work(&s_iommudbg_work, msecs_to_jiffies(100));
 
 	return -rtn;
 }

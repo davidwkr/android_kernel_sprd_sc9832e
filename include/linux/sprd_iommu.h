@@ -147,6 +147,7 @@ int sprd_iommu_unmap(struct device *dev,
 		struct sprd_iommu_unmap_data *data);
 int sprd_iommu_unmap_with_idx(struct device *dev,
 		struct sprd_iommu_unmap_data *data, int idx);
+void sprd_iommu_dump_state(struct device *dev, unsigned long iova);
 int sprd_iommu_unmap_orphaned(struct sprd_iommu_unmap_data *data);
 int sprd_iommu_suspend(struct device *dev);
 int sprd_iommu_resume(struct device *dev);
@@ -188,6 +189,11 @@ static inline int sprd_iommu_suspend(struct device *dev)
 static inline int sprd_iommu_resume(struct device *dev)
 {
 	return -ENODEV;
+}
+
+static inline void sprd_iommu_dump_state(struct device *dev,
+					 unsigned long iova)
+{
 }
 
 static inline int sprd_iommu_restore(struct device *dev)
