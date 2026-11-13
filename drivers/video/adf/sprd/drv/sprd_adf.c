@@ -471,19 +471,49 @@ int sprd_adf_interface_get_mode(struct sprd_adf_interface *intf, u32 *index)
 }
 
 
-int sprd_adf_interface_dpms_on(struct sprd_adf_interface *intf)
+/*
+ * DPMS states kept in panel_info.dpms_flags/last_dpms_flags: 0 on,
+ * 1 standby (DOZE), 2 suspend (DOZE_SUSPEND, panel idle), 3 off.
+ * dpms_flags is set before the runtime PM call so that the panel callbacks
+ * can see the new state, last_dpms_flags after it so that they can still see
+ * the previous one.
+ */
+static void sprd_adf_set_dpms(struct sprd_adf_interface *intf, u8 st)
 {
-	static int adf_blank = DRM_MODE_DPMS_ON;
 	struct pipe *pipe = intf->data;
 	struct sprd_dispc *dispc;
+	struct panel_info *panel;
+	int index;
 
-	if (dpms_state) {
-		pr_info("dpms enable\n");
-		return 0;
+	for (index = 0; index < pipe->n_sdev; index++) {
+		panel = pipe->sdev[index]->ctx.panel;
+		if (panel)
+			panel->dpms_flags = st;
 	}
 
 	dispc = pipe->sdev[0];
-	pm_runtime_get_sync(dispc->adf);
+	if (st <= 1)
+		pm_runtime_get_sync(dispc->adf);
+	else
+		pm_runtime_put_sync(dispc->adf);
+
+	for (index = 0; index < pipe->n_sdev; index++) {
+		panel = pipe->sdev[index]->ctx.panel;
+		if (panel)
+			panel->last_dpms_flags = st;
+	}
+}
+
+int sprd_adf_interface_dpms_on(struct sprd_adf_interface *intf)
+{
+	static int adf_blank = DRM_MODE_DPMS_ON;
+
+	if (dpms_state) {
+		/* from standby, or already on: nothing to power up */
+		pr_info("dpms enable\n");
+	} else {
+		sprd_adf_set_dpms(intf, 0);
+	}
 
 	evdata.info = intf;
 	evdata.data = &adf_blank;
@@ -497,22 +527,51 @@ int sprd_adf_interface_dpms_on(struct sprd_adf_interface *intf)
 int sprd_adf_interface_dpms_off(struct sprd_adf_interface *intf)
 {
 	static int adf_blank = DRM_MODE_DPMS_OFF;
-	struct pipe *pipe = intf->data;
-	struct sprd_dispc *dispc;
 
 	if (!dpms_state) {
 		pr_info("dpms off\n");
 		return 0;
 	}
 
-	dispc = pipe->sdev[0];
-	pm_runtime_put_sync(dispc->adf);
+	sprd_adf_set_dpms(intf, 3);
 
 	evdata.info = intf;
 	evdata.data = &adf_blank;
 	adf_notifier_call_chain(ADF_EVENT_BLANK, &evdata);
 
 	dpms_state = false;
+
+	return 0;
+}
+
+int sprd_adf_interface_dpms_suspend(struct sprd_adf_interface *intf)
+{
+	if (!dpms_state) {
+		pr_info("dpms suspend\n");
+		return 0;
+	}
+
+	pr_info("adf aod suspend start\n");
+	sprd_adf_set_dpms(intf, 2);
+	pr_info("adf aod suspend end\n");
+
+	dpms_state = false;
+
+	return 0;
+}
+
+int sprd_adf_interface_dpms_standby(struct sprd_adf_interface *intf)
+{
+	if (dpms_state) {
+		pr_info("dpms standby\n");
+		return 0;
+	}
+
+	pr_info("adf aod standby start\n");
+	sprd_adf_set_dpms(intf, 1);
+	pr_info("adf aod standby end\n");
+
+	dpms_state = true;
 
 	return 0;
 }
