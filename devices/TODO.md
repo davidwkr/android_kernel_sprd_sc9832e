@@ -23,6 +23,11 @@ on v13 with its own Magisk ramdisk (original boot backed up, see "DW100U" below)
     On the bench: check `IOMMUDBG` lines (enable bit, first_vpn 0x40000, first_ppn = pgt phys>>12, PTE->PA of the bin
     buffers), preview, no corruption. If bit 4 of the DCAM ctrl is set after enable, clear it (stock clears it).
     If it works: merge into the candidate (DM63 and DW100U), drop the test logging, then rebuild v18 for the pilot.
+  - **Result:** v21 (fix + logs): camera works, real preview, no corruption; DCAM IOMMU ctrl 0x3003, first_vpn 0x40000,
+    first_ppn = pgt phys - 0x80000000. v22 (`test/v22-release` = candidate + ion-mapkernel-system + cam-fetch-compat +
+    cam-abi-legacy + dcam-iommu-frc-copy + dw100u palm/AOD; images in `~/.cache/v22-out`, DM63 BENCHDEBUG `88b01ac8...`):
+    camera works on the bench, log clean. Leftover: at camera close the statistics buffer is still mapped in the DCAM
+    and ISP IOMMUs ("iova leak error", cleaned up by unmap_orphaned).
 
 - **Camera on 4.4 (DM63).** v11 oopses in `isp_hist_done` when the camera opens; v13 and v14 corrupt memory and
   reboot; v16 shows noise and freezes. Stock 4.4.83 works.
