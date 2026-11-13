@@ -11,7 +11,10 @@
  * GNU General Public License for more details.
  */
 
+#include <linux/interrupt.h>
+#include <linux/vmalloc.h>
 #include "isp_statis_buf.h"
+#include "isp_int.h"
 #include <linux/sprd_ion.h>
 #include <linux/sprd_iommu.h>
 
@@ -211,6 +214,32 @@ static void set_buffer_queue(struct isp_queue_param *queue_prm,
 	*offset = frm_statis.addr_offset + buf_size;
 }
 
+/*
+ * Drop the driver's kernel mapping of the statistics buffer. Process context
+ * only: the ISR must not be able to use the mapping any more when it is
+ * unmapped, so the pointer is cleared first and the ISP IRQ is synchronized.
+ */
+void isp_statis_kmap_put(struct isp_pipe_dev *dev)
+{
+	struct isp_statis_module *module = &dev->statis_module_info;
+	enum isp_id iid = ISP_GET_IID(dev->com_idx);
+	void *vaddr = module->statis_kvaddr;
+
+	if (!vaddr)
+		return;
+
+	smp_store_release(&module->statis_kvaddr, NULL);
+	if (s_isp_irq[iid].ch0 > 0)
+		synchronize_irq(s_isp_irq[iid].ch0);
+	if (s_isp_irq[iid].ch1 > 0)
+		synchronize_irq(s_isp_irq[iid].ch1);
+
+	module->statis_ksize = 0;
+	vunmap(vaddr);
+	dma_buf_put(module->statis_dmabuf);
+	module->statis_dmabuf = NULL;
+}
+
 int sprd_isp_cfg_statis_buf(struct isp_pipe_dev *dev,
 	struct dcam_statis_module *dcam_module,
 	struct isp_statis_buf_input *parm)
@@ -224,10 +253,14 @@ int sprd_isp_cfg_statis_buf(struct isp_pipe_dev *dev,
 	struct isp_statis_module *isp_module = NULL;
 	struct isp_queue_param queue_prm;
 	unsigned long kaddr1 = 0;
+	void *kvaddr;
 
 	isp_module = &dev->statis_module_info;
 
 	pr_debug("cfg statis buf in.\n");
+
+	/* a re-config replaces the old mapping */
+	isp_statis_kmap_put(dev);
 
 	memset((void *)&isp_module->img_statis_buf, 0,
 		sizeof(isp_module->img_statis_buf));
@@ -285,6 +318,27 @@ int sprd_isp_cfg_statis_buf(struct isp_pipe_dev *dev,
 	}
 
 	isp_module->statis_valid = parm->statis_valid;
+
+	/*
+	 * The ISR writes the statistics through this mapping only, never
+	 * through the kaddr supplied by userspace. Keep the dma-buf alive
+	 * while it is mapped.
+	 */
+	if (!frm_statis_isp.pfinfo.buf[0] ||
+	    !frm_statis_isp.pfinfo.dmabuf_p[0]) {
+		pr_err("fail to get statis ion buffer\n");
+		return -EINVAL;
+	}
+	kvaddr = ion_heap_map_kernel(NULL,
+		(struct ion_buffer *)frm_statis_isp.pfinfo.buf[0]);
+	if (IS_ERR(kvaddr)) {
+		pr_err("fail to map statis buffer\n");
+		return PTR_ERR(kvaddr);
+	}
+	get_dma_buf(frm_statis_isp.pfinfo.dmabuf_p[0]);
+	isp_module->statis_dmabuf = frm_statis_isp.pfinfo.dmabuf_p[0];
+	isp_module->statis_ksize = frm_statis_isp.pfinfo.size[0];
+	smp_store_release(&isp_module->statis_kvaddr, kvaddr);
 
 	t_frm_statis_isp.phy_addr = frm_statis_isp.pfinfo.iova[0];
 	t_frm_statis_isp.vir_addr = parm->vir_addr;
