@@ -931,6 +931,10 @@ int sprd_isp_stop(void *isp_handle, int is_irq)
 	else
 		rtn = sprd_isp_stop_lock(isp_handle, 1);
 
+	/* the ISP IRQ is disabled now; not from the IRQ itself */
+	if (!is_irq)
+		isp_statis_kmap_put(dev);
+
 	pr_info("isp stop\n");
 
 	return rtn;
@@ -4337,6 +4341,7 @@ int sprd_isp_dev_deinit(void *isp_pipe_dev_handle, enum isp_id iid)
 	}
 
 	dev = (struct isp_pipe_dev *)isp_pipe_dev_handle;
+	isp_statis_kmap_put(dev);
 	mutex_lock(&dev->isp_mutex);
 	ret = isp_queue_init(&dev->queue);
 	if (unlikely(ret != 0)) {
