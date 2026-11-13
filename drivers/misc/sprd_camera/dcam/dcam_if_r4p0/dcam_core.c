@@ -3883,6 +3883,14 @@ static unsigned int sprd_img_compat_parm_cmd(unsigned int cmd)
 		return SPRD_IMG_IO_PATH_FRM_DECI;
 	case SPRD_IMG_IO_SET_PATH_SKIP_NUM_LEGACY:
 		return SPRD_IMG_IO_SET_PATH_SKIP_NUM;
+	/*
+	 * These encode a smaller type in the cmd, so the number is the same
+	 * for both layouts, but their handlers read a whole sprd_img_parm.
+	 */
+	case SPRD_IMG_IO_SET_SHRINK:
+	case SPRD_IMG_IO_PDAF_CONTROL:
+	case SPRD_IMG_IO_EBD_CONTROL:
+		return cmd;
 	default:
 		return 0;
 	}
