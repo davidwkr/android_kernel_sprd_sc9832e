@@ -41,7 +41,37 @@ struct sprd_hsphy {
 	atomic_t		reset;
 	atomic_t		inited;
 	bool			is_host;
+	/* vdd enable state: post_init and shutdown both switch it off */
+	struct mutex		vdd_lock;
+	bool			vdd_on;
 };
+
+static int sprd_hsphy_vdd_on(struct sprd_hsphy *phy)
+{
+	int ret = 0;
+
+	mutex_lock(&phy->vdd_lock);
+	if (!phy->vdd_on) {
+		regulator_set_voltage(phy->vdd, phy->vdd_vol, phy->vdd_vol);
+		ret = regulator_enable(phy->vdd);
+		if (!ret)
+			phy->vdd_on = true;
+	}
+	mutex_unlock(&phy->vdd_lock);
+
+	return ret;
+}
+
+static void sprd_hsphy_vdd_off(struct sprd_hsphy *phy)
+{
+	mutex_lock(&phy->vdd_lock);
+	/* on a failed disable the enable is still held: keep it for a retry */
+	if (phy->vdd_on && !regulator_disable(phy->vdd))
+		phy->vdd_on = false;
+	else if (phy->vdd_on)
+		dev_err(phy->phy.dev, "failed to disable vdd\n");
+	mutex_unlock(&phy->vdd_lock);
+}
 
 static inline void __reset_core(void __iomem *addr)
 {
@@ -119,17 +149,19 @@ static int sprd_hsphy_init(struct usb_phy *x)
 	u32 reg, reg1;
 	int ret;
 
+	/*
+	 * Turn On VDD. post_init switches it off on a disconnect without
+	 * clearing inited; a quick reconnect then came here with the PHY
+	 * unpowered, so power it before the inited check.
+	 */
+	ret = sprd_hsphy_vdd_on(phy);
+	if (ret)
+		return ret;
+
 	if (atomic_read(&phy->inited)) {
 		dev_dbg(x->dev, "%s is already inited!\n", __func__);
 		return 0;
 	}
-
-	/* Turn On VDD */
-	regulator_set_voltage(phy->vdd, phy->vdd_vol, phy->vdd_vol);
-
-	ret = regulator_enable(phy->vdd);
-	if (ret)
-		return ret;
 
 	regmap_update_bits(phy->hsphy_glb, REG_AON_APB_PWR_CTRL,
 		MASK_AON_APB_USB_PHY_PD_L, 0);
@@ -197,7 +229,7 @@ static void sprd_hsphy_shutdown(struct usb_phy *x)
 	regmap_update_bits(phy->hsphy_glb, REG_AON_APB_PWR_CTRL,
 		MASK_AON_APB_USB_PHY_PD_S, MASK_AON_APB_USB_PHY_PD_S);
 
-	regulator_disable(phy->vdd);
+	sprd_hsphy_vdd_off(phy);
 
 	atomic_set(&phy->inited, 0);
 	atomic_set(&phy->reset, 0);
@@ -207,7 +239,7 @@ static int sprd_hsphy_post_init(struct usb_phy *x)
 {
 	struct sprd_hsphy *phy = container_of(x, struct sprd_hsphy, phy);
 
-	regulator_disable(phy->vdd);
+	sprd_hsphy_vdd_off(phy);
 	return 0;
 }
 
@@ -347,6 +379,7 @@ static int sprd_hsphy_probe(struct platform_device *pdev)
 	phy = devm_kzalloc(dev, sizeof(*phy), GFP_KERNEL);
 	if (!phy)
 		return -ENOMEM;
+	mutex_init(&phy->vdd_lock);
 
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
 					   "phy_glb_regs");
@@ -452,7 +485,7 @@ static int sprd_hsphy_remove(struct platform_device *pdev)
 
 	sysfs_remove_groups(&pdev->dev.kobj, usb_hsphy_groups);
 	usb_remove_phy(&phy->phy);
-	regulator_disable(phy->vdd);
+	sprd_hsphy_vdd_off(phy);
 
 	return 0;
 }
