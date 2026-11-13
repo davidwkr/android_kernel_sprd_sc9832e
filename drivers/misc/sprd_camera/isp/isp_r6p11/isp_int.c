@@ -435,23 +435,20 @@ static void isp_afm_rgb_start(void *isp_handle)
 }
 
 /*
- * The statistics are written through the kernel's own mapping of the ION
- * buffer registered at config time, never through the kaddr that userspace
+ * The statistics are written through the driver's own kernel mapping of the
+ * ION buffer made at config time (isp_statis_kmap_put() unmaps it only after
+ * the ISP IRQ is synchronized), never through the kaddr that userspace
  * supplies: the node is addressed by its offset in that buffer, which must
  * fit @len bytes.
  */
-static void *isp_statis_kernel_ptr(struct isp_statis_buf *node,
-				   struct ion_buffer *ionbuffer, size_t len)
+static void *isp_statis_kernel_ptr(struct isp_statis_module *module,
+				   struct isp_statis_buf *node, size_t len)
 {
 	unsigned long off = node->addr_offset;
-	void *vaddr;
+	void *vaddr = smp_load_acquire(&module->statis_kvaddr);
+	size_t size = module->statis_ksize;
 
-	if (!ionbuffer || ionbuffer->kmap_cnt <= 0)
-		return NULL;
-
-	vaddr = ionbuffer->vaddr;
-	if (!vaddr || off > ionbuffer->size ||
-	    len > ionbuffer->size - off)
+	if (!vaddr || off > size || len > size - off)
 		return NULL;
 
 	return (char *)vaddr + off;
@@ -459,7 +456,7 @@ static void *isp_statis_kernel_ptr(struct isp_statis_buf *node,
 
 static int isp_get_afm_statistic(unsigned int com_idx,
 				struct isp_statis_buf *node,
-				struct ion_buffer *ionbuffer)
+				struct isp_statis_module *module)
 {
 	int ret = 0;
 	int i = 0;
@@ -468,7 +465,7 @@ static int isp_get_afm_statistic(unsigned int com_idx,
 	unsigned int *afm_statis = NULL;
 	enum isp_id iid = ISP_ID_0;
 
-	afm_statis = isp_statis_kernel_ptr(node, ionbuffer,
+	afm_statis = isp_statis_kernel_ptr(module, node,
 					   max_item * sizeof(*afm_statis));
 	if (!afm_statis) {
 		ret = -1;
@@ -531,8 +528,7 @@ static void isp_afm_rgb_done(void *isp_handle)
 	}
 
 	if (node.phy_addr != module->afm_buf_reserved.phy_addr) {
-		rtn = isp_get_afm_statistic(dev->com_idx, &node,
-			module->img_statis_buf.pfinfo.buf[0]);
+		rtn = isp_get_afm_statistic(dev->com_idx, &node, module);
 
 		frame_info.buf_size = node.buf_size;
 		memcpy(frame_info.pfinfo.mfd, node.pfinfo.mfd,
@@ -1268,7 +1264,7 @@ static void isp_hist_start(void *isp_handle)
 }
 
 static int isp_get_hist_statistic(unsigned int com_idx,
-	struct isp_statis_buf *node, struct ion_buffer *ionbuffer)
+	struct isp_statis_buf *node, struct isp_statis_module *module)
 {
 	int ret = 0;
 	int i = 0;
@@ -1277,12 +1273,12 @@ static int isp_get_hist_statistic(unsigned int com_idx,
 	uint64_t *hist_statis = NULL;
 	uint32_t isp_core_pmu_en = 0;
 
-	hist_statis = isp_statis_kernel_ptr(node, ionbuffer,
+	hist_statis = isp_statis_kernel_ptr(module, node,
 					    max_item * sizeof(*hist_statis));
 	if (!hist_statis) {
 		ret = -1;
-		pr_err_ratelimited("fail to get correct hist memory ionbuffer %p offset %lu\n",
-				   ionbuffer, node->addr_offset);
+		pr_err_ratelimited("fail to get correct hist memory offset %lu\n",
+				   node->addr_offset);
 		return ret;
 	}
 
@@ -1328,8 +1324,7 @@ static void isp_hist_done(void *isp_handle)
 	}
 
 	if (node.phy_addr != module->hist_buf_reserved.phy_addr) {
-		rtn = isp_get_hist_statistic(dev->com_idx, &node,
-			module->img_statis_buf.pfinfo.buf[0]);
+		rtn = isp_get_hist_statistic(dev->com_idx, &node, module);
 
 		frame_info.buf_size = node.buf_size;
 		memcpy(frame_info.pfinfo.mfd, node.pfinfo.mfd,
