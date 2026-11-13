@@ -162,8 +162,9 @@ Open items (still to check):
   `db45c7c730e8` (our GSP destination check turned the already-rotated scaled output: every camera frame rejected,
   only the UI on the panel; the adb mirror showed the camera). Also `fixes/414-hyn-panel-notifier` `fbab5e7aa773`
   (touch screen-off state with ADF), fetch reset `4f2de5795662`, VSP debug print removed `6b69f126680a`.
-- **`devices/414-candidate`** = boot22 without the diagnostic commits + `fixes/414-dw100u-dt`. Still to test: video
-  recording after the IOMMU offset fix (VSP), audio recheck, call, data, Bluetooth, palm, raise-to-wake, AOD, panic
+- Video encoding after the IOMMU offset fix: pass (screenrecord through SPRDAVCEncoder/VSP, 293 frames, valid
+  H.264 with real content, clean log).
+- **`devices/414-candidate`** = boot22 without the diagnostic commits + `fixes/414-dw100u-dt`. Still to test: audio recheck, call, data, Bluetooth, palm, raise-to-wake, AOD, panic
   reboot, deep sleep, charging from below the recharge voltage, GPS outdoors, soak. DW100U 4.14: first image (Magisk).
 - 4.14 rc images (`devices/414-candidate`), not flashed: `~/.cache/414rc-out/` DM63 `f8db8716...` (BENCHDEBUG
   `418710d4...`), DW100U `f2e0db17...`; DW100U with the Magisk ramdisk (4.14 kernel, DT and modules, mali.ko removed):
