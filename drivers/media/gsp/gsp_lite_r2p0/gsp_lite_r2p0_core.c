@@ -1862,27 +1862,34 @@ static enum gsp_lite_r2p0_planes gsp_lite_r2p0_des_kind(u32 format)
 /*
  * The hardware writes the two work areas of the destination, scaled and
  * then rotated: the first from its position on, the second at its
- * destination position. Both, rotation included, must be inside the
- * pitch x height of the destination, and the rows up to the lowest one
+ * destination position. Both must be inside the pitch x height of the
+ * destination, and the rows up to the lowest one
  * written must be inside its buffer, for every plane of the format.
  */
 static int gsp_lite_r2p0_verify_des(struct gsp_lite_r2p0_cfg *cfg)
 {
 	struct gsp_lite_r2p0_des_layer_params *p = &cfg->ld1.params;
 	struct gsp_lite_r2p0_misc_cfg *misc = &cfg->misc;
+	bool odd = p->rot_angle & 1;
 	u32 out_w, out_h, end_x, end_y;
 
 	if (misc->scale_para.scale_en) {
+		/*
+		 * The scaled output is in destination orientation: the stock
+		 * hwcomposer sends a 270 degree camera layer scaled to the
+		 * 492x410 work area at (5,6) of a 502x416 destination, which
+		 * holds exactly 502x416 rows, and stock (no check) does not
+		 * overrun it. Turning it once more rejected every such frame.
+		 */
 		out_w = misc->scale_para.scale_rect_out.rect_w;
 		out_h = misc->scale_para.scale_rect_out.rect_h;
 	} else {
+		/* a source rect, turned by the odd angles */
 		out_w = misc->workarea1_src_rect.rect_w;
 		out_h = misc->workarea1_src_rect.rect_h;
+		if (odd)
+			swap(out_w, out_h);
 	}
-
-	/* the odd angles turn the image by a quarter */
-	if (p->rot_angle & 1)
-		swap(out_w, out_h);
 
 	if (out_w < 1 || out_h < 1)
 		return -EINVAL;
@@ -1890,11 +1897,16 @@ static int gsp_lite_r2p0_verify_des(struct gsp_lite_r2p0_cfg *cfg)
 	end_x = (u32)misc->workarea1_src_rect.st_x + out_w;
 	end_y = (u32)misc->workarea1_src_rect.st_y + out_h;
 
+	/*
+	 * A source rect copied unscaled, turned by the odd angles: the stock
+	 * hwcomposer puts the 410x502 UI at (0,0) of the 502x416 destination
+	 * with the 270 degree camera layer.
+	 */
 	if (misc->workarea2_src_rect.rect_w || misc->workarea2_src_rect.rect_h) {
 		u32 w2 = misc->workarea2_src_rect.rect_w;
 		u32 h2 = misc->workarea2_src_rect.rect_h;
 
-		if (p->rot_angle & 1)
+		if (odd)
 			swap(w2, h2);
 
 		end_x = max(end_x, (u32)misc->workarea2_des_pos.pt_x + w2);
@@ -1902,6 +1914,12 @@ static int gsp_lite_r2p0_verify_des(struct gsp_lite_r2p0_cfg *cfg)
 	}
 
 	if (end_x > p->pitch || end_y > p->height)
+		return -EINVAL;
+
+	/* the whole programmed destination must be inside its buffer too */
+	if (!gsp_lite_r2p0_planes_ok(&cfg->ld1.common,
+				     gsp_lite_r2p0_des_kind(p->img_format),
+				     p->height, p->pitch))
 		return -EINVAL;
 
 	if (!gsp_lite_r2p0_planes_ok(&cfg->ld1.common,
