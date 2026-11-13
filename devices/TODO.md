@@ -17,7 +17,9 @@ on v13 with its own Magisk ramdisk (original boot backed up, see "DW100U" below)
   sha256 `f9527a9e...`), v20-mali (Mali memory hardening reverted).
   - **Candidate fix:** `fixes/dcam-iommu-frc-copy-44` `602abbbea552`. The DCAM IOMMU force-copy (latches its config)
     was written at master(0x60800040, 4-byte map)+0x2010 = outside the mapping; stock writes mmu base - 0xf0
-    (0x60802010). Reviewed (gpt-6.1-sol: no findings). Test image v21 (`test/v21-frc` = v19 + fix + IOMMUDBG logs).
+    (0x60802010). Reviewed (gpt-6.1-sol: no findings). Test image v21 (`test/v21-frc` = v19 + fix + IOMMUDBG logs), built, not flashed:
+    `~/.cache/v21-out/dm63-candidate/dm63_mali_candidate_BENCHDEBUG.img` (sha256 `d51463e1...`). Fallback images:
+    v20-mali `8529f2d1...` (`test/v20-mali`), v20-wb `f9527a9e...`.
     On the bench: check `IOMMUDBG` lines (enable bit, first_vpn 0x40000, first_ppn = pgt phys>>12, PTE->PA of the bin
     buffers), preview, no corruption. If bit 4 of the DCAM ctrl is set after enable, clear it (stock clears it).
     If it works: merge into the candidate (DM63 and DW100U), drop the test logging, then rebuild v18 for the pilot.
