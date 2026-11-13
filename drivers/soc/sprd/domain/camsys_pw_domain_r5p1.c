@@ -167,7 +167,7 @@ int sprd_cam_pw_off(void)
 	ret = sprd_campw_check_drv_init();
 	if (ret) {
 		pr_err("fail to get init state %d, cb %p, ret %d\n",
-			atomic_read(&pw_info->users_pw),
+			pw_info ? atomic_read(&pw_info->users_pw) : -1,
 			__builtin_return_address(0), ret);
 		return -ENODEV;
 	}
@@ -245,7 +245,7 @@ int sprd_cam_pw_on(void)
 	ret = sprd_campw_check_drv_init();
 	if (ret) {
 		pr_info("fail to get init state %d, cb %p, ret %d\n",
-			atomic_read(&pw_info->users_pw),
+			pw_info ? atomic_read(&pw_info->users_pw) : -1,
 			__builtin_return_address(0), ret);
 		return -ENODEV;
 	}
@@ -316,7 +316,7 @@ int sprd_cam_domain_eb(void)
 	ret = sprd_campw_check_drv_init();
 	if (ret) {
 		pr_err("fail to get init state %d, cb %p, ret %d\n",
-			atomic_read(&pw_info->users_pw),
+			pw_info ? atomic_read(&pw_info->users_pw) : -1,
 			__builtin_return_address(0), ret);
 		return -ENODEV;
 	}
@@ -367,7 +367,7 @@ int sprd_cam_domain_disable(void)
 	ret = sprd_campw_check_drv_init();
 	if (ret) {
 		pr_err("fail to get init state %d, cb %p, ret %d\n",
-			atomic_read(&pw_info->users_pw),
+			pw_info ? atomic_read(&pw_info->users_pw) : -1,
 			__builtin_return_address(0), ret);
 		return -ENODEV;
 	}

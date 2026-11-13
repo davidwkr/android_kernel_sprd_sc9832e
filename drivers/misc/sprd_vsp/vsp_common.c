@@ -181,7 +181,10 @@ int vsp_get_iova(struct vsp_dev_t *vsp_hw_dev,
 	struct sprd_iommu_map_data iommu_map_data;
 	u32 power_state1, vsp_eb_reg;
 
-	vsp_clk_enable(vsp_hw_dev);
+	/* a failed enable already undid itself: no access, no disable */
+	ret = vsp_clk_enable(vsp_hw_dev);
+	if (ret)
+		return ret;
 	sprd_iommu_resume(vsp_hw_dev->vsp_dev);
 	ret = sprd_ion_get_buffer(mapdata->fd, NULL,
 					&(iommu_map_data.buf),
@@ -229,7 +232,9 @@ int vsp_free_iova(struct vsp_dev_t *vsp_hw_dev,
 	int ret = 0;
 	struct sprd_iommu_unmap_data iommu_ummap_data;
 
-	vsp_clk_enable(vsp_hw_dev);
+	ret = vsp_clk_enable(vsp_hw_dev);
+	if (ret)
+		return ret;
 	sprd_iommu_resume(vsp_hw_dev->vsp_dev);
 	iommu_ummap_data.iova_addr = ummapdata->iova_addr;
 	iommu_ummap_data.iova_size = ummapdata->size;

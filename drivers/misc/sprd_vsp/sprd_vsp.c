@@ -122,7 +122,11 @@ static long vsp_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		pr_debug("vsp ioctl VSP_ENABLE\n");
 		__pm_stay_awake(&vsp_wakelock);
 
-		ret = vsp_clk_enable(&vsp_hw_dev);
+		/* one reference per file: a second VSP_ENABLE is a no-op */
+		if (vsp_fp->is_clock_enabled)
+			ret = 0;
+		else
+			ret = vsp_clk_enable(&vsp_hw_dev);
 		if (ret == 0)
 			vsp_fp->is_clock_enabled = 1;
 		if (vsp_hw_dev.iommu_exist_flag)
