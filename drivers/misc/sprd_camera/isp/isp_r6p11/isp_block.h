@@ -102,6 +102,7 @@ int isp_k_cfg_noise_filter(struct isp_io_param *param,
 		struct isp_k_block *isp_k_param, enum isp_id idx);
 
 /* Other */
+void isp_k_fetch_reset(void);
 int isp_k_cfg_fetch(struct isp_io_param *param,
 		struct isp_k_block *isp_k_param, enum isp_id idx);
 int isp_k_cfg_common(struct isp_io_param *param,
