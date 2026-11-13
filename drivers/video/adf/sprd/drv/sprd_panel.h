@@ -85,6 +85,8 @@ enum {
 	CMD_OLED_REG_UNLOCK,
 	CMD_SPI_ENABLE_TE,
 	CMD_SPI_DISABLE_TE,
+	CMD_CODE_AOD_IN,
+	CMD_CODE_AOD_OUT,
 	CMD_CODE_RESERVED0,
 	CMD_CODE_RESERVED1,
 	CMD_CODE_RESERVED2,
@@ -207,6 +209,12 @@ struct panel_info {
 	uint8_t	spi_endian;
 	struct device_node *of_node;
 	struct panel_device *pd;
+
+	/* DPMS state: 0 on, 1 standby, 2 suspend, 3 off */
+	u8 dpms_flags;
+	u8 last_dpms_flags;
+	/* aod-in was sent and the panel is still powered */
+	bool in_aod;
 };
 
 struct panel_device;
@@ -216,6 +224,8 @@ struct panel_ops {
 	int32_t (*close)(struct panel_device *dev);
 	int32_t (*reset)(struct panel_device *dev);
 	int32_t (*sleep_in)(struct panel_device *dev);
+	int32_t (*aod_in)(struct panel_device *dev);
+	int32_t (*aod_out)(struct panel_device *dev);
 	int32_t (*set_contrast)(struct panel_device *dev,
 				      uint16_t contrast);
 	int32_t (*set_brightness)(struct panel_device *dev,

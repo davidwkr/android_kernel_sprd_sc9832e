@@ -40,6 +40,8 @@ int sprd_adf_interface_get_mode(struct sprd_adf_interface *intf, u32 *index);
 
 int sprd_adf_interface_dpms_on(struct sprd_adf_interface *intf);
 int sprd_adf_interface_dpms_off(struct sprd_adf_interface *intf);
+int sprd_adf_interface_dpms_suspend(struct sprd_adf_interface *intf);
+int sprd_adf_interface_dpms_standby(struct sprd_adf_interface *intf);
 
 void sprd_adf_enable_vsync_irq(struct sprd_adf_interface *intf);
 void sprd_adf_disable_vsync_irq(struct sprd_adf_interface *adf_intf);

@@ -122,6 +122,47 @@ static int32_t mipi_panel_sleep_in(struct panel_device *pd)
 	return 0;
 }
 
+static int32_t mipi_panel_aod_in(struct panel_device *pd)
+{
+	struct sprd_dsi *dsi = dev_get_drvdata(pd->intf);
+	struct panel_info *panel = pd->panel;
+
+	if (!panel->cmd_codes[CMD_CODE_AOD_IN])
+		return 0;
+
+	mipi_dsi_set_work_mode(dsi, SPRD_MIPI_MODE_CMD);
+	mipi_dsi_lp_cmd_enable(dsi, true);
+	mipi_dsi_send_cmds(dsi, panel->cmd_codes[CMD_CODE_AOD_IN]);
+
+	return 0;
+}
+
+static int32_t mipi_panel_aod_out(struct panel_device *pd)
+{
+	struct sprd_dsi *dsi = dev_get_drvdata(pd->intf);
+	struct device *dev = dev_get_next(&dsi->dev);
+	struct sprd_dphy *dphy = dev_get_drvdata(dev);
+	struct panel_info *panel = pd->panel;
+
+	if (!panel->cmd_codes[CMD_CODE_AOD_OUT])
+		return 0;
+
+	mipi_dsi_set_work_mode(dsi, SPRD_MIPI_MODE_CMD);
+	mipi_dsi_lp_cmd_enable(dsi, true);
+	mipi_dsi_send_cmds(dsi, panel->cmd_codes[CMD_CODE_AOD_OUT]);
+
+	/* the panel was not re-initialised: only restore the video path */
+	mipi_dsi_set_work_mode(dsi, panel->work_mode);
+	mipi_dsi_state_reset(dsi);
+
+	if (dphy->ctx.chip_id == 0)
+		mipi_dphy_reset(dphy);
+
+	mipi_dphy_hs_clk_en(dphy, true);
+
+	return 0;
+}
+
 static int32_t mipi_panel_send_cmd(struct panel_device *pd, int cmd_id)
 {
 	struct sprd_dsi *dsi = dev_get_drvdata(pd->intf);
@@ -172,6 +213,8 @@ static int32_t mipi_panel_set_brightness(struct panel_device *pd,
 struct panel_ops panel_ops_mipi = {
 	.init = mipi_panel_init,
 	.sleep_in = mipi_panel_sleep_in,
+	.aod_in = mipi_panel_aod_in,
+	.aod_out = mipi_panel_aod_out,
 	.read_id = mipi_panel_read_id,
 	.esd_check = mipi_panel_esd_check,
 	.send_cmd = mipi_panel_send_cmd,
