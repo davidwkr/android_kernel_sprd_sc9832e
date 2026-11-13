@@ -290,6 +290,23 @@ int vsp_get_mm_clk(struct vsp_dev_t *vsp_hw_dev)
 		}
 	}
 
+	/*
+	 * SHARKLE: the MM enable (AON APB EB0 bit 25) and the VSP EMC path
+	 * (EB1 bit 14) are on only if something else turned them on; on 4.4
+	 * they were, on 4.14 nothing does and the hardware never completes a
+	 * frame. Optional: a DT without them keeps the old behaviour.
+	 */
+	if (vsp_hw_dev->version == SHARKLE) {
+		vsp_hw_dev->clk_mm_eb =
+			devm_clk_get(vsp_hw_dev->vsp_dev, "clk_mm_eb");
+		if (IS_ERR(vsp_hw_dev->clk_mm_eb))
+			vsp_hw_dev->clk_mm_eb = NULL;
+		vsp_hw_dev->clk_mm_vsp_eb =
+			devm_clk_get(vsp_hw_dev->vsp_dev, "clk_mm_vsp_eb");
+		if (IS_ERR(vsp_hw_dev->clk_mm_vsp_eb))
+			vsp_hw_dev->clk_mm_vsp_eb = NULL;
+	}
+
 	clk_ahb_gate_vsp_eb =
 	    devm_clk_get(vsp_hw_dev->vsp_dev, "clk_ahb_gate_vsp_eb");
 
@@ -406,6 +423,20 @@ int vsp_clk_enable(struct vsp_dev_t *vsp_hw_dev)
 		}
 	}
 
+	if (vsp_hw_dev->version == SHARKLE) {
+		ret = clk_prepare_enable(vsp_hw_dev->clk_mm_eb);
+		if (ret) {
+			pr_err("vsp clk_mm_eb: clk_enable failed!\n");
+			return ret;
+		}
+		ret = clk_prepare_enable(vsp_hw_dev->clk_mm_vsp_eb);
+		if (ret) {
+			pr_err("vsp clk_mm_vsp_eb: clk_enable failed!\n");
+			clk_disable_unprepare(vsp_hw_dev->clk_mm_eb);
+			return ret;
+		}
+	}
+
 	if (vsp_hw_dev->clk_ahb_gate_vsp_eb != NULL) {
 		ret = clk_prepare_enable(vsp_hw_dev->clk_ahb_gate_vsp_eb);
 		if (ret) {
@@ -519,5 +550,9 @@ void vsp_clk_disable(struct vsp_dev_t *vsp_hw_dev)
 	clk_disable_unprepare(vsp_hw_dev->clk_ahb_gate_vsp_eb);
 	if (vsp_hw_dev->version == SHARKL3  || vsp_hw_dev->version == PIKE2)
 		clk_disable_unprepare(vsp_hw_dev->clk_mm_eb);
+	if (vsp_hw_dev->version == SHARKLE) {
+		clk_disable_unprepare(vsp_hw_dev->clk_mm_vsp_eb);
+		clk_disable_unprepare(vsp_hw_dev->clk_mm_eb);
+	}
 }
 

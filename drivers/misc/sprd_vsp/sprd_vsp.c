@@ -265,9 +265,18 @@ static long vsp_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 		pr_debug("vsp ioctl VSP_HW_INFO\n");
 
-		regmap_read(regs[VSP_DOMAIN_EB].gpr, regs[VSP_DOMAIN_EB].reg,
-					&mm_eb_reg);
-		mm_eb_reg &= regs[VSP_DOMAIN_EB].mask;
+		if (vsp_hw_dev.version == SHARKLE) {
+			/*
+			 * As 4.4 and the stock library expect: the whole
+			 * AON APB EB0 word (offset 0 of the same regmap as
+			 * vsp_domain_eb, MM_EB is bit 25).
+			 */
+			regmap_read(regs[VSP_DOMAIN_EB].gpr, 0, &mm_eb_reg);
+		} else {
+			regmap_read(regs[VSP_DOMAIN_EB].gpr,
+				    regs[VSP_DOMAIN_EB].reg, &mm_eb_reg);
+			mm_eb_reg &= regs[VSP_DOMAIN_EB].mask;
+		}
 
 		put_user(mm_eb_reg, (int __user *)arg);
 
