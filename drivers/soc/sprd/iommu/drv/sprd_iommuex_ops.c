@@ -61,6 +61,7 @@ static int get_iommuex_type(int revision, int *pchip)
 	case 7:
 	{
 		type = SPRD_IOMMUEX_SHARKLE;
+		*pchip = (int)SPRD_IOMMUEX_SHARKLE;
 		break;
 	}
 	case 8:
