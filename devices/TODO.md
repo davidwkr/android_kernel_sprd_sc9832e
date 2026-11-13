@@ -22,9 +22,12 @@ on v13 with its own Magisk ramdisk (original boot backed up, see "DW100U" below)
 
 ## DW100U (4.4, v13)
 
-- **Palm cover does not work.** Our `hynitron_cst9217.c` reports no key; stock uses the newer Hynitron vendor driver
-  (`BIG_PALM_FLAG`). Reverse engineering of the stock kernel running; then capture `getevent` during a palm cover,
-  add the stock palm key (likely `KEY_F4` as on the DM63), review, build, test.
+- **Palm cover does not work.** Our `hynitron_cst9217.c` reports no key. Stock (static disassembly of the stock
+  kernel, `cst3xx_touch_report`): in the 0xd000 report (7 bytes, `buf[6] == 0xAB`, `buf[0] != 0xAB`), `buf[4] ==
+  0x80` is a palm cover; while the screen is on it sends `KEY_F4` press, SYN, release, SYN and skips touch processing
+  for that report; no debounce. Probe declares `KEY_F4` (and `KEY_WAKEUP`, `BTN_TOOL_FINGER`). Fix: do the same in
+  our driver (declare `KEY_F4`, handle `buf[4] == 0x80` while not asleep), confirm with `getevent` during a palm
+  cover, review, build, test. Scripts and disassembly: `~/.cache/tmp-build/re.pLOX/`.
 - Brightness: `oled_set_brightness ... lcd brightness setting failed` (4 times). Check that brightness changes work.
 - `Hardware spinlock [0] lock failed!` (3 times). Watch.
 - Lights HAL cannot open `blue_bl/on_off` and `keyboard-backlight/brightness` (the LEDs exist). Compare with stock.
