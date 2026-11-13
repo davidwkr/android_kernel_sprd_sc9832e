@@ -696,6 +696,16 @@
 	 */
 };
 
+/*
+ * The sc7a22 is powered from vddcammot. Stock 4.4 keeps the rail on (one
+ * user); on 4.14 nothing holds it outside camera use, so it was disabled as
+ * unused at late init and the chip NACKed every transfer after probe (no
+ * samples, no raise-to-wake, no steps).
+ */
+&vddcammot {
+	regulator-always-on;
+};
+
 &i2c3 {
 	status = "okay";
 	clock-frequency = <100000>;
