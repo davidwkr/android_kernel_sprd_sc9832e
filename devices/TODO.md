@@ -31,11 +31,12 @@ on v13 with its own Magisk ramdisk (original boot backed up, see "DW100U" below)
   - **v22 bench (DM63):** camera pass, speaker audio pass (ringtone preview), sysrq panic reboots by itself in 41 s with
     pstore kept (boot reason `panic`). Call both ways: pass (user). Deep sleep: pass (AP_DEEP_SLEEP_CNT 202 =
     202 successful suspends, no DISPC_EB block). All v22 bench tests pass.
+  - **Merged into `devices/k18-mali-candidate` (= v22 code).** Watches now: bench DM63 v22 BENCHDEBUG, pilot DM63 v22
+    (`f4b30216...`, boots, SIM ready, log clean), DW100U v22 Magisk (`838db9a5...`, root, AOD enter/exit OK).
   - Statistics buffer "iova leak error" at camera close: pre-existing vendor r6p11 code (never unmaps it; r6p10/r6p91
     do), harmless (ION unmaps before freeing pages, hardware stopped). Optional fix `fixes/isp-statis-unmap-44`
     `0a27b9b8d06f` (unmap at stream off); merge only after a bench test that also takes a photo (stream restart).
   - DW100U v22 Magisk image: `~/.cache/dw100u-silver-candidate/dw100u-silver_v22_magisk.img` (`838db9a5...`), not flashed.
-  - Pilot DM63 still on v11, which has the DCAM IOMMU bug: do not open the camera on it until it gets v22.
   - Security-team report draft (local only): `~/.cache/qa-out/security-team-report-draft.md`.
 
 - **Camera on 4.4 (DM63).** v11 oopses in `isp_hist_done` when the camera opens; v13 and v14 corrupt memory and
