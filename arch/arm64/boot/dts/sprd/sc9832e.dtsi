@@ -398,12 +398,17 @@
 			#clock-cells = <1>;
 		};
 
+		/*
+		 * No "enable"/"power" syscons: with them sprd_clk_probe()
+		 * clears MM_EB and sets PD_MM_TOP force shutdown at boot. The
+		 * VSP sits in PD_MM_TOP and its sharkle driver has no power
+		 * domain code (stock 4.4 neither): the H.264 encoder then timed
+		 * out on every frame. 4.4 leaves the domain as the bootloader
+		 * set it, and so does this now.
+		 */
 		mm_gate: mm-gate {
 			compatible = "sprd,sc9832e-mm-gate";
 			sprd,syscon = <&mm_ahb_regs>; /* 0x60d00000 */
-			syscons = <&aon_apb_regs REG_AON_APB_APB_EB0 MASK_AON_APB_MM_EB>,
-				  <&pmu_apb_regs REG_PMU_APB_PD_MM_TOP_CFG MASK_PMU_APB_PD_MM_TOP_FORCE_SHUTDOWN>;
-			syscon-names = "enable", "power";
 			clocks = <&aonapb_gate CLK_MM_EB>;
 			#clock-cells = <1>;
 		};
