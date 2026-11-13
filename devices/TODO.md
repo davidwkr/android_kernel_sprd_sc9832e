@@ -29,7 +29,7 @@ on v13 with its own Magisk ramdisk (original boot backed up, see "DW100U" below)
     camera works on the bench, log clean. Leftover: at camera close the statistics buffer is still mapped in the DCAM
     and ISP IOMMUs ("iova leak error", cleaned up by unmap_orphaned).
   - **v22 bench (DM63):** camera pass, speaker audio pass (ringtone preview), sysrq panic reboots by itself in 41 s with
-    pstore kept (boot reason `panic`). Still to run on v22: call both ways (SIM registered), deep sleep on battery.
+    pstore kept (boot reason `panic`). Call both ways: pass (user). Still to run on v22: deep sleep on battery.
   - Statistics buffer "iova leak error" at camera close: pre-existing vendor r6p11 code (never unmaps it; r6p10/r6p91
     do), harmless (ION unmaps before freeing pages, hardware stopped). Optional fix `fixes/isp-statis-unmap-44`
     `0a27b9b8d06f` (unmap at stream off); merge only after a bench test that also takes a photo (stream restart).
