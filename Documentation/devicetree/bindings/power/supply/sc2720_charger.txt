@@ -22,6 +22,12 @@ Optional Properties:
   cleared around the write (the 4.4 sprdchg_set_chg_ovp()). When absent the
   register keeps the value it has and a warning is printed once.
   See Documentation/devicetree/bindings/power/supply/battery.txt
+- sprd,charge-start-by-cm: boolean. charger-manager owns the decision to
+  charge: on an adapter notification the driver only reports online and the
+  adapter type and does not start a charge, it starts one only when
+  charger-manager writes the STATUS property (after it has programmed the
+  temperature zone current and CV). Without it the driver starts the charge
+  by itself, as before.
 
 SC2721 notes:
 - The charge current is clamped to 300..1300 mA in 50 mA steps and the

@@ -682,12 +682,17 @@ static int sc27xx_fgu_get_capacity(struct sc27xx_fgu_data *data, int *cap)
 		 */
 		delta_cap = 100 - temp_cap;
 		*cap = (*cap - delta_cap) * 100 / (100 - delta_cap);
-
-		if (*cap < 0)
-			*cap = 0;
-		else if (*cap > 100)
-			*cap = 100;
 	}
+
+	/*
+	 * The coulomb counter can run past full or empty: the stock sprdfgu
+	 * clamps to 0..100 and the framework treats 101 as invalid. Clamp for
+	 * the cap table less case too.
+	 */
+	if (*cap < 0)
+		*cap = 0;
+	else if (*cap > 100)
+		*cap = 100;
 
 	sc27xx_fgu_low_capacity_calibration(data, *cap, false);
 

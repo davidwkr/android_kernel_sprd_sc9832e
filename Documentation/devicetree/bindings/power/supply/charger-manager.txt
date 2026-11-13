@@ -28,6 +28,9 @@ Optional properties :
 	-hot : critical hot temperature of battery for charging
 	-temp-diff : temperature difference to allow recharging
  - cm-dis/charging-max = limits of charging duration
+ - cm-recharging-max = (optional) limit of a charge that is not the first one
+   after the adapter was attached (restart after the limit, recharge after
+   full), default cm-charging-max
  - cm-charge-voltage-max: maximum charge voltage in microVolts
  - cm-charge-voltage-drop: drop voltage in microVolts to allow recharging
  - cm-shutdown-voltage: drop voltage in microVolts to allow shutdown

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0：
 // Copyright (C) 2019 Spreadtrum Communications Inc.
 
+#include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/nvmem-consumer.h>
 #include <linux/platform_device.h>
@@ -88,6 +89,8 @@ struct sc2720_charger_data {
 
 struct sc2720_charger_info {
 	struct device *dev;
+	/* per device copy of data->desc: only .type changes, see sc2720_charger_update_type() */
+	struct power_supply_desc desc;
 	struct regmap *regmap;
 	struct usb_phy *usb_phy;
 	struct notifier_block usb_notify;
@@ -110,6 +113,13 @@ struct sc2720_charger_info {
 	/* SC2721 only: VCHG over-voltage and CV-state PMIC EIC lines, both optional */
 	struct gpio_desc *ovp_gpiod;
 	struct gpio_desc *cv_gpiod;
+	/*
+	 * "sprd,charge-start-by-cm": charger-manager decides when a charge
+	 * runs (jeita, timeout, recharge), through the STATUS property. The
+	 * adapter work then only reports online and the type and never
+	 * starts a charge by itself.
+	 */
+	bool start_by_cm;
 	/* protected by info->lock: input OVP comparator currently tripped */
 	bool ovp_fault;
 	/* protected by info->lock: PMIC CHGR_STATUS CV bit, last read from the irq */
@@ -790,6 +800,11 @@ static int sc2720_charger_set_current(struct sc2720_charger_info *info, u32 cur)
 		cur = min(cur, sc2720_charger_adapter_cur(info));
 	}
 
+	/*
+	 * 300 mA is the hardware minimum (code 0), the stock driver raises
+	 * a lower request to it too (the 100 mA cold zone charges at 300 mA).
+	 * Nothing above the request and the adapter cap is ever programmed.
+	 */
 	cur = cur / 1000;
 	if (cur < SC2720_CHG_CURRENT_MIN)
 		cur = SC2720_CHG_CURRENT_MIN;
@@ -897,6 +912,20 @@ static int sc2720_charger_get_online(struct sc2720_charger_info *info,
 
 static int sc2720_charger_get_status(struct sc2720_charger_info *info)
 {
+	unsigned int val;
+
+	/*
+	 * charger-manager owned: report the hardware, not the cached flag,
+	 * so a stop that did not happen or a charge that ended on its own
+	 * (OVP) is visible. An unreadable register counts as charging.
+	 */
+	if (info->start_by_cm) {
+		if (regmap_read(info->regmap, info->base + SC2720_CHG_CFG0,
+				&val) || !(val & SC2720_CHG_PD))
+			return POWER_SUPPLY_STATUS_CHARGING;
+		return POWER_SUPPLY_STATUS_NOT_CHARGING;
+	}
+
 	if (info->charging == true)
 		return POWER_SUPPLY_STATUS_CHARGING;
 	else
@@ -908,7 +937,13 @@ static int sc2720_charger_set_status(struct sc2720_charger_info *info,
 {
 	int ret = 0;
 
-	if (!val && info->charging) {
+	if (!val && (info->charging || info->start_by_cm)) {
+		/*
+		 * charger-manager owned: always write the stop, whatever the
+		 * cached state says (the hardware may have been left on, or
+		 * the flag may be stale after a fault). Writing PD is
+		 * harmless when already off.
+		 */
 		ret = sc2720_charger_stop_charge(info);
 		if (!ret)
 			info->charging = false;
@@ -917,6 +952,27 @@ static int sc2720_charger_set_status(struct sc2720_charger_info *info,
 			dev_warn(info->dev,
 				 "refusing to start charge, input OVP fault latched\n");
 			return -EBUSY;
+		}
+		/*
+		 * SC2721: make sure the last requested current and CV are in
+		 * the registers when the charge starts, and that the current
+		 * follows the adapter type now attached. Never start with
+		 * settings that could not be applied. Without a request the
+		 * adapter current is used.
+		 */
+		if (info->data->is_sc2721 && info->start_by_cm) {
+			ret = sc2720_charger_set_current(info,
+				info->cur_req_ua ? info->cur_req_ua :
+				sc2720_charger_adapter_cur(info));
+			if (ret)
+				return ret;
+			mutex_lock(&sc2721_cv_lock);
+			ret = info->cv_last_req_mv ?
+				sc2721_program_cccv(info,
+						    info->cv_last_req_mv) : 0;
+			mutex_unlock(&sc2721_cv_lock);
+			if (ret)
+				return ret;
 		}
 		ret = sc2720_charger_start_charge(info);
 		if (ret)
@@ -928,6 +984,27 @@ static int sc2720_charger_set_status(struct sc2720_charger_info *info,
 	return ret;
 }
 
+/*
+ * The stock 4.4 sprd_battery.c reports two supplies: "usb" (type USB) online
+ * for SDP and CDP, "ac" (type Mains) online for everything else. Android 8.1
+ * healthd classifies by the sysfs "type" attribute and maps "USB_DCP" to AC
+ * and "USB" to USB, so follow the adapter with the type of the one charger
+ * supply instead of adding a second one that cm and the CV override would
+ * have to know about. Online stays as is, charger-manager reads it.
+ */
+static void sc2720_charger_update_type(struct sc2720_charger_info *info)
+{
+	switch (info->usb_phy->chg_type) {
+	case SDP_TYPE:
+	case CDP_TYPE:
+		info->desc.type = POWER_SUPPLY_TYPE_USB;
+		break;
+	default:
+		info->desc.type = info->limit ? POWER_SUPPLY_TYPE_USB_DCP :
+						POWER_SUPPLY_TYPE_USB;
+	}
+}
+
 static void sc2720_charger_work(struct work_struct *data)
 {
 	struct sc2720_charger_info *info =
@@ -937,7 +1014,15 @@ static void sc2720_charger_work(struct work_struct *data)
 
 	mutex_lock(&info->lock);
 
-	if (info->limit > 0 && !info->charging && present) {
+	if (info->start_by_cm && info->limit > 0 && !info->charging) {
+		/*
+		 * Nothing to start: charger-manager gets the notification
+		 * below, re-evaluates the temperature zone, programs the
+		 * zone current and CV and then writes STATUS. Starting here
+		 * would restart a charge that jeita had stopped on every
+		 * adapter notification.
+		 */
+	} else if (info->limit > 0 && !info->charging && present) {
 		/* set charger current and start to charge */
 		switch (info->usb_phy->chg_type) {
 		case SDP_TYPE:
@@ -978,9 +1063,11 @@ static void sc2720_charger_work(struct work_struct *data)
 	}
 
 out:
+	sc2720_charger_update_type(info);
 	mutex_unlock(&info->lock);
 	dev_info(info->dev, "battery present = %d, charger type = %d\n",
 		 present, info->usb_phy->chg_type);
+	power_supply_changed(info->psy_usb);
 	cm_notify_event(info->psy_usb, CM_EVENT_CHG_START_STOP, NULL);
 }
 
@@ -1119,7 +1206,17 @@ sc2720_charger_usb_set_property(struct power_supply *psy,
 
 	mutex_lock(&info->lock);
 
-	if (!info->charging && psp != POWER_SUPPLY_PROP_STATUS) {
+	/*
+	 * With sprd,charge-start-by-cm current and CV are programmed whether
+	 * or not a charge is running. charger-manager writes the zone values (jeita) before it enables
+	 * the charger, so reporting success without writing them let a
+	 * recovery from a cold or hot stop start at the previous settings.
+	 * The registers hold their value while the charger is powered down,
+	 * the hardware init and the adapter work already rely on it.
+	 */
+	if (!info->start_by_cm && !info->charging &&
+	    psp != POWER_SUPPLY_PROP_STATUS) {
+		/* other boards: unchanged, the adapter work programs them */
 		mutex_unlock(&info->lock);
 		return 0;
 	}
@@ -1285,7 +1382,7 @@ static irqreturn_t sc2721_ovp_irq_handler(int irq, void *data)
 		return IRQ_HANDLED;
 	}
 	info->ovp_fault = !!fault;
-	if (info->ovp_fault && info->charging) {
+	if (info->ovp_fault && (info->charging || info->start_by_cm)) {
 		dev_crit(info->dev, "input over-voltage, stopping charge\n");
 		if (!sc2720_charger_stop_charge(info))
 			info->charging = false;
@@ -1423,6 +1520,24 @@ static void sc2720_charger_unwind(struct sc2720_charger_info *info)
 	mutex_unlock(&info->lock);
 }
 
+/*
+ * Force the charge off, a few tries with a short pause: a PMIC bus glitch
+ * at boot must not leave the firmware's charge setting in force.
+ */
+static int sc2720_charger_force_off(struct sc2720_charger_info *info)
+{
+	int i, ret = 0;
+
+	for (i = 0; i < 3; i++) {
+		ret = sc2720_charger_stop_charge(info);
+		if (!ret)
+			return 0;
+		msleep(20);
+	}
+
+	return ret;
+}
+
 static int sc2720_charger_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
@@ -1451,12 +1566,6 @@ static int sc2720_charger_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, info);
 
-	info->usb_phy = devm_usb_get_phy_by_phandle(&pdev->dev, "phys", 0);
-	if (IS_ERR(info->usb_phy)) {
-		dev_err(&pdev->dev, "failed to find USB phy\n");
-		return PTR_ERR(info->usb_phy);
-	}
-
 	ret = of_property_read_u32(np, "reg", &info->base);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to get register address\n");
@@ -1466,14 +1575,57 @@ static int sc2720_charger_probe(struct platform_device *pdev)
 	if (info->data->is_sc2721)
 		of_property_read_u32(np, "sprd,ovp-microvolt", &info->ovp_uv);
 
+	info->start_by_cm = of_property_read_bool(np,
+						  "sprd,charge-start-by-cm");
+
+	/*
+	 * Hand-over: firmware or a previous kernel may have left the charge
+	 * enabled. When charger-manager owns the starts, put the hardware in
+	 * the state the software flag says (off) before the supply exists, so
+	 * nothing charges until charger-manager has checked the temperature.
+	 * Failing here fails the probe: no charger is safer than an unknown
+	 * one. This is done before anything that can defer or fail.
+	 */
+	if (info->start_by_cm) {
+		ret = sc2720_charger_force_off(info);
+		if (ret) {
+			/*
+			 * Do not fail the probe: without the supply nothing
+			 * would ever stop the charge. Register it reporting
+			 * "charging" (cached flag and the unreadable or still
+			 * clear CHG_PD) so charger-manager's strict reconcile
+			 * writes the stop again every poll.
+			 */
+			dev_err(&pdev->dev,
+				"cannot force the charge off (%d), charger-manager will retry\n",
+				ret);
+			info->charging = true;
+		} else {
+			info->charging = false;
+		}
+	}
+
+	/*
+	 * Only now the dependencies that can defer: the USB phy may not be
+	 * there yet, the charge stays off meanwhile.
+	 */
+	info->usb_phy = devm_usb_get_phy_by_phandle(&pdev->dev, "phys", 0);
+	if (IS_ERR(info->usb_phy)) {
+		dev_err(&pdev->dev, "failed to find USB phy\n");
+		ret = PTR_ERR(info->usb_phy);
+		goto err_off;
+	}
+
 	charger_cfg.drv_data = info;
 	charger_cfg.of_node = np;
+	info->desc = *info->data->desc;
 	info->psy_usb = devm_power_supply_register(&pdev->dev,
-						   info->data->desc,
+						   &info->desc,
 						   &charger_cfg);
 	if (IS_ERR(info->psy_usb)) {
 		dev_err(&pdev->dev, "failed to register power supply\n");
-		return PTR_ERR(info->psy_usb);
+		ret = PTR_ERR(info->psy_usb);
+		goto err_off;
 	}
 
 	/* after psy_usb exists: the work it queues calls power_supply_changed() */
@@ -1481,7 +1633,7 @@ static int sc2720_charger_probe(struct platform_device *pdev)
 	ret = usb_register_notifier(info->usb_phy, &info->usb_notify);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to register notifier:%d\n", ret);
-		return ret;
+		goto err_off;
 	}
 
 	if (info->data->is_sc2721) {
@@ -1490,7 +1642,7 @@ static int sc2720_charger_probe(struct platform_device *pdev)
 			dev_err(&pdev->dev, "failed to read cccv calibration: %d\n",
 				ret);
 			sc2720_charger_unwind(info);
-			return ret;
+			goto err_off;
 		}
 
 		mutex_lock(&sc2721_cv_lock);
@@ -1514,7 +1666,7 @@ static int sc2720_charger_probe(struct platform_device *pdev)
 	if (ret) {
 		sc2721_cv_release(info);
 		sc2720_charger_unwind(info);
-		return ret;
+		goto err_off;
 	}
 
 	/*
@@ -1527,13 +1679,19 @@ static int sc2720_charger_probe(struct platform_device *pdev)
 		if (ret) {
 			sc2721_cv_release(info);
 			sc2720_charger_unwind(info);
-			return ret;
+			goto err_off;
 		}
 	}
 
 	sc2720_charger_detect_status(info);
 
 	return 0;
+
+err_off:
+	/* no supply, no policy: do not leave the hardware charging */
+	if (info->start_by_cm)
+		sc2720_charger_force_off(info);
+	return ret;
 }
 
 static int sc2720_charger_remove(struct platform_device *pdev)

@@ -218,8 +218,9 @@
 
 	/*
 	 * charger-manager (psy based in this tree, no regulator child: the
-	 * charger is the internal SC2721 one and is started by the charger
-	 * driver and by STATUS writes from charger-manager).
+	 * charger is the internal SC2721 one and is started and stopped only
+	 * by STATUS writes from charger-manager, see sprd,charge-start-by-cm
+	 * on the charger node).
 	 * [stock] = value derived from the stock battery node, [base] = value
 	 * of the 4.14 sl8541e-1h10 reference board, no stock equivalent.
 	 *
@@ -262,6 +263,14 @@
 		cm-battery-temp-diff = <30>;
 
 		cm-charging-max = <21600000>;		/* [stock] chg-timeout 21600 s */
+		/*
+		 * [stock] chg-rechg-timeout 5400 s: limit of every charge after
+		 * the first (restart after the timeout, recharge after full).
+		 * At the limit charging always stops and restarts once the OCV
+		 * is at or below 4415 mV (cm-fullbatt-voltage - vchkdrop), the
+		 * stock rechg-vol rule; cm-discharging-max is then not used.
+		 */
+		cm-recharging-max = <5400000>;
 		cm-discharging-max = <2700000>;		/* [base] */
 
 		cm-shutdown-voltage = <3050000>;	/* [stock] soft-vbat-uvlo */
@@ -584,6 +593,13 @@
 		reg = <0xec0>;
 		phys = <&hsphy>;
 		monitored-battery = <&bat>;
+		/*
+		 * Not in stock (4.4 sprd_battery.c is both the policy and the
+		 * only caller): the 4.14 charger driver must not start a
+		 * charge on an adapter notification, or it restarts a charge
+		 * that charger-manager stopped for temperature.
+		 */
+		sprd,charge-start-by-cm;
 		sprd,ovp-microvolt = <6500000>;
 		chg-ovi-gpios = <&pmic_eic 6 GPIO_ACTIVE_HIGH>;
 		chg-cv-gpios = <&pmic_eic 4 GPIO_ACTIVE_HIGH>;

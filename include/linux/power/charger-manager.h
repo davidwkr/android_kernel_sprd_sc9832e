@@ -181,10 +181,15 @@ struct charger_jeita_table {
  * @charging_max_duration_ms: Maximum possible duration for charging
  *	If whole charging duration exceed 'charging_max_duration_ms',
  *	cm stop charging.
+ * @recharging_max_duration_ms: Maximum duration of a charge that is not the
+ *	first one after the adapter was attached (restart after the time
+ *	limit, recharge after full). 0 = use 'charging_max_duration_ms'.
  * @discharging_max_duration_ms:
  *	Maximum possible duration for discharging with charger cable
  *	after full-batt. If discharging duration exceed 'discharging
- *	max_duration_ms', cm start charging.
+ *	max_duration_ms', cm start charging. With 'fullbatt_vchkdrop_uV'
+ *	set the charge is instead restarted when the battery OCV has
+ *	dropped by that much below 'fullbatt_uV' (stock recharge rule).
  * @charger_status: Recording state of charge
  * @trigger_cnt: The number of times the battery is fully charged
  * @cap_one_time: The percentage of electricity is not
@@ -237,6 +242,7 @@ struct charger_desc {
 	bool measure_battery_temp;
 
 	u32 charging_max_duration_ms;
+	u32 recharging_max_duration_ms;
 	u32 discharging_max_duration_ms;
 
 	u32 charge_voltage_max;
@@ -314,6 +320,21 @@ struct charger_manager {
 	u64 charging_start_time;
 	u64 charging_end_time;
 	u32 charging_status;
+
+	/* jeita zone in force (committed), -1 before the first evaluation */
+	int jeita_zone;
+	/*
+	 * The charger must stay off: the jeita zone does not allow charging
+	 * or has not been evaluated and programmed since the adapter was
+	 * attached. try_charger_enable() refuses to enable while it is set.
+	 */
+	bool jeita_stop;
+	/* force a full jeita evaluation at the next monitor run */
+	bool jeita_reeval;
+	/* external power state seen by the last charger event */
+	bool ext_pwr_online;
+	/* the next charge is a recharge or a restart after the time limit */
+	bool recharge_period;
 };
 
 #ifdef CONFIG_CHARGER_MANAGER
