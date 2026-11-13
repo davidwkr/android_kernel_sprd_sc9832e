@@ -371,6 +371,8 @@ struct sprd_adf_context {
  * @uninit: uninit display hardware
  * @dpms_on: display module entern dpms on mode
  * @dpms_off: display module entern dpms off mode
+ * @dpms_suspend: display module entern dpms suspend mode
+ * @dpms_standby: display module entern dpms standby mode
  * @enable_vsync_irq: enable display module hw vsync
  * @disable_vsync_irq: disable display module hw vsync
  * @get_screen_size: get lcd physical size (mm)
@@ -383,6 +385,8 @@ struct sprd_adf_interface_ops {
 
 	int (*dpms_on)(struct sprd_adf_interface *intf);
 	int (*dpms_off)(struct sprd_adf_interface *intf);
+	int (*dpms_suspend)(struct sprd_adf_interface *intf);
+	int (*dpms_standby)(struct sprd_adf_interface *intf);
 
 	void (*enable_vsync_irq)(struct sprd_adf_interface *intf);
 	void (*disable_vsync_irq)(struct sprd_adf_interface *intf);
