@@ -434,8 +434,32 @@ static void isp_afm_rgb_start(void *isp_handle)
 		pr_err("fail to set next afm buf rtn %d\n", rtn);
 }
 
+/*
+ * The statistics are written through the kernel's own mapping of the ION
+ * buffer registered at config time, never through the kaddr that userspace
+ * supplies: the node is addressed by its offset in that buffer, which must
+ * fit @len bytes.
+ */
+static void *isp_statis_kernel_ptr(struct isp_statis_buf *node,
+				   struct ion_buffer *ionbuffer, size_t len)
+{
+	unsigned long off = node->addr_offset;
+	void *vaddr;
+
+	if (!ionbuffer || ionbuffer->kmap_cnt <= 0)
+		return NULL;
+
+	vaddr = ionbuffer->vaddr;
+	if (!vaddr || off > ionbuffer->size ||
+	    len > ionbuffer->size - off)
+		return NULL;
+
+	return (char *)vaddr + off;
+}
+
 static int isp_get_afm_statistic(unsigned int com_idx,
-				struct isp_statis_buf *node)
+				struct isp_statis_buf *node,
+				struct ion_buffer *ionbuffer)
 {
 	int ret = 0;
 	int i = 0;
@@ -444,17 +468,12 @@ static int isp_get_afm_statistic(unsigned int com_idx,
 	unsigned int *afm_statis = NULL;
 	enum isp_id iid = ISP_ID_0;
 
-#ifdef CONFIG_64BIT
-	afm_statis =
-		(unsigned int *)(((unsigned long)node->kaddr[0]) |
-		((unsigned long)(node->kaddr[1] << 32)));
-#else
-	afm_statis = (unsigned int *)(node->kaddr[0]);
-#endif
-
+	afm_statis = isp_statis_kernel_ptr(node, ionbuffer,
+					   max_item * sizeof(*afm_statis));
 	if (!afm_statis) {
 		ret = -1;
-		pr_err("fail to alloc memory\n");
+		pr_err_ratelimited("fail to get afm statis memory, offset %lu\n",
+				   node->addr_offset);
 		return ret;
 	}
 
@@ -512,7 +531,8 @@ static void isp_afm_rgb_done(void *isp_handle)
 	}
 
 	if (node.phy_addr != module->afm_buf_reserved.phy_addr) {
-		rtn = isp_get_afm_statistic(dev->com_idx, &node);
+		rtn = isp_get_afm_statistic(dev->com_idx, &node,
+			module->img_statis_buf.pfinfo.buf[0]);
 
 		frame_info.buf_size = node.buf_size;
 		memcpy(frame_info.pfinfo.mfd, node.pfinfo.mfd,
@@ -525,7 +545,7 @@ static void isp_afm_rgb_done(void *isp_handle)
 		frame_info.irq_type = CAMERA_IRQ_STATIS;
 		frame_info.irq_property = IRQ_AFM_STATIS;
 		frame_info.frame_id = module->afm_statis_cnt;
-		frame_info.frame_invalid = 1;
+		frame_info.frame_invalid = rtn ? -1 : 1;
 
 		/* isp_afm_get_timestamp(dev, &frame_info); */
 		module->afm_frame_info = frame_info;
@@ -1257,17 +1277,12 @@ static int isp_get_hist_statistic(unsigned int com_idx,
 	uint64_t *hist_statis = NULL;
 	uint32_t isp_core_pmu_en = 0;
 
-#ifdef CONFIG_64BIT
-	hist_statis =
-		(uint64_t *)(((unsigned long)node->kaddr[0]) |
-		((unsigned long)(node->kaddr[1] << 32)));
-#else
-	hist_statis = (uint64_t *)(node->kaddr[0]);
-#endif
-
+	hist_statis = isp_statis_kernel_ptr(node, ionbuffer,
+					    max_item * sizeof(*hist_statis));
 	if (!hist_statis) {
 		ret = -1;
-		pr_err("fail to get correct hist memory\n");
+		pr_err_ratelimited("fail to get correct hist memory ionbuffer %p offset %lu\n",
+				   ionbuffer, node->addr_offset);
 		return ret;
 	}
 
@@ -1278,18 +1293,12 @@ static int isp_get_hist_statistic(unsigned int com_idx,
 	isp_core_pmu_en = ISP_HREG_RD(com_idx, ISP_PMU_EN);
 	ISP_HREG_WR(com_idx, ISP_PMU_EN, 0xffff0000);
 
-	if (ionbuffer && (ionbuffer->kmap_cnt > 0)) {
-		for (i = 0; i < max_item; i++)
-			hist_statis[i] = ISP_HREG_RD(com_idx, HIST_BUF + i * 4);
+	for (i = 0; i < max_item; i++)
+		hist_statis[i] = ISP_HREG_RD(com_idx, HIST_BUF + i * 4);
 
-		pr_debug("ISP%d hist %ld statis %lu %lu\n", com_idx, HIST_BUF,
-			(unsigned long) hist_statis[0],
-			(unsigned long) hist_statis[max_item-1]);
-	} else {
-		ret = -1;
-		pr_err("fail to access hist memory ionbuffer %p\n", ionbuffer);
-		return ret;
-	}
+	pr_debug("ISP%d hist %ld statis %lu %lu\n", com_idx, HIST_BUF,
+		(unsigned long) hist_statis[0],
+		(unsigned long) hist_statis[max_item-1]);
 
 	ISP_HREG_WR(com_idx, ISP_PMU_EN, isp_core_pmu_en);
 
@@ -1336,8 +1345,9 @@ static void isp_hist_done(void *isp_handle)
 		pr_debug("current hist frame id %d\n", frame_info.frame_id);
 
 		/*call_back func to write the buf addr to usr_buf_queue*/
-		isp_irq_reg(ISP_GET_IID(dev->com_idx),
-				ISP_HIST_DONE, &frame_info);
+		if (!rtn)
+			isp_irq_reg(ISP_GET_IID(dev->com_idx),
+					ISP_HIST_DONE, &frame_info);
 	}
 	module->hist_statis_cnt++;
 }
