@@ -22,12 +22,8 @@ on v13 with its own Magisk ramdisk (original boot backed up, see "DW100U" below)
 
 ## DW100U (4.4, v13)
 
-- **Palm cover does not work.** Our `hynitron_cst9217.c` reports no key. Stock (static disassembly of the stock
-  kernel, `cst3xx_touch_report`): in the 0xd000 report (7 bytes, `buf[6] == 0xAB`, `buf[0] != 0xAB`), `buf[4] ==
-  0x80` is a palm cover; while the screen is on it sends `KEY_F4` press, SYN, release, SYN and skips touch processing
-  for that report; no debounce. Probe declares `KEY_F4` (and `KEY_WAKEUP`, `BTN_TOOL_FINGER`). Fix: do the same in
-  our driver (declare `KEY_F4`, handle `buf[4] == 0x80` while not asleep), confirm with `getevent` during a palm
-  cover, review, build, test. Scripts and disassembly: `~/.cache/tmp-build/re.pLOX/`.
+- Palm cover: fixed on `fixes/dw100u-palm-44` `893f5e6a746b` (KEY_F4 on `buf[4] == 0x80` while awake, as stock);
+  reviewed; passes on the watch (`dw100u-silver_v13palm_magisk.img`, sha256 `7a9959cc...`). Merge into the candidate.
 - Brightness: `oled_set_brightness ... lcd brightness setting failed` (4 times). Check that brightness changes work.
 - `Hardware spinlock [0] lock failed!` (3 times). Watch.
 - Lights HAL cannot open `blue_bl/on_off` and `keyboard-backlight/brightness` (the LEDs exist). Compare with stock.
@@ -94,7 +90,8 @@ Results on hardware. "Pass" means seen working on the watch; "fail" lists what w
 | v14 | v13 - `d7a97c968947` (camera lifetime) | noise on the preview, zsmalloc corruption, reboot |
 | v15 | v14 - `c82b428a5b90` (MAP_KERNEL kaddr) | black preview, no crash; fetch config rejected (fd 0) |
 | v16 | v15 + fetch compat | noise, then freeze (pstore empty after the forced power off) |
-| v17 | v16 - `f046da13e52a` (camera bounds) | built, not run |
+| v17 | v16 - `f046da13e52a` (camera bounds) | noise, then reboot: kswapd oops in `zs_compact` on a pointer holding camera-like data (DMA/stale write into freed memory) |
+| v18a | v17 + camera driver tree as imported (ION/display changes kept) | building |
 
 ### DM63, 4.14 (bench)
 
@@ -118,7 +115,7 @@ Results on hardware. "Pass" means seen working on the watch; "fail" lists what w
 | Bluetooth | pass (user) |
 | Call with speaker audio | pass (user) |
 | Microphone (voice recorder) | pass (user) |
-| Palm cover | **fail**: no key reported |
+| Palm cover | fail on v13 (no key); pass on v13 + `893f5e6a746b` (KEY_F4 down/up, screen off) |
 | dmesg | no Oops/WARNING/BUG; brightness write failures (4), hardware spinlock failures (3) |
 | logcat | no app crashes or ANRs; lights HAL cannot open two LED attributes |
 | Thermal | CPU/GPU zones read (about 55 C while charging), board 27.8 C, battery fixed 20.0 C (stock DT) |
@@ -132,7 +129,8 @@ Results on hardware. "Pass" means seen working on the watch; "fail" lists what w
 3. Flashed v13 BENCHDEBUG: booted, but no root (the ROM is a production build; root came from Magisk).
 4. Built `dw100u-silver_v13_magisk.img` (v13 kernel and modules in the original Magisk ramdisk, original DT); flashed
    by the user with fastboot; root back.
-5. Tests above. Next: palm cover fix, then plug cycles, deep sleep, raise-to-wake, GPS, AOD, call uplink.
+5. Tests above.
+6. Palm cover fix built into the Magisk image and flashed with `su -c dd`; palm turns the screen off. Next: plug cycles, deep sleep, raise-to-wake, GPS, AOD, call uplink.
 
 ## Housekeeping
 
