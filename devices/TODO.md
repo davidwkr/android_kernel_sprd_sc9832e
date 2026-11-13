@@ -165,6 +165,9 @@ Open items (still to check):
 - **`devices/414-candidate`** = boot22 without the diagnostic commits + `fixes/414-dw100u-dt`. Still to test: video
   recording after the IOMMU offset fix (VSP), audio recheck, call, data, Bluetooth, palm, raise-to-wake, AOD, panic
   reboot, deep sleep, charging from below the recharge voltage, GPS outdoors, soak. DW100U 4.14: first image (Magisk).
+- 4.14 rc images (`devices/414-candidate`), not flashed: `~/.cache/414rc-out/` DM63 `f8db8716...` (BENCHDEBUG
+  `418710d4...`), DW100U `f2e0db17...`; DW100U with the Magisk ramdisk (4.14 kernel, DT and modules, mali.ko removed):
+  `~/.cache/dw100u-silver-candidate/dw100u-silver_414rc_magisk.img` `0d2cb4b5...`. GSP fix final review: no findings.
 - adb sometimes only connects after a USB replug after boot (seen on 4.14; also happens on stock): low priority.
 
 - Tests 11-17 passed: boot, Trusty, modem (camps on LTE), Wi-Fi, screen off/on, speaker audio, VSP encoder (valid
