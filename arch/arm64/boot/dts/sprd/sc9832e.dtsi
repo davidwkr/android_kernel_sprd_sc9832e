@@ -660,13 +660,17 @@
 			"clk_src_128m",
 			"clk_src_256m",
 			"clk_src_307m2",
-			"clk_vsp";
+			"clk_vsp",
+			"clk_mm_eb",
+			"clk_mm_vsp_eb";
 	clocks = <&apahb_gate VSP_EB>,
 		<&pll CLK_TWPLL_76M8>,
 		<&pll CLK_TWPLL_128M>,
 		<&pll CLK_TWPLL_256M>,
 		<&pll CLK_TWPLL_307M2>,
-		<&ap_clk CLK_VSP>;
+		<&ap_clk CLK_VSP>,
+		<&aonapb_gate CLK_MM_EB>,
+		<&aonapb_gate CLK_MM_VSP_EB>;
 };
 
 &jpg {
