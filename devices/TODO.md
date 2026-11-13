@@ -156,6 +156,17 @@ Open items (still to check):
 
 ## 4.14 (DM63)
 
+- **2026-11-13: camera works on 4.14** (boot22). Two more 4.14-only bugs on top of the 4.4 fixes:
+  `fixes/414-iommu-sharkle-offset` `ae7fc3a02611` (the port lost the sharkle DRAM-base offset of page table entries,
+  page table base and fault page: DCAM wrote past RAM, half noise/half black) and `fixes/414-gsp-des-rotation`
+  `db45c7c730e8` (our GSP destination check turned the already-rotated scaled output: every camera frame rejected,
+  only the UI on the panel; the adb mirror showed the camera). Also `fixes/414-hyn-panel-notifier` `fbab5e7aa773`
+  (touch screen-off state with ADF), fetch reset `4f2de5795662`, VSP debug print removed `6b69f126680a`.
+- **`devices/414-candidate`** = boot22 without the diagnostic commits + `fixes/414-dw100u-dt`. Still to test: video
+  recording after the IOMMU offset fix (VSP), audio recheck, call, data, Bluetooth, palm, raise-to-wake, AOD, panic
+  reboot, deep sleep, charging from below the recharge voltage, GPS outdoors, soak. DW100U 4.14: first image (Magisk).
+- adb sometimes only connects after a USB replug after boot (seen on 4.14; also happens on stock): low priority.
+
 - Tests 11-17 passed: boot, Trusty, modem (camps on LTE), Wi-Fi, screen off/on, speaker audio, VSP encoder (valid
   H.264), USB PHY fix, charger-manager plug cycles (USB and wall charger), JEITA zone handling.
 - Open: a real charge from below the recharge voltage; status shows "Charging" when full (stock may show Full);
