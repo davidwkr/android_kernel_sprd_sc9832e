@@ -327,13 +327,15 @@ int sprd_isp_cfg_statis_buf(struct isp_pipe_dev *dev,
 	if (!frm_statis_isp.pfinfo.buf[0] ||
 	    !frm_statis_isp.pfinfo.dmabuf_p[0]) {
 		pr_err("fail to get statis ion buffer\n");
-		return -EINVAL;
+		ret = -EINVAL;
+		goto err_unmap_iommu;
 	}
 	kvaddr = ion_heap_map_kernel(NULL,
 		(struct ion_buffer *)frm_statis_isp.pfinfo.buf[0]);
 	if (IS_ERR(kvaddr)) {
 		pr_err("fail to map statis buffer\n");
-		return PTR_ERR(kvaddr);
+		ret = PTR_ERR(kvaddr);
+		goto err_unmap_iommu;
 	}
 	get_dma_buf(frm_statis_isp.pfinfo.dmabuf_p[0]);
 	isp_module->statis_dmabuf = frm_statis_isp.pfinfo.dmabuf_p[0];
@@ -456,6 +458,13 @@ int sprd_isp_cfg_statis_buf(struct isp_pipe_dev *dev,
 						ISP_HIST2_STATIS_BUF_NUM);
 	}
 
+	return ret;
+
+err_unmap_iommu:
+	pfiommu_free_addr(&frm_statis_dcam.pfinfo);
+	pfiommu_free_addr(&frm_statis_isp.pfinfo);
+	memset(&isp_module->img_statis_buf, 0,
+		sizeof(isp_module->img_statis_buf));
 	return ret;
 }
 
