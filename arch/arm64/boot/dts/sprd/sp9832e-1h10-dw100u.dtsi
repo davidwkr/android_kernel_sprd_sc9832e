@@ -19,6 +19,7 @@
 #include "sp9832e-watch-firmware.dtsi"
 #include "sc9832e-wcn.dtsi"
 #include "sc2721.dtsi"
+#include "sprd-sound-sharkl.dtsi"
 #include "lcd/lcd_co5300_oled178_mipi.dtsi"
 #include "lcd/lcd_co5300_oled1952_mipi.dtsi"
 #include "lcd/lcd_co5300_oled204_mipi.dtsi"
@@ -207,8 +208,9 @@
 	 * (sc2720_charger_set_current()); the stock 0x7fff (no limit) zone is
 	 * written as 32767 mA so the adapter current applies.
 	 * cm-wdt-interval is left out: stock chg-wdt is disabled and the
-	 * charger driver has no watchdog property. Stock rechg-vol (4320 / 4370
-	 * mV) has no 4.14 property, the [base] vchkdrop values stay.
+	 * charger driver has no watchdog property.
+	 * Recharge: stock rechg-vol (4320 / 4370 mV) is cm-fullbatt-voltage minus
+	 * cm-fullbatt-vchkdrop-volt, set per unit with the fullbatt voltage.
 	 */
 	cm: charger-manager {
 		compatible = "charger-manager";
@@ -218,7 +220,6 @@
 		cm-battery-stat = <2>;			/* [base] fuel gauge PRESENT (always 1 here) */
 
 		cm-fullbatt-vchkdrop-ms = <30000>;	/* [base] */
-		cm-fullbatt-vchkdrop-volt = <60000>;	/* [base] */
 		cm-fullbatt-current = <60000>;		/* [stock] chg-end-cur */
 		cm-fullbatt-capacity = <100>;		/* [base] */
 
@@ -233,6 +234,11 @@
 		cm-battery-temp-diff = <30>;
 
 		cm-charging-max = <21600000>;		/* [stock] chg-timeout 21600 s */
+		/*
+		 * [stock] chg-rechg-timeout 5400 s: limit of every charge after
+		 * the first, as on the DM63.
+		 */
+		cm-recharging-max = <5400000>;
 		cm-discharging-max = <2700000>;		/* [base] */
 
 		cm-shutdown-voltage = <3050000>;	/* [stock] soft-vbat-uvlo */
@@ -439,6 +445,11 @@
  *
  * The sl8541e reference board disables vddrf18 and vddldomem; stock
  * keeps both on.
+ *
+ * vddrf125 is not default-on in stock either (the stock DT has no vddrf125
+ * node), but 4.4 never switches unused regulators off, so it stays on from
+ * the bootloader. The modem's LTE RF needs it: with it switched off the SIM
+ * reads but no cell is ever found.
  */
 &vddemmccore {
 	regulator-always-on;
@@ -457,6 +468,10 @@
 };
 
 &vddcamio {
+	regulator-always-on;
+};
+
+&vddrf125 {
 	regulator-always-on;
 };
 
@@ -512,6 +527,13 @@
 		reg = <0xec0>;
 		phys = <&hsphy>;
 		monitored-battery = <&bat>;
+		/*
+		 * Not in stock (4.4 sprd_battery.c is both the policy and the
+		 * only caller): the 4.14 charger driver must not start a
+		 * charge on an adapter notification, or it restarts a charge
+		 * that charger-manager stopped for temperature.
+		 */
+		sprd,charge-start-by-cm;
 		sprd,ovp-microvolt = <6500000>;
 		nvmem-cells = <&cccv_calib_data>, <&cccv_calib_valid>;
 		nvmem-cell-names = "cccv_calib", "cccv_calib_valid";
@@ -771,5 +793,110 @@
 };
 
 &dphy {
+	status = "okay";
+};
+
+/*
+ * Audio, as in the stock DW100U DT (silver and V13M identical): SC2721 analog
+ * codec linked to the sharkle digital codec, VBC card "sprdphone" (the stock
+ * audio HAL opens the cards by name: "sprdphone" and "all-i2s"), headset and
+ * BT SCO i2s0. sprd-sound-sharkl.dtsi carries the card, dai-links and the
+ * headset; the stock card names, headset gpios (pmic eic 3/8/12/5/13), adc
+ * thresholds (0xbee, 0x150, 0x8af, 0xe573c) and button ranges and codes are
+ * identical, so only the enables and the board specifics are set here.
+ * Without digital-codec the codec probe fails with -EINVAL ("Parse
+ * 'digital-codec' failed") and no sound card registers.
+ */
+&sprd_audio_codec_ana {
+	status = "okay";
+	digital-codec = <&sprd_audio_codec_dig>;
+};
+
+&sprd_headset {
+	status = "okay";
+};
+
+/*
+ * Speaker boost control gpios: stock sprd,smartamp-boost-gpios is ap gpio
+ * 27 (boost_enable) and 85 (boost_mode). The sl8541e board uses 121 and 85.
+ */
+&sound_vbc_r1p0v3_sprd_codec {
+	status = "okay";
+	sprd,smartamp-boost-names = "boost_enable", "boost_mode";
+	sprd,smartamp-boost-gpios = <&ap_gpio 27 GPIO_ACTIVE_HIGH>,
+				    <&ap_gpio 85 GPIO_ACTIVE_HIGH>;
+};
+
+&sound_sprd_ap_alliis {
+	status = "okay";
+};
+
+&i2s0 {
+	status = "okay";
+};
+
+/*
+ * Stock puts the audio dma buffers in the audio_dma@8d840000 reserved region
+ * (0x80000, declared above as audio_dma_reserved; sprd,dma_use_ddr_reserved,
+ * memory-region on both pcm platform nodes). The 4.14 pcm driver switches to
+ * the reserved ddr buffer when memory-region is present. The stock vaudio
+ * tuned_26m clock is clk_audio_gate (gate bit 8 of 0x40410000), the rpll
+ * CLK_AUDIO_GATE output in 4.14.
+ */
+&sprd_pcm {
+	memory-region = <&audio_dma_reserved>;
+};
+
+&sprd_pcm_iis {
+	memory-region = <&audio_dma_reserved>;
+};
+
+&vaudio {
+	clocks = <&rpll CLK_AUDIO_GATE>;
+	clock-names = "tuned_26m";
+};
+
+/*
+ * Stock DW100U has eight seth channels (7, 8, 9, 18, 19, 20, 24, 25). The
+ * 4.14 modem dtsi adds 26-31; each takes a 12 KB sipx channel from the
+ * sipc-lte smem pool, which then has too little left for the voice audio
+ * buffers (saudio, 6 x 12 KB). On the DM63 they failed to allocate.
+ */
+/ {
+	aliases {
+		/delete-property/ seth8;
+		/delete-property/ seth9;
+		/delete-property/ seth10;
+		/delete-property/ seth11;
+		/delete-property/ seth12;
+		/delete-property/ seth13;
+	};
+};
+
+/delete-node/ &seth_ch26;
+/delete-node/ &seth_ch27;
+/delete-node/ &seth_ch28;
+/delete-node/ &seth_ch29;
+/delete-node/ &seth_ch30;
+/delete-node/ &seth_ch31;
+
+/*
+ * Video and JPEG codecs with their IOMMUs, enabled in stock (silver and
+ * V13M). sharkle.dtsi leaves them disabled; without the VSP the stock H.264
+ * encoder aborts in H264EncPreInit.
+ */
+&iommu_vsp {
+	status = "okay";
+};
+
+&vsp {
+	status = "okay";
+};
+
+&iommu_jpg {
+	status = "okay";
+};
+
+&jpg {
 	status = "okay";
 };

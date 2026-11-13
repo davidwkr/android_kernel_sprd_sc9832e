@@ -74,6 +74,7 @@
  */
 &cm {
 	cm-fullbatt-voltage = <4420000>;	/* [stock] chg-end-vol-check */
+	cm-fullbatt-vchkdrop-volt = <50000>;	/* [stock] recharge at rechg-vol 4370 mV */
 	cm-jeita-temp-table = <900 930 0 4450000>,
 			      <1000 1030 500000 4450000>,
 			      <1100 1130 800000 4450000>,
