@@ -28,6 +28,8 @@ on v13 with its own Magisk ramdisk (original boot backed up, see "DW100U" below)
     cam-abi-legacy + dcam-iommu-frc-copy + dw100u palm/AOD; images in `~/.cache/v22-out`, DM63 BENCHDEBUG `88b01ac8...`):
     camera works on the bench, log clean. Leftover: at camera close the statistics buffer is still mapped in the DCAM
     and ISP IOMMUs ("iova leak error", cleaned up by unmap_orphaned).
+  - **v22 bench (DM63):** camera pass, speaker audio pass (ringtone preview), sysrq panic reboots by itself in 41 s with
+    pstore kept (boot reason `panic`). Still to run on v22: call both ways (SIM registered), deep sleep on battery.
 
 - **Camera on 4.4 (DM63).** v11 oopses in `isp_hist_done` when the camera opens; v13 and v14 corrupt memory and
   reboot; v16 shows noise and freezes. Stock 4.4.83 works.
