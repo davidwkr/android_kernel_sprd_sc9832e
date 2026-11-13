@@ -20,6 +20,9 @@
 #include <linux/regmap.h>
 #include <linux/sprd_iommu.h>
 #include <linux/sprd_ion.h>
+#if IS_ENABLED(CONFIG_SPRD_CAM_PW_DOMAIN_R5P1)
+#include <uapi/video/sprd_mmsys_pw_domain.h>
+#endif
 #include <linux/uaccess.h>
 #include "vsp_common.h"
 
@@ -178,7 +181,10 @@ int vsp_get_iova(struct vsp_dev_t *vsp_hw_dev,
 	struct sprd_iommu_map_data iommu_map_data;
 	u32 power_state1, vsp_eb_reg;
 
-	vsp_clk_enable(vsp_hw_dev);
+	/* a failed enable already undid itself: no access, no disable */
+	ret = vsp_clk_enable(vsp_hw_dev);
+	if (ret)
+		return ret;
 	sprd_iommu_resume(vsp_hw_dev->vsp_dev);
 	ret = sprd_ion_get_buffer(mapdata->fd, NULL,
 					&(iommu_map_data.buf),
@@ -226,7 +232,9 @@ int vsp_free_iova(struct vsp_dev_t *vsp_hw_dev,
 	int ret = 0;
 	struct sprd_iommu_unmap_data iommu_ummap_data;
 
-	vsp_clk_enable(vsp_hw_dev);
+	ret = vsp_clk_enable(vsp_hw_dev);
+	if (ret)
+		return ret;
 	sprd_iommu_resume(vsp_hw_dev->vsp_dev);
 	iommu_ummap_data.iova_addr = ummapdata->iova_addr;
 	iommu_ummap_data.iova_size = ummapdata->size;
@@ -299,10 +307,14 @@ int vsp_get_mm_clk(struct vsp_dev_t *vsp_hw_dev)
 	if (vsp_hw_dev->version == SHARKLE) {
 		vsp_hw_dev->clk_mm_eb =
 			devm_clk_get(vsp_hw_dev->vsp_dev, "clk_mm_eb");
+		if (PTR_ERR(vsp_hw_dev->clk_mm_eb) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
 		if (IS_ERR(vsp_hw_dev->clk_mm_eb))
 			vsp_hw_dev->clk_mm_eb = NULL;
 		vsp_hw_dev->clk_mm_vsp_eb =
 			devm_clk_get(vsp_hw_dev->vsp_dev, "clk_mm_vsp_eb");
+		if (PTR_ERR(vsp_hw_dev->clk_mm_vsp_eb) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
 		if (IS_ERR(vsp_hw_dev->clk_mm_vsp_eb))
 			vsp_hw_dev->clk_mm_vsp_eb = NULL;
 	}
@@ -408,7 +420,55 @@ errout:
 	return ret;
 }
 
+static int vsp_clk_enable_core(struct vsp_dev_t *vsp_hw_dev);
+
+/*
+ * SHARKLE: the VSP is in PD_MM_TOP, which the camera/JPEG power domain
+ * driver force-shuts when its last user goes; take a user reference like
+ * the JPEG driver does, then the MM and VSP EMC gates.
+ */
 int vsp_clk_enable(struct vsp_dev_t *vsp_hw_dev)
+{
+	int ret;
+
+	if (vsp_hw_dev->version != SHARKLE)
+		return vsp_clk_enable_core(vsp_hw_dev);
+
+#if IS_ENABLED(CONFIG_SPRD_CAM_PW_DOMAIN_R5P1)
+	ret = sprd_cam_pw_on();
+	if (ret) {
+		pr_err("vsp: mm power domain on failed: %d\n", ret);
+		return ret;
+	}
+#endif
+	ret = clk_prepare_enable(vsp_hw_dev->clk_mm_eb);
+	if (ret) {
+		pr_err("vsp clk_mm_eb: clk_enable failed!\n");
+		goto err_pw;
+	}
+	ret = clk_prepare_enable(vsp_hw_dev->clk_mm_vsp_eb);
+	if (ret) {
+		pr_err("vsp clk_mm_vsp_eb: clk_enable failed!\n");
+		goto err_mm_eb;
+	}
+	ret = vsp_clk_enable_core(vsp_hw_dev);
+	if (ret)
+		goto err_mm_vsp_eb;
+
+	return 0;
+
+err_mm_vsp_eb:
+	clk_disable_unprepare(vsp_hw_dev->clk_mm_vsp_eb);
+err_mm_eb:
+	clk_disable_unprepare(vsp_hw_dev->clk_mm_eb);
+err_pw:
+#if IS_ENABLED(CONFIG_SPRD_CAM_PW_DOMAIN_R5P1)
+	sprd_cam_pw_off();
+#endif
+	return ret;
+}
+
+static int vsp_clk_enable_core(struct vsp_dev_t *vsp_hw_dev)
 {
 	int ret = 0;
 
@@ -420,20 +480,6 @@ int vsp_clk_enable(struct vsp_dev_t *vsp_hw_dev)
 				return ret;
 			}
 			pr_debug("vsp clk_mm_eb: clk_prepare_enable ok.\n");
-		}
-	}
-
-	if (vsp_hw_dev->version == SHARKLE) {
-		ret = clk_prepare_enable(vsp_hw_dev->clk_mm_eb);
-		if (ret) {
-			pr_err("vsp clk_mm_eb: clk_enable failed!\n");
-			return ret;
-		}
-		ret = clk_prepare_enable(vsp_hw_dev->clk_mm_vsp_eb);
-		if (ret) {
-			pr_err("vsp clk_mm_vsp_eb: clk_enable failed!\n");
-			clk_disable_unprepare(vsp_hw_dev->clk_mm_eb);
-			return ret;
 		}
 	}
 
@@ -553,6 +599,9 @@ void vsp_clk_disable(struct vsp_dev_t *vsp_hw_dev)
 	if (vsp_hw_dev->version == SHARKLE) {
 		clk_disable_unprepare(vsp_hw_dev->clk_mm_vsp_eb);
 		clk_disable_unprepare(vsp_hw_dev->clk_mm_eb);
+#if IS_ENABLED(CONFIG_SPRD_CAM_PW_DOMAIN_R5P1)
+		sprd_cam_pw_off();
+#endif
 	}
 }
 
