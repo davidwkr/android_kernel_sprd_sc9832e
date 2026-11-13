@@ -158,6 +158,58 @@ err_out:
 }
 
 /**
+ * sprd_adf_dpms_suspend - set dpms suspend
+ *
+ * @intf: sprd adf interface obj
+ *
+ * sprd_adf_dpms_suspend() display module entern dpms suspend mode.
+ */
+static int sprd_adf_dpms_suspend(struct sprd_adf_interface *intf)
+{
+	ADF_DEBUG_GENERAL("entern\n");
+	if (!intf) {
+		ADF_DEBUG_WARN("parameter intf is ilegal\n");
+		goto err_out;
+	}
+
+	if (intf->ops && intf->ops->dpms_suspend)
+		intf->ops->dpms_suspend(intf);
+	else
+		ADF_DEBUG_WARN("ops or ops->dpms_suspend is illegal\n");
+
+	return 0;
+
+err_out:
+	return -1;
+}
+
+/**
+ * sprd_adf_dpms_standby - set dpms standby
+ *
+ * @intf: sprd adf interface obj
+ *
+ * sprd_adf_dpms_standby() display module entern dpms standby mode.
+ */
+static int sprd_adf_dpms_standby(struct sprd_adf_interface *intf)
+{
+	ADF_DEBUG_GENERAL("entern\n");
+	if (!intf) {
+		ADF_DEBUG_WARN("parameter intf is ilegal\n");
+		goto err_out;
+	}
+
+	if (intf->ops && intf->ops->dpms_standby)
+		intf->ops->dpms_standby(intf);
+	else
+		ADF_DEBUG_WARN("ops or ops->dpms_standby is illegal\n");
+
+	return 0;
+
+err_out:
+	return -1;
+}
+
+/**
  * sprd_adf_set_preferred_mode - set preferred mode
  *
  * @intf: sprd adf interface obj
@@ -348,6 +400,14 @@ static int sprd_adf_intf_blank(struct adf_interface *intf, u8 dpms_state)
 
 	case DRM_MODE_DPMS_ON:
 		ret = sprd_adf_dpms_on(sprd_adf_intf);
+		break;
+
+	case DRM_MODE_DPMS_STANDBY:
+		ret = sprd_adf_dpms_standby(sprd_adf_intf);
+		break;
+
+	case DRM_MODE_DPMS_SUSPEND:
+		ret = sprd_adf_dpms_suspend(sprd_adf_intf);
 		break;
 
 	default:
