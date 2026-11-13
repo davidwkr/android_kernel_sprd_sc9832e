@@ -76,6 +76,12 @@ disassembly; `tools/sprd_bootimg.py`) and match its behaviour exactly.
   no video or JPEG codec (`vsp`, `jpg` and their IOMMUs disabled: the stock H.264 encoder aborted in
   `H264EncPreInit`). List every `status = "ok"/"okay"` node of the stock DT and check each one in the new DT; on the
   first boot check `/proc/asound/cards` (stock names `sprdphone`, `all-i2s`) and `ls /dev/sprd_vsp`.
+- **Video codec (VSP) on sharkle:** enabling the node was not enough. 4.14 needed four more things the stock 4.4
+  setup got for free: the MM and VSP EMC gates (AON APB EB0 bit 25, EB1 bit 14) enabled by the VSP driver; the
+  `mm-gate` clock probe must not force `PD_MM_TOP` off (it is the VSP's power domain); a reference on the camera
+  power domain while the VSP is enabled; and the stock 4.4 interrupt handling. The 4.14 handler read the raw status,
+  reported the whole word and masked and cleared every source on each interrupt, so the stock library timed out on
+  every frame although the done interrupt fired. Test with `screenrecord` and check the frame sizes.
 - **Modem shared memory:** the `sipc-lte` smem pool is a fixed 3.9 MB region laid out by the modem firmware. The 4.14
   modem dtsi defines 14 seth channels where stock has 8; each takes 12 KB of the pool, and the voice audio buffers
   (`saudio`) then failed to allocate. Read `/sys/kernel/debug/sipc/smem` and keep the channel set of stock.
@@ -145,6 +151,6 @@ The stock DM63 ROM runs SELinux permissive; release builds of our kernel drop `S
    idle; the modem sees cells (no `NO_NETWORK_FOUND`) and registers with an active SIM.
    `/proc/asound/cards` lists the stock card names; `/dev/sprd_vsp` exists and a video can be recorded. No
    `<supply>: disabling` line for a supply 4.4 keeps on. `sipc/smem` has room left after boot.
-10. `/sys/class/power_supply/battery` exists with type Battery and capacity 0..100; `dumpsys battery` shows USB on a
+9. `/sys/class/power_supply/battery` exists with type Battery and capacity 0..100; `dumpsys battery` shows USB on a
    PC and AC on a wall charger; attended plug and unplug tests show charging stops and resumes per the stock rules.
-9. A full day of wear and a night unplugged, compared with stock.
+10. A full day of wear and a night unplugged, compared with stock.
